@@ -1,10 +1,18 @@
 {
   "name": "@primebrick/dal-pg",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Type-driven PostgreSQL Data Access Layer — metadata-based entity decorators, type-safe Repository, bulk ops with TEMP TABLE strategy. Part of the @primebrick/dal-* family (dal-pg, dal-mssql, dal-mariadb, ...).",
   "type": "module",
   "license": "MIT",
   "author": "Michael Sogos",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/michaelsogos/primebrick-v3-dal"
+  },
+  "homepage": "https://github.com/michaelsogos/primebrick-v3-dal#readme",
+  "bugs": {
+    "url": "https://github.com/michaelsogos/primebrick-v3-dal/issues"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
