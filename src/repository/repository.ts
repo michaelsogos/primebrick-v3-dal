@@ -662,7 +662,7 @@ export class Repository {
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & { batchSize?: number }
+    options: WriteOptions & { batchSize?: number; timeoutMs?: number }
   ): Promise<TEntity[]> {
     if (rows.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
@@ -704,43 +704,68 @@ export class Repository {
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
     const results: TEntity[] = [];
 
-    for (let i = 0; i < rows.length; i += batchSz) {
-      const batch = rows.slice(i, i + batchSz);
-      const values: unknown[] = [];
-      const tuples: string[] = [];
+    // When timeoutMs is provided, wrap batched INSERTs in a transaction with
+    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
+    const useTx = options.timeoutMs !== undefined;
+    const client = useTx ? await this.getClient() : null;
+    try {
+      if (useTx && client) {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
+      const db = useTx && client ? client : this.db;
 
-      for (const row of batch) {
-        const rec = row as Record<string, unknown>;
-        const params: string[] = [];
-        for (const k of keys) {
-          const sqlName = getColumnName(entity, k);
-          const colMeta = meta.columns[sqlName];
-          const rawVal = rec[k] ?? null;
-          const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-          values.push(pgVal);
-          params.push(`$${values.length}`);
-        }
-        // Add audit stamping
-        for (const ak of auditCols) {
-          const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
-          if (!col) continue;
-          if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-            values.push(now);
-          } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
-            values.push(options.actor);
-          } else if (col.auditableType === AuditableFieldType.VERSION) {
-            values.push(1);
-          } else {
-            values.push(null);
+      for (let i = 0; i < rows.length; i += batchSz) {
+        const batch = rows.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+
+        for (const row of batch) {
+          const rec = row as Record<string, unknown>;
+          const params: string[] = [];
+          for (const k of keys) {
+            const sqlName = getColumnName(entity, k);
+            const colMeta = meta.columns[sqlName];
+            const rawVal = rec[k] ?? null;
+            const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+            values.push(pgVal);
+            params.push(`$${values.length}`);
           }
-          params.push(`$${values.length}`);
+          // Add audit stamping
+          for (const ak of auditCols) {
+            const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
+            if (!col) continue;
+            if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
+              values.push(now);
+            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              values.push(options.actor);
+            } else if (col.auditableType === AuditableFieldType.VERSION) {
+              values.push(1);
+            } else {
+              values.push(null);
+            }
+            params.push(`$${values.length}`);
+          }
+          tuples.push(`(${params.join(", ")})`);
         }
-        tuples.push(`(${params.join(", ")})`);
+
+        const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} RETURNING *`;
+        const result = await db.query(sql, values);
+        results.push(...(result.rows as TEntity[]));
       }
 
-      const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} RETURNING *`;
-      const result = await this.db.query(sql, values);
-      results.push(...(result.rows as TEntity[]));
+      if (useTx && client) {
+        await client.query("COMMIT");
+      }
+    } catch (err) {
+      if (useTx && client) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (useTx && client) {
+        (client as any).release?.();
+      }
     }
 
     return results;
@@ -749,7 +774,7 @@ export class Repository {
   async upsertMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: BulkOptions
+    options: BulkOptions & { timeoutMs?: number }
   ): Promise<TEntity[]> {
     if (rows.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
@@ -821,47 +846,72 @@ export class Repository {
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
     const results: TEntity[] = [];
 
-    for (let i = 0; i < rows.length; i += batchSz) {
-      const batch = rows.slice(i, i + batchSz);
-      const values: unknown[] = [];
-      const tuples: string[] = [];
+    // When timeoutMs is provided, wrap batched upserts in a transaction with
+    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
+    const useTx = options.timeoutMs !== undefined;
+    const client = useTx ? await this.getClient() : null;
+    try {
+      if (useTx && client) {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
+      const db = useTx && client ? client : this.db;
 
-      for (const row of batch) {
-        const rec = row as Record<string, unknown>;
-        const params: string[] = [];
-        for (const k of keys) {
-          const sqlName = getColumnName(entity, k);
-          const colMeta = meta.columns[sqlName];
-          const rawVal = rec[k] ?? null;
-          const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-          values.push(pgVal);
-          // For uuid conflict target, use COALESCE so missing uuids get generated
-          if (k === conflictPropKey && conflictIsUuid) {
-            params.push(`COALESCE($${values.length}, gen_random_uuid())`);
-          } else {
+      for (let i = 0; i < rows.length; i += batchSz) {
+        const batch = rows.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+
+        for (const row of batch) {
+          const rec = row as Record<string, unknown>;
+          const params: string[] = [];
+          for (const k of keys) {
+            const sqlName = getColumnName(entity, k);
+            const colMeta = meta.columns[sqlName];
+            const rawVal = rec[k] ?? null;
+            const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+            values.push(pgVal);
+            // For uuid conflict target, use COALESCE so missing uuids get generated
+            if (k === conflictPropKey && conflictIsUuid) {
+              params.push(`COALESCE($${values.length}, gen_random_uuid())`);
+            } else {
+              params.push(`$${values.length}`);
+            }
+          }
+          for (const ak of auditCols) {
+            const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
+            if (!col) continue;
+            if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
+              values.push(now);
+            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              values.push(options.actor);
+            } else if (col.auditableType === AuditableFieldType.VERSION) {
+              values.push(1);
+            } else {
+              values.push(null);
+            }
             params.push(`$${values.length}`);
           }
+          tuples.push(`(${params.join(", ")})`);
         }
-        for (const ak of auditCols) {
-          const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
-          if (!col) continue;
-          if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-            values.push(now);
-          } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
-            values.push(options.actor);
-          } else if (col.auditableType === AuditableFieldType.VERSION) {
-            values.push(1);
-          } else {
-            values.push(null);
-          }
-          params.push(`$${values.length}`);
-        }
-        tuples.push(`(${params.join(", ")})`);
+
+        const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
+        const result = await db.query(sql, values);
+        results.push(...(result.rows as TEntity[]));
       }
 
-      const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
-      const result = await this.db.query(sql, values);
-      results.push(...(result.rows as TEntity[]));
+      if (useTx && client) {
+        await client.query("COMMIT");
+      }
+    } catch (err) {
+      if (useTx && client) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (useTx && client) {
+        (client as any).release?.();
+      }
     }
 
     return results;
@@ -919,7 +969,7 @@ export class Repository {
   async updateMany<TEntity extends object>(
     entity: EntityClass,
     updates: Array<{ uuid: string } & Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & { batchSize?: number }
+    options: WriteOptions & { batchSize?: number; timeoutMs?: number }
   ): Promise<TEntity[]> {
     if (updates.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
@@ -959,6 +1009,11 @@ export class Repository {
     const client = await this.getClient();
     try {
       await client.query("BEGIN");
+      // SET LOCAL statement_timeout — transaction-scoped, no leakage to other
+      // queries on this connection after COMMIT/ROLLBACK.
+      if (options.timeoutMs !== undefined) {
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
 
       // 1. Create temp table — columns must include PG types
       const tmpColDefs: string[] = [];

@@ -9,6 +9,9 @@
  * - Types: FindOptions, WriteOptions, BulkOptions, AuditPort, LoggerPort.
  * - Streaming: createStream for large result sets.
  * - Audit: buildAuditableJoins, auditable types.
+ * - Dal gateway: getDal() singleton, pool ownership, type-parser registration,
+ *   best-practice pool defaults (statement_timeout, connectionTimeoutMillis),
+ *   withClient for transactions and per-call timeout override.
  */
 
 // Entity decorators + metadata
@@ -127,3 +130,12 @@ export {
   type WithCreatorDisplayName,
   type WithUpdaterDisplayName,
 } from "./audit/auditable-types.js";
+
+// Dal gateway — high-level pool-owning singleton with best-practice defaults
+export {
+  Dal,
+  getDal,
+  resetDal,
+  type DalConfig,
+  type WithClientOptions,
+} from "./dal/dal.js";
