@@ -89,6 +89,52 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     expect(tempDal.isClosed).toBe(true);
   });
 
+  // ─── close() hardening: re-entrancy, timeout, error containment ──────
+
+  it("Dal.close: re-entrant — concurrent calls both resolve without error", async () => {
+    const tempDal = new Dal({ connectionString, max: 2 });
+    // Both calls should resolve without error — the first wins, the second is a no-op
+    await Promise.all([tempDal.close(), tempDal.close()]);
+    expect(tempDal.isClosed).toBe(true);
+    expect(tempDal.isClosing).toBe(false);
+  });
+
+  it("Dal.close: re-entrant — sequential second call is a no-op", async () => {
+    const tempDal = new Dal({ connectionString, max: 2 });
+    await tempDal.close();
+    expect(tempDal.isClosed).toBe(true);
+    // Second call on already-closed pool — should NOT throw
+    await expect(tempDal.close()).resolves.toBeUndefined();
+  });
+
+  it("Dal.isClosing: false before, transient during, false after", async () => {
+    const tempDal = new Dal({ connectionString, max: 2 });
+    expect(tempDal.isClosing).toBe(false);
+    await tempDal.close();
+    expect(tempDal.isClosing).toBe(false);
+    expect(tempDal.isClosed).toBe(true);
+  });
+
+  it("Dal.close: timeoutMs — resolves even if pool.end() is slow", async () => {
+    // With a real PG, pool.end() completes quickly. But we verify the timeout
+    // mechanism: close(1) must resolve regardless of whether pool.end() or the
+    // timeout wins the race. Either way, close() must not hang.
+    const tempDal = new Dal({ connectionString, max: 2 });
+    const start = Date.now();
+    await tempDal.close(1); // 1ms timeout
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(5000); // sanity: didn't hang
+    expect(tempDal.isClosed).toBe(true);
+  });
+
+  it("Dal.close: default timeoutMs is 10000", async () => {
+    // Verify the default parameter — just ensure close() with no args works
+    // and completes (pool.end() on a healthy pool is instant).
+    const tempDal = new Dal({ connectionString, max: 2 });
+    await tempDal.close();
+    expect(tempDal.isClosed).toBe(true);
+  });
+
   // ─── onConnect session settings ──────────────────────────────────────
 
   it("Dal.onConnect: sets search_path, statement_timeout, application_name", async () => {

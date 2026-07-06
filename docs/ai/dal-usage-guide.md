@@ -39,8 +39,8 @@ const dal = getDal({
 // per request — no allocation, reuse the singleton:
 const config = await dal.find(EmailConfigEntity, null, { ... });
 
-// graceful shutdown:
-await dal.close();
+// graceful shutdown (consumer calls this from signal handlers — see below):
+await dal.close(); // close(timeoutMs?) — default 10s timeout
 ```
 
 **DalConfig options:**
@@ -94,12 +94,27 @@ await dal.withClient(
 );
 ```
 
-### `dal.close()` — graceful shutdown
+### `dal.close(timeoutMs?)` — graceful shutdown
 
-Drains the pool (`pool.end()`). Call on `SIGTERM`/`SIGINT`.
+Drains the pool (`pool.end()`) with a timeout deadline.
+
+- **Re-entrant**: concurrent calls return immediately (the first call wins).
+- **Timeout**: if `pool.end()` doesn't complete within `timeoutMs`, the promise resolves anyway (default: 10000ms). The pool is left to be reaped by the OS/TCP stack.
+- **Error containment**: if `pool.end()` throws, the error is logged and swallowed — the caller (typically a signal handler) cannot do anything useful with it.
+- **No process handlers**: the library does NOT install `process.on(...)` handlers. Process lifecycle (signals, crash handlers, Sentry) is a consumer-side concern. The consumer closes ALL long-lived resources (DAL pool, NATS, HTTP server) together.
 
 ```typescript
-process.on("SIGTERM", async () => { await dal.close(); process.exit(0); });
+// consumer-side shutdown (NOT in the library — the consumer owns process lifecycle):
+async function shutdown(reason: string, code: number) {
+  await Promise.allSettled([
+    dal.close(),               // drains pg.Pool (10s internal timeout)
+    natsConnection?.close(),   // drains NATS
+  ]);
+  process.exit(code);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM", 0));
+process.on("SIGINT",  () => shutdown("SIGINT", 130));
 ```
 
 ### `dal.getPool()` — raw pool access

@@ -101,6 +101,7 @@ export class Dal {
   private readonly pool: Pool;
   private readonly repo: Repository;
   private closed = false;
+  private _isClosing = false;
 
   constructor(config: DalConfig) {
     if (!config.connectionString) {
@@ -171,16 +172,42 @@ export class Dal {
     return this.pool;
   }
 
-  /** Graceful shutdown — drains the pool (calls pool.end()). Call on SIGTERM/SIGINT. */
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    await this.pool.end();
+  /**
+   * Graceful shutdown — drains the pool with a timeout deadline.
+   *
+   * - Re-entrant: concurrent calls return immediately (the first call wins).
+   * - Timeout: if pool.end() doesn't complete within timeoutMs, the promise
+   *   resolves anyway (the pool is left to be reaped by the OS/TCP stack).
+   * - Error containment: if pool.end() throws, the error is logged and swallowed.
+   * - Does NOT install process.on() handlers — that is a consumer-side concern.
+   *
+   * @param timeoutMs Maximum time to wait for pool.end() to complete. Default: 10000.
+   */
+  async close(timeoutMs: number = 10000): Promise<void> {
+    if (this.closed || this._isClosing) return;
+    this._isClosing = true;
+
+    try {
+      await Promise.race([
+        this.pool.end(),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+    } catch (err) {
+      console.error("[dal-pg] pool.end() failed during close:", err);
+    } finally {
+      this.closed = true;
+      this._isClosing = false;
+    }
   }
 
-  /** Returns true if close() has been called. */
+  /** Returns true if close() has completed. */
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Returns true if close() is currently in progress (started but not finished). */
+  get isClosing(): boolean {
+    return this._isClosing;
   }
 
   // ─── Finders (delegate to internal Repository) ────────────────────────────
