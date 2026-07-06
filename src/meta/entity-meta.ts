@@ -1,0 +1,30 @@
+/**
+ * Entity SQL metadata (decorator-driven). Prefer importing from here for a stable module path.
+ */
+export {
+  Entity,
+  Column,
+  Key,
+  Unique,
+  IsNotColumn,
+  AuditableField,
+  DeletableField,
+  SynchronizableField,
+  CloneField,
+  AuditTrail,
+  AuditableFieldType,
+  DeletableFieldType,
+  SynchronizableFieldType,
+  isEntityClass,
+  getTableName,
+  getEntityName,
+  getColumnName,
+  getPrimaryKeyColumn,
+  getEntityPersistenceMeta,
+  listEntityPersistencePropertyKeys,
+  syncImplicitEntityColumns,
+  type EntityClass,
+  type ColumnOptions,
+  type KeyOptions,
+  type EntityPersistenceMeta,
+} from "./entity-decorators.js";
