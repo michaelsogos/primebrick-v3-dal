@@ -30,6 +30,7 @@
     "access": "public",
     "registry": "https://registry.npmjs.org"
   },
+  "packageManager": "pnpm@9.15.9",
   "dependencies": {
     "pg": "^8.21.0",
     "pg-query-stream": "^4.8.0",
