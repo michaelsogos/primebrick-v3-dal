@@ -6,9 +6,12 @@ on:
       # Numeric version tags: 0.1.0, 0.2.0, 1.10.3, etc.
       - "[0-9]+.[0-9]+.[0-9]+"
 
+# OIDC Trusted Publishing: no NPM_TOKEN needed.
+# GitHub Actions generates an OIDC token that NPM verifies
+# against the Trusted Publisher configuration on the package.
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
   publish:
@@ -37,7 +40,10 @@ jobs:
         # exits early and the committed package.json version is used.
         run: pnpm run build
 
-      - name: Publish to NPM
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to NPM (OIDC Trusted Publishing)
+        # No NPM_TOKEN env var — OIDC handles authentication.
+        # Requires Trusted Publisher configured on npmjs.com:
+        #   https://www.npmjs.com/package/@primebrick/dal-pg/access
+        # Repository: michaelsogos/primebrick-v3-dal
+        # Workflow: .github/workflows/release.yml
+        run: npm publish --access public --provenance
