@@ -25,6 +25,7 @@
       "import": "./dist/errors/errors.js"
     }
   },
+  "files": ["dist/"],
   "scripts": {
     "version:auto": "node scripts/version-sync.mjs",
     "prebuild": "node scripts/version-sync.mjs",
