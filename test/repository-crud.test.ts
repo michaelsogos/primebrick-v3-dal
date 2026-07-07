@@ -163,7 +163,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords EXCLUDED (default)", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, a.uuid, { actor: "test-user" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Still Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity);
@@ -173,7 +173,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords ONLY", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "ToDelete" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, a.uuid, { actor: "test-user" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity, null, {
@@ -185,7 +185,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords INCLUDED", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "ToDelete" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, a.uuid, { actor: "test-user" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity, null, {
@@ -243,9 +243,8 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     const updated = await repo.update(
       SimpleTestEntity,
-      inserted.uuid,
-      { name: "Updated", description: "New desc" },
-      { actor: "updater-user" }
+      { uuid: inserted.uuid, name: "Updated", description: "New desc" },
+      { actor: "updater-user", matchBy: "uuid" }
     );
 
     expect(updated.name).toBe("Updated");
@@ -258,9 +257,8 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        "00000000-0000-0000-0000-000000000000",
-        { name: "X" },
-        { actor: "test-user" }
+        { uuid: "00000000-0000-0000-0000-000000000000", name: "X" },
+        { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(NotFoundError);
   });
@@ -273,7 +271,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     );
 
     await expect(
-      repo.update(SimpleTestEntity, inserted.uuid, {}, { actor: "test-user" })
+      repo.update(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" })
     ).rejects.toThrow(/no fields to update/);
   });
 
@@ -286,8 +284,9 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    const deleted = await repo.delete(SimpleTestEntity, inserted.uuid, {
+    const deleted = await repo.delete(SimpleTestEntity, { uuid: inserted.uuid }, {
       actor: "deleter-user",
+      matchBy: "uuid",
     });
 
     expect(deleted.deleted_at).toBeInstanceOf(Date);
@@ -297,8 +296,9 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("delete: throws NotFoundError when uuid not found", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });
@@ -312,9 +312,10 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    await repo.delete(SimpleTestEntity, inserted.uuid, { actor: "test-user" });
-    const restored = await repo.restore(SimpleTestEntity, inserted.uuid, {
+    await repo.delete(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" });
+    const restored = await repo.restore(SimpleTestEntity, { uuid: inserted.uuid }, {
       actor: "restorer-user",
+      matchBy: "uuid",
     });
 
     expect(restored.deleted_at).toBeNull();
@@ -324,8 +325,9 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("restore: throws NotFoundError when uuid not found", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });
@@ -339,7 +341,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    await repo.hardDelete(SimpleTestEntity, inserted.uuid, { actor: "test-user" });
+    await repo.hardDelete(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" });
 
     const found = await repo.findByUUID(SimpleTestEntity, inserted.uuid, {
       throwIfNotFound: false,
@@ -349,8 +351,9 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("hardDelete: throws NotFoundError when uuid not found", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });

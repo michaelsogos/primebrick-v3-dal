@@ -123,6 +123,7 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     const result = await dal.updateMany(SimpleTestEntity, updates, {
       actor: "test",
       timeoutMs: 30000,
+      matchBy: "uuid",
     });
     expect(result.length).toBe(5);
   });

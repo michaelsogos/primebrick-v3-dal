@@ -1,5 +1,5 @@
 import type { EntityClass } from "../meta/entity-meta.js";
-import { getColumnName, getEntityPersistenceMeta, getTableName } from "../meta/entity-meta.js";
+import { getColumnName, getEntityPersistenceMeta, getTableName, getQualifiedTableName } from "../meta/entity-meta.js";
 
 import type { FieldProjector, FilterExpr, JoinExpr, SortingExpr } from "./dsl.js";
 import type { WithDeletedRecords } from "../types/types.js";
@@ -20,8 +20,7 @@ export function quoteIdent(ident: string): string {
 }
 
 function qTable(entity: EntityClass): string {
-  const t = getTableName(entity);
-  return quoteIdent(t);
+  return getQualifiedTableName(entity);
 }
 
 function qCol(entity: EntityClass, propertyKey: string): string {
