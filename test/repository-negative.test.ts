@@ -77,33 +77,35 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        "00000000-0000-0000-0000-000000000000",
-        { name: "X" },
-        { actor: "test-user" }
+        { uuid: "00000000-0000-0000-0000-000000000000", name: "X" },
+        { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(NotFoundError);
   });
 
   it("delete: throws NotFoundError for non-existent uuid", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });
 
   it("restore: throws NotFoundError for non-existent uuid", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });
 
   it("hardDelete: throws NotFoundError for non-existent uuid", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
         actor: "test-user",
+        matchBy: "uuid",
       })
     ).rejects.toThrow(NotFoundError);
   });
@@ -133,7 +135,7 @@ describe("Repository — negative / failure paths", () => {
       { actor: "test-user" }
     );
     await expect(
-      repo.update(SimpleTestEntity, inserted.uuid, {}, { actor: "test-user" })
+      repo.update(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" })
     ).rejects.toThrow(ValidationError);
   });
 
@@ -146,9 +148,8 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        inserted.uuid,
-        { name: undefined },
-        { actor: "test-user" }
+        { uuid: inserted.uuid, name: undefined },
+        { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(ValidationError);
   });
@@ -192,9 +193,8 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        inserted.uuid,
-        { non_existent_col: "value" } as any,
-        { actor: "test-user" }
+        { uuid: inserted.uuid, non_existent_col: "value" } as any,
+        { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(UnknownColumnError);
   });
@@ -217,6 +217,7 @@ describe("Repository — negative / failure paths", () => {
   it("deleteMany: empty array returns empty array (silent, no error)", async () => {
     const result = await repo.deleteMany(SimpleTestEntity, [], {
       actor: "test-user",
+      matchBy: "uuid",
     });
     expect(result).toEqual([]);
   });
@@ -224,6 +225,7 @@ describe("Repository — negative / failure paths", () => {
   it("updateMany: empty array returns empty array (silent, no error)", async () => {
     const result = await repo.updateMany(SimpleTestEntity, [], {
       actor: "test-user",
+      matchBy: "uuid",
     });
     expect(result).toEqual([]);
   });

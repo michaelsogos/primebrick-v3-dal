@@ -87,7 +87,7 @@ async function benchmark<T>(
 async function cleanup(entity: any, rows: { uuid: string }[]): Promise<void> {
   for (const r of rows) {
     try {
-      await repo.hardDelete(entity, r.uuid, { actor: "bench" });
+      await repo.hardDelete(entity, { uuid: r.uuid }, { actor: "bench", matchBy: "uuid" });
     } catch {
       // ignore — already deleted
     }
@@ -117,7 +117,7 @@ describe("updateMany benchmark — simple table", () => {
       }));
 
       await benchmark(`updateMany simple`, count, () =>
-        repo.updateMany(BenchSimpleEntity, updates, { actor: "bench" })
+        repo.updateMany(BenchSimpleEntity, updates, { actor: "bench", matchBy: "uuid" })
       );
 
       await cleanup(BenchSimpleEntity, rows);
@@ -178,7 +178,7 @@ describe("updateMany benchmark — primitives table", () => {
       }));
 
       await benchmark(`updateMany primitives`, count, () =>
-        repo.updateMany(BenchPrimitivesEntity, updates, { actor: "bench" })
+        repo.updateMany(BenchPrimitivesEntity, updates, { actor: "bench", matchBy: "uuid" })
       );
 
       await cleanup(BenchPrimitivesEntity, rows);

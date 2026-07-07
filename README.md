@@ -6,6 +6,8 @@ Type-driven PostgreSQL Data Access Layer for Primebrick v3.
 
 A shared library that provides a metadata-based, type-safe `Repository` for PostgreSQL. Entities are plain TS classes decorated with `@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`. The Repository reads entity metadata at runtime to generate parameterized SQL — no hand-written queries, no DTOs, snake_case everywhere.
 
+The `Dal` gateway class (`getDal()`) owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults (`statement_timeout`, `connectionTimeoutMillis`, `search_path`, `application_name`) to prevent connection throttling under high-async REST traffic. One singleton instance per process per database, reused across all requests — zero per-request allocation.
+
 ## Consumers
 
 - **primebrick-us-v3** (microservices) — Phase 2 (after DAL is released)
@@ -25,6 +27,7 @@ A shared library that provides a metadata-based, type-safe `Repository` for Post
 
 ```
 src/
+  dal/            Dal gateway — pool ownership, type parsers, getDal singleton, withClient
   meta/           entity metadata + decorators + column PG<->JS coercion
   query/          query DSL (filters, sorts, joins, projection) + streaming
   repository/     the Repository class — type-driven CRUD, finders, bulk ops
@@ -42,8 +45,10 @@ src/
 - **deletedRecords: "EXCLUDED"** by default — soft-deleted rows are excluded from finders unless `{ deletedRecords: "ONLY" }` or `"INCLUDED"`.
 - **TEMP TABLE strategy** for `updateMany` / `upsertMany` — `CREATE TEMP TABLE ... ON COMMIT DROP` → batched INSERT → single `UPDATE FROM` / `INSERT SELECT ON CONFLICT`. Atomic, SQL-injection safe, scales to millions of rows.
 - **Audit-aware ON CONFLICT** — `upsertMany` preserves `created_at`/`created_by` on conflict, stamps `updated_at`/`updated_by`/`version`.
-- **bigint via INT8_OID type parser** — `int8` columns return native `bigint`, not strings.
+- **bigint via INT8_OID type parser** — `int8` columns return native `bigint`, not strings. Registered by the `Dal` gateway (consumers no longer need to do this manually).
 - **Metadata-driven numeric handling** — `@Column({ dbType: "numeric", precision: 15, scale: 2 })` returns `number` when safe, `string` when precision overflows `Number.MAX_SAFE_INTEGER`.
+- **Dal gateway** — `getDal(config)` singleton owns the pool, registers type parsers, sets `statement_timeout`/`search_path`/`application_name` on every connection. `withClient(fn, { timeoutMs })` for transactions and per-call timeout override. `close()` for graceful shutdown.
+- **statement_timeout as anti-throttling** — default 30s per session. A slow query holding a connection starves the pool under burst traffic; the timeout guarantees connection release. Per-call override for bulk ops (`SET LOCAL` inside tx) and ad-hoc long queries (`withClient`).
 
 ## GitFlow
 

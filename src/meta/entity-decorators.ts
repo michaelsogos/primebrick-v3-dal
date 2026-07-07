@@ -94,6 +94,8 @@ export type ColumnOptions = {
 
 type ClassEntityMeta = {
   tableName?: string;
+  /** Optional schema override — if set, takes precedence over the Dal's default schema. */
+  tableSchema?: string;
   columns: Map<PropertyKey, ColumnRegistration>;
   /** `@IsNotColumn()` — excluded from persistence meta & future DAL builders */
   notColumnKeys: Set<PropertyKey>;
@@ -156,10 +158,11 @@ export function syncImplicitEntityColumns(ctor: Function): void {
  * Maps the class to a DB table. Optional argument overrides the table name;
  * if omitted, the table name equals the class name.
  */
-export function Entity(tableName?: string) {
+export function Entity(tableName?: string, schema?: string) {
   return function <T extends Function>(ctor: T): T {
     const m = ensureMeta(ctor);
     m.tableName = tableName ?? ctor.name;
+    if (schema) m.tableSchema = schema;
     return ctor;
   };
 }
@@ -340,6 +343,23 @@ export function getTableName(ctor: EntityClass): string {
   return META.get(ctor as Function)!.tableName!;
 }
 
+/**
+ * Returns a schema-qualified table reference for SQL generation.
+ * When the entity has an explicit @Entity("table", "schema") override,
+ * returns `"schema"."table"`. Otherwise returns just `"table"` (relies on search_path).
+ */
+export function getQualifiedTableName(ctor: EntityClass): string {
+  if (!isEntityClass(ctor)) {
+    throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
+  }
+  const m = META.get(ctor as Function)!;
+  const table = m.tableName!;
+  if (m.tableSchema) {
+    return `"${m.tableSchema}"."${table}"`;
+  }
+  return `"${table}"`;
+}
+
 /** Logical entity name: the class name (e.g. `CustomerEntity`). */
 export function getEntityName(ctor: EntityClass): string {
   if (!isEntityClass(ctor)) {
@@ -431,7 +451,10 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
   }
   const fn = ctor as Function;
   syncImplicitEntityColumns(fn);
-  const tableName = META.get(fn)!.tableName!;
+  const classMeta = META.get(fn)!;
+  // Entity-level schema override takes precedence over the caller-provided default
+  const effectiveSchema = classMeta.tableSchema ?? tableSchema;
+  const tableName = classMeta.tableName!;
   const entityClassName = fn.name;
   const columns: EntityPersistenceMeta["columns"] = {};
   const colMap = META.get(fn)!.columns;
@@ -484,12 +507,11 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     columns[reg.sqlName] = entry;
   }
-  const classMeta = META.get(fn);
   return {
     entityClassName,
-    tableSchema,
+    tableSchema: effectiveSchema,
     tableName,
-    isAuditable: classMeta?.isAuditable,
+    isAuditable: classMeta.isAuditable,
     columns,
   };
 }

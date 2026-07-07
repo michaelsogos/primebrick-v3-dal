@@ -41,22 +41,42 @@ export type PaginatedEntity<TEntity> = {
   total_records: number;
 };
 
-/** Options for write ops (add, upsert, update, delete, restore, hardDelete). */
+/** Base write options — no actor (for non-auditable entities). */
 export type WriteOptions = {
-  /** The actor performing the operation (stamped into created_by/updated_by/deleted_by). */
-  actor: string;
   /** Optional audit port — if not injected, audit is silently skipped. */
   audit?: AuditPort;
   /** Optional logger port — if not injected, errors are swallowed. */
   logger?: LoggerPort;
 };
 
-/** Options for bulk ops (addMany, upsertMany, deleteMany, updateMany). */
-export type BulkOptions = WriteOptions & {
-  /** Conflict target column for upsertMany (defaults to "uuid"). */
-  conflictTarget?: string;
+/** Write options for auditable entities — actor is required. */
+export type AuditableWriteOptions = WriteOptions & {
+  /** The actor performing the operation (stamped into created_by/updated_by/deleted_by). */
+  actor: string;
+};
+
+/** Options for match-by operations (update, delete, restore, hardDelete). */
+export type MatchByOptions<TEntity> = {
+  /**
+   * Which entity property to use as the WHERE left operand.
+   * Defaults to the @Key() column.
+   * TypeScript guardrail: only accepts actual properties of TEntity.
+   */
+  matchBy?: keyof TEntity & string;
+};
+
+/** Bulk operation options (batch size, timeout). */
+export type BulkOptions = {
   /** Batch size for temp table loading (default: auto-calculated from column count). */
   batchSize?: number;
+  /** Per-statement timeout in ms. */
+  timeoutMs?: number;
+};
+
+/** Upsert-specific options. */
+export type UpsertOptions = {
+  /** Conflict target column for upsert/upsertMany (defaults to the @Key() column). */
+  conflictTarget?: string;
 };
 
 /**
