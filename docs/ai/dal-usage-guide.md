@@ -1,9 +1,10 @@
 # DAL Usage Guide — @primebrick/dal-pg
 
-Complete method-by-method reference for the Repository API.
+Complete method-by-method reference for the Dal gateway and Repository API.
 
 ## Table of contents
 
+0. [Dal gateway (getDal)](#dal-gateway-getdal)
 1. [Finders](#finders)
 2. [Write operations](#write-operations)
 3. [Bulk operations](#bulk-operations)
@@ -12,6 +13,123 @@ Complete method-by-method reference for the Repository API.
 6. [Entity decorators](#entity-decorators)
 7. [Errors](#errors)
 8. [Audit ports](#audit-ports)
+
+---
+
+## Dal gateway (getDal)
+
+The `Dal` class is the high-level gateway that owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults. It delegates all CRUD/bulk/finder methods to an internal `Repository(pool)` instance. Consumers should use `getDal()` (singleton) as the primary entry point.
+
+### `getDal(config?)` — singleton factory
+
+Returns the process-wide singleton `Dal` instance. Creates it on first call.
+
+```typescript
+import { getDal } from "@primebrick/dal-pg";
+
+// once at startup:
+const dal = getDal({
+  connectionString: process.env.DATABASE_URL!,
+  schema: "emailsender",
+  max: 10,
+  statementTimeoutMs: 30000,
+  applicationName: "primebrick-emailsender",
+});
+
+// per request — no allocation, reuse the singleton:
+const config = await dal.find(EmailConfigEntity, null, { ... });
+
+// graceful shutdown (consumer calls this from signal handlers — see below):
+await dal.close(); // close(timeoutMs?) — default 10s timeout
+```
+
+**DalConfig options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `connectionString` | (required) | PostgreSQL connection string |
+| `schema` | undefined | Schema to set as `search_path` on every connection |
+| `max` | `10` | Maximum pool size. Formula: `max ≤ (PG max_connections − reserved) / service_instances` |
+| `statementTimeoutMs` | `30000` | Per-statement timeout (ms). The full wall-clock: command arrival → server completion → all rows transmitted. Set to `0` to disable. |
+| `connectionTimeoutMillis` | `5000` | Time to wait when acquiring a connection before erroring (fail fast) |
+| `idleTimeoutMillis` | `30000` | How long an idle connection is kept before closing |
+| `maxUses` | undefined | Recycle connections after N uses (optional) |
+| `applicationName` | `"primebrick-dal"` | PG-side observability — shows up in `pg_stat_activity` |
+
+**Singleton rules:**
+- First call: requires `config`, creates the singleton.
+- Subsequent calls with no config: returns the existing instance.
+- Subsequent calls with same `connectionString`: returns the existing instance.
+- Subsequent calls with different `connectionString`: throws.
+- For multi-DB: use `new Dal(config)` directly (bypasses the singleton).
+- `resetDal()` closes and clears the singleton (for tests).
+
+### `dal.withClient(fn, options?)` — transactions & per-call timeout
+
+Acquires a dedicated client from the pool, optionally sets a per-connection `statement_timeout`, runs `fn(client)`, and releases the client (resetting the timeout).
+
+```typescript
+// Transaction:
+await dal.withClient(async (client) => {
+  await client.query("BEGIN");
+  // ... operations ...
+  await client.query("COMMIT");
+});
+
+// Repository backed by the client (for tx-participating DAL ops):
+import { Repository } from "@primebrick/dal-pg";
+await dal.withClient(async (client) => {
+  const repo = new Repository(client);
+  await client.query("BEGIN");
+  await repo.add(MyEntity, { ... }, { actor: "tx" });
+  await client.query("COMMIT");
+});
+
+// Per-call timeout override (for ad-hoc long queries):
+await dal.withClient(
+  async (client) => {
+    await client.query("SELECT * FROM large_table");
+  },
+  { timeoutMs: 120000 }, // 2 minutes for this one query
+);
+```
+
+### `dal.close(timeoutMs?)` — graceful shutdown
+
+Drains the pool (`pool.end()`) with a timeout deadline.
+
+- **Re-entrant**: concurrent calls return immediately (the first call wins).
+- **Timeout**: if `pool.end()` doesn't complete within `timeoutMs`, the promise resolves anyway (default: 10000ms). The pool is left to be reaped by the OS/TCP stack.
+- **Error containment**: if `pool.end()` throws, the error is logged and swallowed — the caller (typically a signal handler) cannot do anything useful with it.
+- **No process handlers**: the library does NOT install `process.on(...)` handlers. Process lifecycle (signals, crash handlers, Sentry) is a consumer-side concern. The consumer closes ALL long-lived resources (DAL pool, NATS, HTTP server) together.
+
+```typescript
+// consumer-side shutdown (NOT in the library — the consumer owns process lifecycle):
+async function shutdown(reason: string, code: number) {
+  await Promise.allSettled([
+    dal.close(),               // drains pg.Pool (10s internal timeout)
+    natsConnection?.close(),   // drains NATS
+  ]);
+  process.exit(code);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM", 0));
+process.on("SIGINT",  () => shutdown("SIGINT", 130));
+```
+
+### `dal.getPool()` — raw pool access
+
+Exposes the underlying `pg.Pool` for tooling that needs raw access (e.g. schema snapshot/migration tools). Not for normal application code.
+
+### `statement_timeout` semantics
+
+`statement_timeout` measures the **full wall-clock** from command arrival to server completion, **including transmitting all result rows to the client** (verified from PostgreSQL docs + pgsql-hackers). It is NOT preparation time only.
+
+**Impact per operation:**
+- Normal CRUD: 30s is plenty.
+- Bulk ops (`addMany`, `upsertMany`, `updateMany`): use `options.timeoutMs` to override per-call (emits `SET LOCAL statement_timeout` inside the transaction).
+- `findAll` non-streamed on large sets: **HIGH risk** — the entire result is one statement. Use `stream: true` instead.
+- `findAll` streamed (`stream: true`): **safe** — cursor `FETCH` per batch, each bounded by the session default individually.
 
 ---
 

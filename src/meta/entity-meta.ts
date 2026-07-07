@@ -17,6 +17,7 @@ export {
   SynchronizableFieldType,
   isEntityClass,
   getTableName,
+  getQualifiedTableName,
   getEntityName,
   getColumnName,
   getPrimaryKeyColumn,

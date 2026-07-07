@@ -5,7 +5,7 @@ import type { EntityClass } from "../meta/entity-meta.js";
 import {
   getColumnName,
   getEntityPersistenceMeta,
-  getTableName,
+  getQualifiedTableName,
   getPrimaryKeyColumn,
   syncImplicitEntityColumns,
 } from "../meta/entity-meta.js";
@@ -29,12 +29,16 @@ import type {
   FindByUUIDOptions,
   PaginatedEntity,
   WriteOptions,
+  AuditableWriteOptions,
+  MatchByOptions,
   BulkOptions,
+  UpsertOptions,
   AuditPort,
   LoggerPort,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
 import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError } from "../errors/errors.js";
+import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -74,16 +78,6 @@ function calculateDeltaWithForcedFields(
   return delta;
 }
 
-/** Find the uuid column from entity metadata. */
-function findUuidColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
-  sqlName: string;
-  propertyKey: string;
-} | null {
-  const col = Object.values(meta.columns).find((c) => c.sqlName === "uuid" || c.isUnique);
-  if (!col) return null;
-  return { sqlName: col.sqlName, propertyKey: col.propertyKey };
-}
-
 /** Find the PK column from entity metadata. */
 function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
   sqlName: string;
@@ -92,6 +86,57 @@ function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
   const col = Object.values(meta.columns).find((c) => c.isKey);
   if (!col) return null;
   return { sqlName: col.sqlName, propertyKey: col.propertyKey };
+}
+
+/**
+ * Resolve which column to use as the WHERE left operand for write ops.
+ * Priority: options.matchBy (property key) → @Key() column → throw.
+ */
+function resolveMatchColumn(
+  entity: EntityClass,
+  meta: ReturnType<typeof getEntityPersistenceMeta>,
+  matchBy: string | undefined,
+): { sqlName: string; propertyKey: string } {
+  if (matchBy) {
+    const col = Object.values(meta.columns).find((c) => c.propertyKey === matchBy);
+    if (!col) {
+      throw new UnknownColumnError(
+        `matchBy: property '${matchBy}' is not a column of ${meta.entityClassName}`,
+      );
+    }
+    return { sqlName: col.sqlName, propertyKey: col.propertyKey };
+  }
+  const pk = findPkColumn(meta);
+  if (!pk) {
+    throw new Error(
+      `Entity ${meta.entityClassName} has no @Key() column — specify matchBy to choose the WHERE column`,
+    );
+  }
+  return pk;
+}
+
+/**
+ * Extract the WHERE value from the updates object and remove it from the SET clause.
+ * Used by `update` — the matchBy property serves double duty (WHERE key + not a SET column).
+ */
+function extractMatchValue(
+  updates: Record<string, unknown>,
+  matchPropertyKey: string,
+): { matchValue: unknown; remainingUpdates: Record<string, unknown> } {
+  const matchValue = updates[matchPropertyKey];
+  if (matchValue === undefined) {
+    throw new ValidationError(
+      `write: missing match value — property '${matchPropertyKey}' must be present in the updates/match object`,
+    );
+  }
+  const remainingUpdates = { ...updates };
+  delete remainingUpdates[matchPropertyKey];
+  return { matchValue, remainingUpdates };
+}
+
+/** Runtime check: does this entity metadata have auditable columns? */
+function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMeta>): boolean {
+  return meta.isAuditable === true || Object.values(meta.columns).some((c) => c.isAuditable);
 }
 
 /** Auto-calculate safe batch size to stay under PG's 65535 parameter limit. */
@@ -137,7 +182,7 @@ export class Repository {
   ): Promise<TResult | null> {
     const throwIfNotFound = options?.throwIfNotFound ?? true;
     const meta = getEntityPersistenceMeta(entity);
-    const uuidCol = findUuidColumn(meta);
+    const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
     if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
 
     const q = buildSelectQuery({
@@ -252,22 +297,35 @@ export class Repository {
   }
 
   async count(entity: EntityClass): Promise<number> {
-    const table = getTableName(entity);
-    const r = await this.db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM "${table}"`, []);
+    const table = getQualifiedTableName(entity);
+    const r = await this.db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ${table}`, []);
     return Number(r.rows?.[0]?.n ?? 0);
   }
 
   // ─── Write ops ─────────────────────────────────────────────────────────────
 
+  /** Add — auditable entity (actor required). */
+  async add<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    row: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions,
+  ): Promise<TEntity>;
+  /** Add — non-auditable entity (actor rejected). */
+  async add<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    row: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions,
+  ): Promise<TEntity>;
   async add<TEntity extends object>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions
+    options: WriteOptions | AuditableWriteOptions,
   ): Promise<TEntity> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
+    const table = getQualifiedTableName(entity);
     const pk = findPkColumn(meta);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
 
     const rec = row as Record<string, unknown>;
     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
@@ -306,7 +364,7 @@ export class Repository {
     }
 
     // Add audit stamping
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const createdAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_AT);
       const createdByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_BY);
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
@@ -319,7 +377,7 @@ export class Repository {
       }
       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
         colsSql.push(quoteIdent(createdByCol.sqlName));
-        values.push(options.actor);
+        values.push(actor);
         params.push(`$${values.length}`);
       }
       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
@@ -329,21 +387,20 @@ export class Repository {
       }
       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedByCol.sqlName));
-        values.push(options.actor);
+        values.push(actor);
         params.push(`$${values.length}`);
       }
     }
 
-    const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) RETURNING *`;
+    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) RETURNING *`;
     const result = await this.db.query(sql, values);
     const inserted = result.rows?.[0] as TEntity;
 
     // Write audit if port is injected
-    if (isAuditable && options.audit && pk) {
+    if (auditable && options.audit && pk && actor !== undefined) {
       const entityId = (inserted as any)[pk.propertyKey] as number;
-      const uuidCol = findUuidColumn(meta);
-      const entityUuid = uuidCol ? (inserted as any)[uuidCol.propertyKey] as string : "";
-      const delta = calculateDelta({}, { ...rec, updated_at: now, updated_by: options.actor });
+      const entityUuid = (inserted as any)["uuid"] as string | undefined ?? "";
+      const delta = calculateDelta({}, { ...rec, updated_at: now, updated_by: actor });
       options.audit.writeAudit({
         entityClassName: meta.entityClassName,
         tableName: meta.tableName,
@@ -352,7 +409,7 @@ export class Repository {
         action: AuditAction.INSERT,
         changedAt: now,
         version: 1,
-        changedBy: options.actor,
+        changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
@@ -360,16 +417,30 @@ export class Repository {
     return inserted;
   }
 
+  /** Upsert — auditable entity (actor required). */
+  async upsert<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    row: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions & UpsertOptions,
+  ): Promise<TEntity>;
+  /** Upsert — non-auditable entity (actor rejected). */
+  async upsert<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    row: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions & UpsertOptions,
+  ): Promise<TEntity>;
   async upsert<TEntity extends object>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions & { conflictTarget?: string }
+    options: (WriteOptions | AuditableWriteOptions) & UpsertOptions,
   ): Promise<TEntity> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
+    const table = getQualifiedTableName(entity);
     const pk = findPkColumn(meta);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
-    const conflictTarget = options.conflictTarget ?? "uuid";
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
+    // Default conflict target: @Key() column's SQL name (was "uuid")
+    const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
 
     const rec = row as Record<string, unknown>;
     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
@@ -405,7 +476,7 @@ export class Repository {
     }
 
     // Add audit stamping for INSERT path
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const createdAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_AT);
       const createdByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_BY);
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
@@ -418,7 +489,7 @@ export class Repository {
       }
       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
         colsSql.push(quoteIdent(createdByCol.sqlName));
-        values.push(options.actor);
+        values.push(actor);
         params.push(`$${values.length}`);
       }
       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
@@ -428,7 +499,7 @@ export class Repository {
       }
       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedByCol.sqlName));
-        values.push(options.actor);
+        values.push(actor);
         params.push(`$${values.length}`);
       }
     }
@@ -436,7 +507,7 @@ export class Repository {
     // Build ON CONFLICT DO UPDATE SET — audit-aware
     const updateCols: string[] = [];
     const actorParamIdx = values.length + 1;
-    values.push(options.actor);
+    values.push(actor);
     const nowParamIdx = values.length + 1;
     values.push(now);
 
@@ -451,43 +522,56 @@ export class Repository {
     }
 
     // Add audit stamping for UPDATE path
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
       if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = $${nowParamIdx}`);
       if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = $${actorParamIdx}`);
-      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(table)}.${quoteIdent(versionCol.sqlName)} + 1`);
+      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
     const conflictCol = quoteIdent(conflictTarget);
-    const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
+    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
 
     const result = await this.db.query(sql, values);
     return result.rows?.[0] as TEntity;
   }
 
+  /** Update — auditable entity (actor required). */
+  async update<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    updates: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
+  /** Update — non-auditable entity (actor rejected). */
+  async update<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    updates: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
   async update<TEntity extends object>(
     entity: EntityClass,
-    uuid: string,
     updates: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TEntity> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const pk = findPkColumn(meta);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const { matchValue, remainingUpdates } = extractMatchValue(
+      updates as Record<string, unknown>,
+      matchCol.propertyKey,
+    );
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
 
-    const updateRec = updates as Record<string, unknown>;
     const setClauses: string[] = [];
     const values: unknown[] = [];
     const now = new Date();
 
     // Add audit stamping
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
@@ -498,7 +582,7 @@ export class Repository {
       }
       if (updatedByCol) {
         setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
-        values.push(options.actor);
+        values.push(actor);
       }
       if (versionCol) {
         setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
@@ -507,7 +591,7 @@ export class Repository {
 
     // Add user-provided updates
     let userFieldCount = 0;
-    for (const [key, value] of Object.entries(updateRec)) {
+    for (const [key, value] of Object.entries(remainingUpdates)) {
       if (value === undefined) continue;
       const sqlName = getColumnName(entity, key);
       const colMeta = meta.columns[sqlName];
@@ -523,27 +607,41 @@ export class Repository {
       throw new ValidationError("update: no fields to update");
     }
 
-    const sql = `UPDATE ${quoteIdent(table)} SET ${setClauses.join(", ")} WHERE ${quoteIdent(uuidCol.sqlName)} = $${values.length + 1} RETURNING *`;
-    values.push(uuid);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${values.length + 1} RETURNING *`;
+    values.push(jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta)));
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
-      throw new NotFoundError(`No ${table} found with uuid ${uuid}`);
+      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
     return result.rows[0] as TEntity;
   }
 
+  /** Soft-delete — auditable+deletable entity (actor required). */
+  async delete<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
+  /** Soft-delete — deletable but non-auditable entity (actor rejected). */
+  async delete<TEntity extends object & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
   async delete<TEntity extends object>(
     entity: EntityClass,
-    uuid: string,
-    options: WriteOptions
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TEntity> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
 
@@ -561,42 +659,57 @@ export class Repository {
       setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
       values.push(now);
     }
-    if (deletedByCol) {
+    if (deletedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(options.actor);
+      values.push(actor);
     }
-    if (updatedAtCol) {
+    if (updatedAtCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
       values.push(now);
     }
-    if (updatedByCol) {
+    if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(options.actor);
+      values.push(actor);
     }
-    if (versionCol) {
+    if (versionCol && auditable) {
       setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
-    const sql = `UPDATE ${quoteIdent(table)} SET ${setClauses.join(", ")} WHERE ${quoteIdent(uuidCol.sqlName)} = $${values.length + 1} RETURNING *`;
-    values.push(uuid);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${values.length + 1} RETURNING *`;
+    values.push(jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta)));
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
-      throw new NotFoundError(`No ${table} found with uuid ${uuid}`);
+      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
     return result.rows[0] as TEntity;
   }
 
+  /** Restore — auditable+deletable entity (actor required). */
+  async restore<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
+  /** Restore — deletable but non-auditable entity (actor rejected). */
+  async restore<TEntity extends object & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity>;
   async restore<TEntity extends object>(
     entity: EntityClass,
-    uuid: string,
-    options: WriteOptions
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TEntity> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
 
@@ -616,59 +729,86 @@ export class Repository {
     if (deletedByCol) {
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
     }
-    if (updatedAtCol) {
+    if (updatedAtCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
       values.push(now);
     }
-    if (updatedByCol) {
+    if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(options.actor);
+      values.push(actor);
     }
-    if (versionCol) {
+    if (versionCol && auditable) {
       setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
-    const sql = `UPDATE ${quoteIdent(table)} SET ${setClauses.join(", ")} WHERE ${quoteIdent(uuidCol.sqlName)} = $${values.length + 1} RETURNING *`;
-    values.push(uuid);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${values.length + 1} RETURNING *`;
+    values.push(jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta)));
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
-      throw new NotFoundError(`No ${table} found with uuid ${uuid}`);
+      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
     return result.rows[0] as TEntity;
   }
 
+  /** Hard-delete — auditable entity (actor required for audit log). */
+  async hardDelete<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity>,
+  ): Promise<void>;
+  /** Hard-delete — non-auditable entity (actor rejected). */
+  async hardDelete<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: WriteOptions & MatchByOptions<TEntity>,
+  ): Promise<void>;
   async hardDelete<TEntity extends object>(
     entity: EntityClass,
-    uuid: string,
-    options: WriteOptions
+    match: Partial<Record<keyof TEntity & string, unknown>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<void> {
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
 
-    const sql = `DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(uuidCol.sqlName)} = $1`;
-    const result = await this.db.query(sql, [uuid]);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const sql = `DELETE FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
+    const result = await this.db.query(sql, [jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta))]);
 
     if (result.rowCount === 0) {
-      throw new NotFoundError(`No ${table} found with uuid ${uuid}`);
+      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
   }
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────
 
+  /** Bulk add — auditable entity (actor required). */
+  async addMany<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & BulkOptions,
+  ): Promise<TEntity[]>;
+  /** Bulk add — non-auditable entity (actor rejected). */
+  async addMany<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & BulkOptions,
+  ): Promise<TEntity[]>;
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & { batchSize?: number }
+    options: (WriteOptions | AuditableWriteOptions) & BulkOptions,
   ): Promise<TEntity[]> {
     if (rows.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
+    const table = getQualifiedTableName(entity);
     const pk = findPkColumn(meta);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
 
     const first = rows[0] as Record<string, unknown>;
     let keys = Object.keys(first).filter((k) => first[k] !== undefined);
@@ -690,7 +830,7 @@ export class Repository {
 
     // Add audit columns
     const auditCols: string[] = [];
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       for (const c of Object.values(meta.columns)) {
         if (c.isAuditable && !keys.includes(c.propertyKey)) {
           auditCols.push(c.propertyKey);
@@ -704,59 +844,97 @@ export class Repository {
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
     const results: TEntity[] = [];
 
-    for (let i = 0; i < rows.length; i += batchSz) {
-      const batch = rows.slice(i, i + batchSz);
-      const values: unknown[] = [];
-      const tuples: string[] = [];
+    // When timeoutMs is provided, wrap batched INSERTs in a transaction with
+    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
+    const useTx = options.timeoutMs !== undefined;
+    const client = useTx ? await this.getClient() : null;
+    try {
+      if (useTx && client) {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
+      const db = useTx && client ? client : this.db;
 
-      for (const row of batch) {
-        const rec = row as Record<string, unknown>;
-        const params: string[] = [];
-        for (const k of keys) {
-          const sqlName = getColumnName(entity, k);
-          const colMeta = meta.columns[sqlName];
-          const rawVal = rec[k] ?? null;
-          const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-          values.push(pgVal);
-          params.push(`$${values.length}`);
-        }
-        // Add audit stamping
-        for (const ak of auditCols) {
-          const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
-          if (!col) continue;
-          if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-            values.push(now);
-          } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
-            values.push(options.actor);
-          } else if (col.auditableType === AuditableFieldType.VERSION) {
-            values.push(1);
-          } else {
-            values.push(null);
+      for (let i = 0; i < rows.length; i += batchSz) {
+        const batch = rows.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+
+        for (const row of batch) {
+          const rec = row as Record<string, unknown>;
+          const params: string[] = [];
+          for (const k of keys) {
+            const sqlName = getColumnName(entity, k);
+            const colMeta = meta.columns[sqlName];
+            const rawVal = rec[k] ?? null;
+            const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+            values.push(pgVal);
+            params.push(`$${values.length}`);
           }
-          params.push(`$${values.length}`);
+          // Add audit stamping
+          for (const ak of auditCols) {
+            const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
+            if (!col) continue;
+            if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
+              values.push(now);
+            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              values.push(actor);
+            } else if (col.auditableType === AuditableFieldType.VERSION) {
+              values.push(1);
+            } else {
+              values.push(null);
+            }
+            params.push(`$${values.length}`);
+          }
+          tuples.push(`(${params.join(", ")})`);
         }
-        tuples.push(`(${params.join(", ")})`);
+
+        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} RETURNING *`;
+        const result = await db.query(sql, values);
+        results.push(...(result.rows as TEntity[]));
       }
 
-      const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} RETURNING *`;
-      const result = await this.db.query(sql, values);
-      results.push(...(result.rows as TEntity[]));
+      if (useTx && client) {
+        await client.query("COMMIT");
+      }
+    } catch (err) {
+      if (useTx && client) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (useTx && client) {
+        (client as any).release?.();
+      }
     }
 
     return results;
   }
 
+  /** Bulk upsert — auditable entity (actor required). */
+  async upsertMany<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & BulkOptions & UpsertOptions,
+  ): Promise<TEntity[]>;
+  /** Bulk upsert — non-auditable entity (actor rejected). */
+  async upsertMany<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & BulkOptions & UpsertOptions,
+  ): Promise<TEntity[]>;
   async upsertMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: BulkOptions
+    options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions
   ): Promise<TEntity[]> {
     if (rows.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
+    const table = getQualifiedTableName(entity);
     const pk = findPkColumn(meta);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
-    const conflictTarget = options.conflictTarget ?? "uuid";
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
+    const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
 
     // Find the conflict target's property key and check if it's a uuid column
     const conflictColMeta = Object.values(meta.columns).find((c) => c.sqlName === conflictTarget);
@@ -785,7 +963,7 @@ export class Repository {
 
     // Add audit columns for INSERT path
     const auditCols: string[] = [];
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       for (const c of Object.values(meta.columns)) {
         if (c.isAuditable && !keys.includes(c.propertyKey)) {
           auditCols.push(c.propertyKey);
@@ -807,78 +985,128 @@ export class Repository {
     }
 
     // Add audit stamping for UPDATE path
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
       if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = EXCLUDED.${quoteIdent(updatedAtCol.sqlName)}`);
       if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = EXCLUDED.${quoteIdent(updatedByCol.sqlName)}`);
-      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(table)}.${quoteIdent(versionCol.sqlName)} + 1`);
+      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
     const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
     const results: TEntity[] = [];
 
-    for (let i = 0; i < rows.length; i += batchSz) {
-      const batch = rows.slice(i, i + batchSz);
-      const values: unknown[] = [];
-      const tuples: string[] = [];
+    // When timeoutMs is provided, wrap batched upserts in a transaction with
+    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
+    const useTx = options.timeoutMs !== undefined;
+    const client = useTx ? await this.getClient() : null;
+    try {
+      if (useTx && client) {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
+      const db = useTx && client ? client : this.db;
 
-      for (const row of batch) {
-        const rec = row as Record<string, unknown>;
-        const params: string[] = [];
-        for (const k of keys) {
-          const sqlName = getColumnName(entity, k);
-          const colMeta = meta.columns[sqlName];
-          const rawVal = rec[k] ?? null;
-          const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-          values.push(pgVal);
-          // For uuid conflict target, use COALESCE so missing uuids get generated
-          if (k === conflictPropKey && conflictIsUuid) {
-            params.push(`COALESCE($${values.length}, gen_random_uuid())`);
-          } else {
+      for (let i = 0; i < rows.length; i += batchSz) {
+        const batch = rows.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+
+        for (const row of batch) {
+          const rec = row as Record<string, unknown>;
+          const params: string[] = [];
+          for (const k of keys) {
+            const sqlName = getColumnName(entity, k);
+            const colMeta = meta.columns[sqlName];
+            const rawVal = rec[k] ?? null;
+            const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+            values.push(pgVal);
+            // For uuid conflict target, use COALESCE so missing uuids get generated
+            if (k === conflictPropKey && conflictIsUuid) {
+              params.push(`COALESCE($${values.length}, gen_random_uuid())`);
+            } else {
+              params.push(`$${values.length}`);
+            }
+          }
+          for (const ak of auditCols) {
+            const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
+            if (!col) continue;
+            if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
+              values.push(now);
+            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              values.push(actor);
+            } else if (col.auditableType === AuditableFieldType.VERSION) {
+              values.push(1);
+            } else {
+              values.push(null);
+            }
             params.push(`$${values.length}`);
           }
+          tuples.push(`(${params.join(", ")})`);
         }
-        for (const ak of auditCols) {
-          const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
-          if (!col) continue;
-          if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-            values.push(now);
-          } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
-            values.push(options.actor);
-          } else if (col.auditableType === AuditableFieldType.VERSION) {
-            values.push(1);
-          } else {
-            values.push(null);
-          }
-          params.push(`$${values.length}`);
-        }
-        tuples.push(`(${params.join(", ")})`);
+
+        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
+        const result = await db.query(sql, values);
+        results.push(...(result.rows as TEntity[]));
       }
 
-      const sql = `INSERT INTO ${quoteIdent(table)} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
-      const result = await this.db.query(sql, values);
-      results.push(...(result.rows as TEntity[]));
+      if (useTx && client) {
+        await client.query("COMMIT");
+      }
+    } catch (err) {
+      if (useTx && client) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (useTx && client) {
+        (client as any).release?.();
+      }
     }
 
     return results;
   }
 
+  /** Bulk soft-delete — auditable+deletable entity (actor required). */
+  async deleteMany<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity[]>;
+  /** Bulk soft-delete — deletable but non-auditable entity (actor rejected). */
+  async deleteMany<TEntity extends object & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & MatchByOptions<TEntity>,
+  ): Promise<TEntity[]>;
   async deleteMany<TEntity extends object>(
     entity: EntityClass,
-    uuids: string[],
-    options: WriteOptions
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TEntity[]> {
-    if (uuids.length === 0) return [];
+    if (matches.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
+
+    // Extract match values from each match object
+    const matchValues: unknown[] = matches.map((m) => {
+      const v = (m as Record<string, unknown>)[matchCol.propertyKey];
+      if (v === undefined) {
+        throw new ValidationError(
+          `deleteMany: missing match value — property '${matchCol.propertyKey}' must be present in every match object`,
+        );
+      }
+      return jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta));
+    });
 
     const now = new Date();
     const setClauses: string[] = [];
@@ -894,46 +1122,59 @@ export class Repository {
       setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
       values.push(now);
     }
-    if (deletedByCol) {
+    if (deletedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(options.actor);
+      values.push(actor);
     }
-    if (updatedAtCol) {
+    if (updatedAtCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
       values.push(now);
     }
-    if (updatedByCol) {
+    if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(options.actor);
+      values.push(actor);
     }
-    if (versionCol) {
+    if (versionCol && auditable) {
       setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
-    values.push(uuids);
-    const sql = `UPDATE ${quoteIdent(table)} SET ${setClauses.join(", ")} WHERE ${quoteIdent(uuidCol.sqlName)} = ANY($${values.length}::uuid[]) RETURNING *`;
+    const pgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
+    values.push(matchValues);
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = ANY($${values.length}::${pgType}[]) RETURNING *`;
     const result = await this.db.query(sql, values);
     return result.rows as TEntity[];
   }
 
+  /** Bulk update — auditable entity (actor required). */
+  async updateMany<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<TEntity[]>;
+  /** Bulk update — non-auditable entity (actor rejected). */
+  async updateMany<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<TEntity[]>;
   async updateMany<TEntity extends object>(
     entity: EntityClass,
-    updates: Array<{ uuid: string } & Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & { batchSize?: number }
+    updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
   ): Promise<TEntity[]> {
     if (updates.length === 0) return [];
     const meta = getEntityPersistenceMeta(entity);
-    const table = getTableName(entity);
-    const uuidCol = findUuidColumn(meta);
-    if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
-    const isAuditable = meta.isAuditable || Object.values(meta.columns).some((c) => c.isAuditable);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
 
-    // Determine the update columns from the first row (excluding uuid)
+    // Determine the update columns from the first row (excluding the match key)
     const first = updates[0] as Record<string, unknown>;
-    const updateKeys = Object.keys(first).filter((k) => k !== "uuid" && first[k] !== undefined);
+    const updateKeys = Object.keys(first).filter((k) => k !== matchCol.propertyKey && first[k] !== undefined);
 
     if (updateKeys.length === 0) {
-      throw new ValidationError("updateMany: no columns to update (only uuid provided?)");
+      throw new ValidationError(`updateMany: no columns to update (only match key '${matchCol.propertyKey}' provided?)`);
     }
 
     for (const k of updateKeys) {
@@ -945,26 +1186,28 @@ export class Repository {
 
     // Add audit columns for the SET clause
     const auditSetCols: string[] = [];
-    if (isAuditable) {
+    if (auditable && actor !== undefined) {
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
       if (updatedAtCol) auditSetCols.push(`${quoteIdent(updatedAtCol.sqlName)} = tmp.${quoteIdent(updatedAtCol.sqlName)}`);
       if (updatedByCol) auditSetCols.push(`${quoteIdent(updatedByCol.sqlName)} = tmp.${quoteIdent(updatedByCol.sqlName)}`);
-      if (versionCol) auditSetCols.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(table)}.${quoteIdent(versionCol.sqlName)} + 1`);
+      if (versionCol) auditSetCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
     // TEMP TABLE strategy: CREATE TEMP TABLE → batch INSERT → UPDATE FROM → COMMIT
-    // We need a transaction for ON COMMIT DROP
     const client = await this.getClient();
     try {
       await client.query("BEGIN");
+      if (options.timeoutMs !== undefined) {
+        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
+      }
 
       // 1. Create temp table — columns must include PG types
       const tmpColDefs: string[] = [];
-      const uuidColMeta = Object.values(meta.columns).find((c) => c.propertyKey === uuidCol.propertyKey);
-      const uuidPgType = uuidColMeta ? effectivePgStorageType(columnHintsFromMetaColumn(uuidColMeta)) : "uuid";
-      tmpColDefs.push(`${quoteIdent(uuidCol.sqlName)} ${uuidPgType}`);
+      const matchColMeta = Object.values(meta.columns).find((c) => c.propertyKey === matchCol.propertyKey);
+      const matchPgType = matchColMeta ? effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta)) : "text";
+      tmpColDefs.push(`${quoteIdent(matchCol.sqlName)} ${matchPgType}`);
 
       for (const k of updateKeys) {
         const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
@@ -972,7 +1215,7 @@ export class Repository {
         tmpColDefs.push(`${quoteIdent(getColumnName(entity, k))} ${pgType}`);
       }
 
-      if (isAuditable) {
+      if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
         const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
         if (updatedAtCol) {
@@ -990,8 +1233,8 @@ export class Repository {
 
       // 2. Batch INSERT into temp table
       const now = new Date();
-      const allTmpKeys = [uuidCol.propertyKey, ...updateKeys];
-      if (isAuditable) {
+      const allTmpKeys = [matchCol.propertyKey, ...updateKeys];
+      if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
         const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
         if (updatedAtCol) allTmpKeys.push(updatedAtCol.propertyKey);
@@ -1010,14 +1253,20 @@ export class Repository {
           for (const k of allTmpKeys) {
             const sqlName = getColumnName(entity, k);
             const colMeta = meta.columns[sqlName];
-            if (k === uuidCol.propertyKey) {
-              values.push(rec["uuid"]);
-            } else if (isAuditable) {
+            if (k === matchCol.propertyKey) {
+              const v = rec[matchCol.propertyKey];
+              if (v === undefined) {
+                throw new ValidationError(
+                  `updateMany: missing match value — property '${matchCol.propertyKey}' must be present in every row`,
+                );
+              }
+              values.push(jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta!)));
+            } else if (auditable && actor !== undefined) {
               const col = Object.values(meta.columns).find((c) => c.propertyKey === k);
               if (col?.auditableType === AuditableFieldType.UPDATED_AT) {
                 values.push(now);
               } else if (col?.auditableType === AuditableFieldType.UPDATED_BY) {
-                values.push(options.actor);
+                values.push(actor);
               } else {
                 const rawVal = rec[k] ?? null;
                 const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
@@ -1044,7 +1293,7 @@ export class Repository {
       });
       setCols.push(...auditSetCols);
 
-      const updateSql = `UPDATE ${quoteIdent(table)} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${quoteIdent(table)}.${quoteIdent(uuidCol.sqlName)} = tmp.${quoteIdent(uuidCol.sqlName)} RETURNING *`;
+      const updateSql = `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)} RETURNING *`;
       const result = await client.query(updateSql);
 
       await client.query("COMMIT");

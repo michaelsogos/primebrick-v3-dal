@@ -152,9 +152,14 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     });
     const uuids = inserted.map((r) => r.uuid);
 
-    const deleted = await repo.deleteMany(SimpleTestEntity, uuids, {
-      actor: "bulk-deleter",
-    });
+    const deleted = await repo.deleteMany(
+      SimpleTestEntity,
+      uuids.map((uuid) => ({ uuid })),
+      {
+        actor: "bulk-deleter",
+        matchBy: "uuid",
+      }
+    );
 
     expect(deleted).toHaveLength(5);
     for (const row of deleted) {
@@ -166,6 +171,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   it("deleteMany: returns empty array for empty input", async () => {
     const deleted = await repo.deleteMany(SimpleTestEntity, [], {
       actor: "bulk-deleter",
+      matchBy: "uuid",
     });
     expect(deleted).toEqual([]);
   });
@@ -185,6 +191,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
     const updated = await repo.updateMany(SimpleTestEntity, updates, {
       actor: "bulk-updater",
+      matchBy: "uuid",
     });
 
     expect(updated).toHaveLength(5);
@@ -203,13 +210,14 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     const updates = inserted.map((r) => ({ uuid: r.uuid }));
 
     await expect(
-      repo.updateMany(SimpleTestEntity, updates, { actor: "bulk-updater" })
+      repo.updateMany(SimpleTestEntity, updates, { actor: "bulk-updater", matchBy: "uuid" })
     ).rejects.toThrow(ValidationError);
   });
 
   it("updateMany: returns empty array for empty input", async () => {
     const updated = await repo.updateMany(SimpleTestEntity, [], {
       actor: "bulk-updater",
+      matchBy: "uuid",
     });
     expect(updated).toEqual([]);
   });
@@ -229,6 +237,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
     const updated = await repo.updateMany(SimpleTestEntity, updates, {
       actor: "bulk-updater",
+      matchBy: "uuid",
     });
 
     expect(updated).toHaveLength(100);
