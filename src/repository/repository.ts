@@ -177,7 +177,7 @@ export class Repository {
     fields?: FieldProjector[] | null,
     options?: FindOptions
   ): Promise<TResult | null> {
-    const throwIfNotFound = (options as any)?.throwIfNotFound ?? true;
+    const throwIfNotFound = options?.throwIfNotFound ?? true;
     const meta = getEntityPersistenceMeta(entity);
 
     const q = buildSelectQuery({

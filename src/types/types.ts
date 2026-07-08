@@ -21,6 +21,8 @@ export type FindByIdOptions = {
 
 /** Options for `find`, `findAll`, `findByPage`. */
 export type FindOptions = {
+  /** If true (default for `find`), throw `NotFoundError` when rowcount !== 1. Set to false to return null. */
+  throwIfNotFound?: boolean;
   deletedRecords?: WithDeletedRecords;
   filters?: FilterExpr[];
   sorting?: SortingExpr[];
