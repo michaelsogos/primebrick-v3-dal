@@ -37,7 +37,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     );
 
     expect(inserted).toBeDefined();
-    expect(inserted.id).toBeGreaterThan(0);
+    expect(inserted.id).toBeGreaterThan(0n);
     expect(inserted.uuid).toBeDefined();
     expect(inserted.name).toBe("Test Item");
     expect(inserted.description).toBe("A test");
@@ -203,11 +203,11 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     const page1 = await repo.findByPage(SimpleTestEntity, 1, 10);
     expect(page1.entities).toHaveLength(10);
-    expect(page1.total_records).toBe(15);
+    expect(page1.total_records).toBe(15n);
 
     const page2 = await repo.findByPage(SimpleTestEntity, 2, 10);
     expect(page2.entities).toHaveLength(5);
-    expect(page2.total_records).toBe(15);
+    expect(page2.total_records).toBe(15n);
   });
 
   it("findByPage: throws ValidationError for page < 1", async () => {
@@ -229,7 +229,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     await repo.add(SimpleTestEntity, { name: "B" }, { actor: "test-user" });
 
     const c = await repo.count(SimpleTestEntity);
-    expect(c).toBe(2);
+    expect(c).toBe(2n);
   });
 
   // ─── update ───────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ import {
 @AuditTrail()
 export class TypeTestEntity {
   @Key()
-  id!: number;
+  id!: bigint;
 
   @Unique()
   uuid!: string;

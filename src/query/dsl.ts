@@ -101,8 +101,8 @@ export type JoinExpr = {
 };
 export const Join = {
   on(
-    right: FieldRef<any, any>,
     left: FieldRef<any, any>,
+    right: FieldRef<any, any>,
     type: SqlJoinType = "INNER",
     options?: { castRightTo?: string; castLeftTo?: string; alias?: string }
   ): JoinExpr {

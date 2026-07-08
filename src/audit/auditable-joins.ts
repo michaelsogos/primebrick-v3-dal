@@ -7,7 +7,9 @@
  */
 
 import type { EntityClass } from "../meta/entity-meta.js";
-import { Join, field } from "../query/dsl.js";
+import { getEntityPersistenceMeta } from "../meta/entity-meta.js";
+import { Join, field, Project } from "../query/dsl.js";
+import type { JoinExpr, FieldProjector } from "../query/dsl.js";
 
 /**
  * Standard join configuration for auditable entities.
@@ -101,4 +103,44 @@ export function buildAuditableJoinsSelective(
   }
 
   return joins;
+}
+
+/**
+ * Build LEFT JOIN + projections for audit trail entities (AuditLogEntity).
+ *
+ * Audit trail entities have a single `changed_by` column (not created_by/updated_by/deleted_by).
+ * This function joins the user entity to resolve `changed_by` into `display_name` and `idp_code`.
+ *
+ * Uses `castRightTo: "uuid"` + `castLeftTo: "uuid"` to trigger the regex guardrail
+ * (`changed_by ~ '^[0-9a-fA-F-]{36}$'`) automatically in renderJoins().
+ * This prevents errors when `changed_by` contains non-UUID values like "system".
+ *
+ * Distinct from buildAuditableJoins() which uses castRightTo: "text" (no guardrail, text = text).
+ * buildAuditTrailJoins() uses castRightTo: "uuid" + castLeftTo: "uuid" (guardrail + uuid = uuid).
+ *
+ * @param auditEntity - The audit trail entity class (e.g., AuditLogEntity)
+ * @param userEntity - The user entity class (e.g., UserProfileEntity) with uuid, display_name, idp_code columns
+ * @returns { joins, projections } — joins for the query, projections for display_name + idp_code
+ */
+export function buildAuditTrailJoins(
+  auditEntity: EntityClass,
+  userEntity: EntityClass,
+): { joins: JoinExpr[]; projections: FieldProjector[] } {
+  const meta = getEntityPersistenceMeta(auditEntity);
+  const changedByCol = meta.auditTrailChangedByColumn ?? "changed_by";
+
+  return {
+    joins: [
+      Join.on(
+        field(userEntity, "uuid" as any),
+        field(auditEntity, changedByCol as any),
+        "LEFT",
+        { castRightTo: "uuid", castLeftTo: "uuid", alias: "creator" },
+      ),
+    ],
+    projections: [
+      Project.expr("creator.display_name", "changed_by_display_name"),
+      Project.expr("creator.idp_code", "changed_by_idp_code"),
+    ],
+  };
 }

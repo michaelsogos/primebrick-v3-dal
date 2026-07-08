@@ -65,9 +65,49 @@ export async function setupTestSchema(): Promise<void> {
       updated_by  text NOT NULL DEFAULT '',
       version     integer NOT NULL DEFAULT 1,
       deleted_at  timestamptz,
-      deleted_by  text
+      deleted_by  text,
+      cloned_from uuid
     );
     CREATE UNIQUE INDEX IF NOT EXISTS dal_test_simple_uuid_idx ON dal_test_simple (uuid);
+  `);
+
+  // Add cloned_from column if it doesn't exist (for clone tests)
+  try {
+    await db.query(`ALTER TABLE dal_test_simple ADD COLUMN IF NOT EXISTS cloned_from uuid`);
+  } catch {
+    // Column already exists, ignore
+  }
+
+  // Audit table for dal_test_simple (for AuditLogEntity + tableName override tests)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_simple_audit (
+      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      entity_id   bigint NOT NULL,
+      entity_uuid uuid NOT NULL,
+      action      text NOT NULL,
+      changed_at  timestamptz NOT NULL DEFAULT now(),
+      changed_by  text NOT NULL DEFAULT '',
+      version     integer NOT NULL DEFAULT 1,
+      delta       jsonb
+    );
+  `);
+
+  // Test users table (for buildAuditTrailJoins tests)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_users (
+      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid        uuid NOT NULL DEFAULT gen_random_uuid(),
+      display_name text NOT NULL,
+      idp_code    text NOT NULL,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      created_by  text NOT NULL DEFAULT '',
+      updated_at  timestamptz NOT NULL DEFAULT now(),
+      updated_by  text NOT NULL DEFAULT '',
+      version     integer NOT NULL DEFAULT 1,
+      deleted_at  timestamptz,
+      deleted_by  text
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_users_uuid_idx ON dal_test_users (uuid);
   `);
 
   // Type-rich test table
@@ -158,7 +198,7 @@ export async function setupTestSchema(): Promise<void> {
 export async function truncateTestTables(): Promise<void> {
   const db = getTestPool();
   await db.query(`
-    TRUNCATE TABLE dal_test_simple, dal_test_types, test_bench_simple, test_bench_primitives RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives RESTART IDENTITY CASCADE;
   `);
 }
 
@@ -168,6 +208,8 @@ export async function truncateTestTables(): Promise<void> {
 export async function dropTestSchema(): Promise<void> {
   const db = getTestPool();
   await db.query(`
+    DROP TABLE IF EXISTS dal_test_simple_audit CASCADE;
+    DROP TABLE IF EXISTS dal_test_users CASCADE;
     DROP TABLE IF EXISTS dal_test_simple CASCADE;
     DROP TABLE IF EXISTS dal_test_types CASCADE;
     DROP TABLE IF EXISTS test_bench_simple CASCADE;

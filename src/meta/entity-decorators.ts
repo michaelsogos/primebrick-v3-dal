@@ -101,6 +101,10 @@ type ClassEntityMeta = {
   notColumnKeys: Set<PropertyKey>;
   /** `@AuditTrail()` — entity has audit trail table */
   isAuditable?: boolean;
+  /** `@AuditTrailEntity()` — entity IS an audit trail table (read-only audit log) */
+  isAuditTrailEntity?: boolean;
+  /** Column name used for the `changed_by` field in audit trail entities */
+  auditTrailChangedByColumn?: string;
 };
 
 const META = new WeakMap<Function, ClassEntityMeta>();
@@ -332,6 +336,20 @@ export function AuditTrail(): ClassDecorator {
   };
 }
 
+/**
+ * Marks a class as BEING an audit trail entity (e.g., AuditLogEntity).
+ * Distinct from @AuditTrail() which marks an entity as HAVING an audit trail.
+ * The changedByColumn specifies which property holds the actor (default: "changed_by").
+ */
+export function AuditTrailEntity(options?: { changedByColumn?: string }): ClassDecorator {
+  return function <T extends Function>(target: T): T {
+    const m = ensureMeta(target);
+    m.isAuditTrailEntity = true;
+    m.auditTrailChangedByColumn = options?.changedByColumn ?? "changed_by";
+    return target;
+  };
+}
+
 export function isEntityClass(value: unknown): value is EntityClass {
   return typeof value === "function" && META.get(value as Function)?.tableName !== undefined;
 }
@@ -413,6 +431,10 @@ export type EntityPersistenceMeta = {
   tableName: string;
   /** `@AuditTrail()` — entity has audit trail table */
   isAuditable?: boolean;
+  /** `@AuditTrailEntity()` — entity IS an audit trail table (read-only audit log) */
+  isAuditTrailEntity?: boolean;
+  /** Column name used for the `changed_by` field in audit trail entities */
+  auditTrailChangedByColumn?: string;
   columns: Record<
     string,
     {
@@ -512,6 +534,8 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
     tableSchema: effectiveSchema,
     tableName,
     isAuditable: classMeta.isAuditable,
+    isAuditTrailEntity: classMeta.isAuditTrailEntity,
+    auditTrailChangedByColumn: classMeta.auditTrailChangedByColumn,
     columns,
   };
 }

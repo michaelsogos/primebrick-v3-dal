@@ -7,20 +7,21 @@ import {
   Unique,
   AuditableField,
   DeletableField,
+  CloneField,
   AuditTrail,
   AuditableFieldType,
   DeletableFieldType,
 } from "../../src/index.js";
 
 /**
- * Simple test entity — minimal columns, auditable, soft-deletable.
- * Used for basic CRUD, finder, and bulk operation tests.
+ * Simple test entity — minimal columns, auditable, soft-deletable, clonable.
+ * Used for basic CRUD, finder, bulk, clone, and audit tests.
  */
 @Entity("dal_test_simple")
 @AuditTrail()
 export class SimpleTestEntity {
   @Key()
-  id!: number;
+  id!: bigint;
 
   @Unique()
   uuid!: string;
@@ -51,4 +52,7 @@ export class SimpleTestEntity {
 
   @DeletableField(DeletableFieldType.DELETED_BY)
   deleted_by?: string;
+
+  @CloneField()
+  cloned_from?: string;
 }

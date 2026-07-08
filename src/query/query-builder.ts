@@ -19,7 +19,11 @@ export function quoteIdent(ident: string): string {
   return `"${ident}"`;
 }
 
-function qTable(entity: EntityClass): string {
+function qTable(entity: EntityClass, tableNameOverride?: string): string {
+  if (tableNameOverride) {
+    const meta = getEntityPersistenceMeta(entity);
+    return `${quoteIdent(meta.tableSchema)}.${quoteIdent(tableNameOverride)}`;
+  }
   return getQualifiedTableName(entity);
 }
 
@@ -29,8 +33,8 @@ function qCol(entity: EntityClass, propertyKey: string): string {
   return quoteIdent(sql);
 }
 
-function qQualifiedField(entity: EntityClass, propertyKey: string): string {
-  return `${qTable(entity)}.${qCol(entity, propertyKey)}`;
+function qQualifiedField(entity: EntityClass, propertyKey: string, tableNameOverride?: string): string {
+  return `${qTable(entity, tableNameOverride)}.${qCol(entity, propertyKey)}`;
 }
 
 function hasDeletedAtColumn(entity: EntityClass): boolean {
@@ -46,7 +50,7 @@ class ParamWriter {
   }
 }
 
-function renderProjection(entity: EntityClass, fields?: FieldProjector[], joins?: JoinExpr[]): string[] {
+function renderProjection(entity: EntityClass, fields?: FieldProjector[], joins?: JoinExpr[], tableNameOverride?: string): string[] {
   const projections: string[] = [];
 
   if (fields && fields.length > 0) {
@@ -54,7 +58,9 @@ function renderProjection(entity: EntityClass, fields?: FieldProjector[], joins?
       if (f.kind === "expr") {
         return `${f.expr} AS ${quoteIdent(f.alias)}`;
       }
-      const t = qTable(f.field.entity);
+      // Use override table name only when the field's entity matches the base entity
+      const useOverride = tableNameOverride && f.field.entity === entity ? tableNameOverride : undefined;
+      const t = qTable(f.field.entity, useOverride);
       const c = qCol(f.field.entity, f.field.key);
       const alias = f.alias ?? getColumnName(f.field.entity, f.field.key);
       assertValidIdentPart(alias, "projectionAlias");
@@ -65,7 +71,7 @@ function renderProjection(entity: EntityClass, fields?: FieldProjector[], joins?
     const meta = getEntityPersistenceMeta(entity);
     for (const c of Object.values(meta.columns)) {
       assertValidIdentPart(c.propertyKey, "propertyKey");
-      projections.push(`${qTable(entity)}.${quoteIdent(c.sqlName)} AS ${quoteIdent(c.propertyKey)}`);
+      projections.push(`${qTable(entity, tableNameOverride)}.${quoteIdent(c.sqlName)} AS ${quoteIdent(c.propertyKey)}`);
     }
   }
 
@@ -88,17 +94,24 @@ function renderProjection(entity: EntityClass, fields?: FieldProjector[], joins?
   return projections;
 }
 
-function renderJoins(joins: JoinExpr[] | undefined): string[] {
+function renderJoins(joins: JoinExpr[] | undefined, baseEntity?: EntityClass, tableNameOverride?: string): string[] {
   if (!joins || joins.length === 0) return [];
   const out: string[] = [];
   for (const j of joins) {
-    const rightTable = qTable(j.right.entity);
+    // LEFT table (joined entity) should never use the override - it has its own table name
+    const leftOverride = undefined;
+    // Apply tableName override to the RIGHT table (the base entity being queried)
+    const rightOverride = tableNameOverride && j.right.entity === baseEntity ? tableNameOverride : undefined;
+    // The JOIN clause uses the LEFT entity's table name (the table we're joining)
+    const joinTable = qTable(j.left.entity, leftOverride);
     const aliasClause = j.alias ? ` AS ${quoteIdent(j.alias)}` : '';
 
     const rightColName = getColumnName(j.right.entity, j.right.key);
     assertValidIdentPart(rightColName, "columnName");
-    const rightTableRef = j.alias ? quoteIdent(j.alias) : qTable(j.right.entity);
+    // Right side should use the base table (not the alias) when it's the base entity
+    const rightTableRef = (j.right.entity === baseEntity) ? qTable(j.right.entity, rightOverride) : (j.alias ? quoteIdent(j.alias) : qTable(j.right.entity, rightOverride));
     let rightExpr = `${rightTableRef}.${quoteIdent(rightColName)}`;
+    let rightExprRaw = rightExpr; // Keep raw for regex guardrail
     let colMeta = null;
 
     if (j.options?.castRightTo) {
@@ -111,7 +124,9 @@ function renderJoins(joins: JoinExpr[] | undefined): string[] {
       }
     }
 
-    const leftExpr = qQualifiedField(j.left.entity, j.left.key);
+    // LEFT side should use the alias (not the table name) when an alias is provided
+    const leftTableRef = j.alias ? quoteIdent(j.alias) : qTable(j.left.entity, leftOverride);
+    const leftExpr = `${leftTableRef}.${quoteIdent(getColumnName(j.left.entity, j.left.key))}`;
     let leftExprWithCast = leftExpr;
 
     if (j.options?.castLeftTo) {
@@ -121,20 +136,22 @@ function renderJoins(joins: JoinExpr[] | undefined): string[] {
     let onExpr: string;
 
     if (j.options?.castRightTo === 'uuid' || (colMeta?.castInJoin === 'uuid')) {
-      onExpr = `${leftExpr} ~ '^[0-9a-fA-F-]{36}$' AND ${rightExpr} = ${leftExprWithCast}`;
+      // Use CASE to only cast when the value matches UUID pattern (short-circuit evaluation)
+      onExpr = `CASE WHEN ${rightExprRaw} ~ '^[0-9a-fA-F-]{36}$' THEN ${rightExpr} = ${leftExprWithCast} ELSE FALSE END`;
     } else {
       onExpr = `${rightExpr} = ${leftExprWithCast}`;
     }
 
-    out.push(`${j.type} JOIN ${rightTable}${aliasClause} ON ${onExpr}`);
+    out.push(`${j.type} JOIN ${joinTable}${aliasClause} ON ${onExpr}`);
   }
   return out;
 }
 
-function renderFilterExpr(w: ParamWriter, f: FilterExpr): string {
+function renderFilterExpr(w: ParamWriter, f: FilterExpr, baseEntity?: EntityClass, tableNameOverride?: string): string {
   switch (f.kind) {
     case "field_value": {
-      const baseLeft = qQualifiedField(f.left.entity, f.left.key);
+      const useOverride = tableNameOverride && f.left.entity === baseEntity ? tableNameOverride : undefined;
+      const baseLeft = qQualifiedField(f.left.entity, f.left.key, useOverride);
       const left =
         (f.op === "ILIKE" || f.op === "LIKE") && String(f.left.key) === "uuid"
           ? `CAST(${baseLeft} AS text)`
@@ -166,14 +183,16 @@ function renderFilterExpr(w: ParamWriter, f: FilterExpr): string {
       return `${left} ${f.op} ${w.add(f.right)}`;
     }
     case "field_field": {
-      const left = qQualifiedField(f.left.entity, f.left.key);
-      const right = qQualifiedField(f.right.entity, f.right.key);
+      const leftOverride = tableNameOverride && f.left.entity === baseEntity ? tableNameOverride : undefined;
+      const rightOverride = tableNameOverride && f.right.entity === baseEntity ? tableNameOverride : undefined;
+      const left = qQualifiedField(f.left.entity, f.left.key, leftOverride);
+      const right = qQualifiedField(f.right.entity, f.right.key, rightOverride);
       return `${left} ${f.op} ${right}`;
     }
     case "raw":
       return `${f.left} ${f.op} ${f.right}`;
     case "group": {
-      const inner = f.filters.map((x) => renderFilterExpr(w, x)).join(` ${f.operand} `);
+      const inner = f.filters.map((x) => renderFilterExpr(w, x, baseEntity, tableNameOverride)).join(` ${f.operand} `);
       return `(${inner})`;
     }
   }
@@ -183,13 +202,14 @@ function renderWhere(
   w: ParamWriter,
   entity: EntityClass,
   deletedRecords: WithDeletedRecords | undefined,
-  filters?: FilterExpr[]
+  filters?: FilterExpr[],
+  tableNameOverride?: string
 ): string[] {
   const where: string[] = [];
 
   if (hasDeletedAtColumn(entity)) {
     const mode = deletedRecords ?? "EXCLUDED";
-    const col = `${qTable(entity)}.${quoteIdent("deleted_at")}`;
+    const col = `${qTable(entity, tableNameOverride)}.${quoteIdent("deleted_at")}`;
     if (mode === "ONLY") where.push(`${col} IS NOT NULL`);
     if (mode === "EXCLUDED") where.push(`${col} IS NULL`);
   }
@@ -198,7 +218,7 @@ function renderWhere(
     let first = true;
     let expr = "";
     for (const f of filters) {
-      const part = renderFilterExpr(w, f);
+      const part = renderFilterExpr(w, f, entity, tableNameOverride);
       if (first) {
         expr = part;
         first = false;
@@ -212,9 +232,12 @@ function renderWhere(
   return where;
 }
 
-function renderOrderBy(entity: EntityClass, sorting?: SortingExpr[]): string | null {
+function renderOrderBy(entity: EntityClass, sorting?: SortingExpr[], tableNameOverride?: string): string | null {
   if (!sorting || sorting.length === 0) return null;
-  const parts = sorting.map((s) => `${qQualifiedField(s.field.entity, s.field.key)} ${s.dir}`);
+  const parts = sorting.map((s) => {
+    const useOverride = tableNameOverride && s.field.entity === entity ? tableNameOverride : undefined;
+    return `${qQualifiedField(s.field.entity, s.field.key, useOverride)} ${s.dir}`;
+  });
   return parts.join(", ");
 }
 
@@ -228,18 +251,20 @@ export type SelectQueryInput = {
   limit?: number;
   offset?: number;
   includeTotalRecordsWindow?: boolean;
+  /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
+  tableName?: string;
 };
 
 export function buildSelectQuery(input: SelectQueryInput): SqlQuery {
   const w = new ParamWriter();
-  const baseTable = qTable(input.entity);
+  const baseTable = qTable(input.entity, input.tableName);
 
-  const projection = renderProjection(input.entity, input.fields, input.joins);
+  const projection = renderProjection(input.entity, input.fields, input.joins, input.tableName);
   if (input.includeTotalRecordsWindow) projection.push(`COUNT(*) OVER() AS ${quoteIdent("_total_records")}`);
 
-  const renderedJoins = renderJoins(input.joins);
-  const where = renderWhere(w, input.entity, input.deletedRecords, input.filters);
-  const orderBy = renderOrderBy(input.entity, input.sorting);
+  const renderedJoins = renderJoins(input.joins, input.entity, input.tableName);
+  const where = renderWhere(w, input.entity, input.deletedRecords, input.filters, input.tableName);
+  const orderBy = renderOrderBy(input.entity, input.sorting, input.tableName);
 
   const parts: string[] = [];
   parts.push(`SELECT ${projection.join(", ")} FROM ${baseTable}`);
