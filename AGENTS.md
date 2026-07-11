@@ -47,6 +47,16 @@ This repository follows GitFlow. AI agents MUST follow these rules.
 
 **See [docs/gitflow.md](./docs/gitflow.md) for complete GitFlow rules.**
 
+## Package Versioning — FIXED versions only (MANDATORY)
+
+All package versions in `package.json` MUST be pinned to exact versions (e.g.
+`"typescript": "5.9.3"`). NO ranges (`^`, `~`, `>=`, `*`, `latest`) are allowed
+for registry packages. This ensures every dev machine, CI build, and production
+rebuild gets the exact same dependency tree that was tested during UAT.
+
+See [.devin/rules/package-versioning.md](./.devin/rules/package-versioning.md)
+for the full rule and upgrade procedure.
+
 ## Further documentation
 
 - [docs/ai/README.md](./docs/ai/README.md) — AI docs index
