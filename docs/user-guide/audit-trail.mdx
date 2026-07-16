@@ -1,0 +1,214 @@
+---
+title: Audit trail
+description: Read and write generic audit trail tables with AuditLogEntity and automatic field-level deltas.
+---
+
+# Audit trail
+
+The DAL provides two complementary audit mechanisms:
+
+1. **`@AuditTrail()`** — marks an entity as _having_ an audit trail table (the
+   entity is the source of truth; audit rows are written alongside it).
+2. **`@AuditTrailEntity()`** — marks a class as _being_ an audit trail entity
+   (a read-only view over an audit table like `customers_audit`).
+
+This page covers the `@AuditTrailEntity()` side: the generic `AuditLogEntity`,
+the `tableName` override, automatic audit log writing in write ops, and the
+`buildAuditTrailJoins()` helper.
+
+## AuditLogEntity
+
+`AuditLogEntity` is a generic entity class that maps to any audit table sharing
+the standard column structure. You don't define a separate entity per audit
+table — you reuse `AuditLogEntity` and override the table name at query time.
+
+<!-- AUTO-GENERATED:reference -->
+All audit tables share this column structure:
+
+| Column | PG type | Description |
+|--------|---------|-------------|
+| `id` | `bigint` | Identity PK (auto-generated) |
+| `entity_id` | `bigint` | The audited entity's ID |
+| `entity_uuid` | `uuid` | The audited entity's UUID |
+| `action` | `text` | `INSERT`, `UPDATE`, `SOFT_DELETE`, `HARD_DELETE`, `RESTORE` |
+| `changed_at` | `timestamptz` | When the change occurred |
+| `changed_by` | `text` | Actor UUID or `"system"` |
+| `version` | `integer` | Entity version at time of change |
+| `delta` | `jsonb` | Field-level `{ old, new }` diff |
+<!-- END -->
+
+```typescript
+import { Repository, AuditLogEntity } from "@primebrick/dal-pg";
+
+const repo = new Repository(pool);
+
+// Read audit entries for a specific entity from its audit table:
+const auditRows = await repo.findAll(
+  AuditLogEntity,
+  null,
+  {
+    tableName: "customers_audit",
+    filters: [Filter.eq(AuditLogEntity, "entity_uuid", customerUuid)],
+    sorting: [Sort.desc(AuditLogEntity, "changed_at")],
+  },
+);
+
+// Paginated audit log:
+const page = await repo.findByPage(
+  AuditLogEntity,
+  null,
+  {
+    tableName: "organizations_audit",
+    sorting: [Sort.desc(AuditLogEntity, "changed_at")],
+    limit: 20,
+    offset: 0,
+  },
+);
+// page.total_records is bigint
+```
+
+### The `tableName` override
+
+`FindOptions` and `WriteOptions` accept a `tableName` property. When set, the
+query targets `<schema>.<tableName>` instead of the entity's declared table
+name. This is how `AuditLogEntity` (declared as `@Entity("audit_log")`) can read
+from `customers_audit`, `organizations_audit`, or any other audit table.
+
+```typescript
+// FindOptions
+{ tableName: "customers_audit", filters: [...] }
+
+// WriteOptions — write directly to an audit table:
+await repo.add(
+  AuditLogEntity,
+  { entity_id, entity_uuid, action: "INSERT", changed_at: new Date(), changed_by: actor, version: 1, delta: {} },
+  { tableName: "customers_audit" },
+);
+```
+
+## @AuditTrailEntity() decorator
+
+`@AuditTrailEntity(options?)` marks a class as being an audit trail entity. It
+records the `changed_by` column name so that `buildAuditTrailJoins()` can
+resolve it.
+
+```typescript
+import { Entity, Column, Key, AuditTrailEntity } from "@primebrick/dal-pg";
+
+@Entity("audit_log")
+@AuditTrailEntity({ changedByColumn: "changed_by" })
+export class AuditLogEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Column({ pgType: "bigint" }) entity_id!: bigint;
+  @Column({ pgType: "uuid" }) entity_uuid!: string;
+  @Column({ pgType: "text" }) action!: string;
+  @Column({ pgType: "timestamptz" }) changed_at!: Date;
+  @Column({ pgType: "text" }) changed_by!: string;
+  @Column({ pgType: "integer" }) version!: number;
+  @Column({ pgType: "jsonb", nullable: true }) delta?: Record<string, { old: unknown; new: unknown }>;
+}
+```
+
+`AuditTrailEntity` is distinct from `@AuditTrail()`: the latter marks an entity
+as _having_ an audit trail; the former marks a class as _being_ an audit trail
+table.
+
+## buildAuditTrailJoins()
+
+`buildAuditTrailJoins(auditEntity, userEntity)` returns `{ joins, projections }`
+that LEFT JOIN the user entity to resolve `changed_by` into `display_name` and
+`idp_code`. It uses `castRightTo: "uuid"` + `castLeftTo: "uuid"` which triggers
+the regex guardrail — rows where `changed_by` is not a UUID (e.g. `"system"`)
+are safely excluded from the join rather than causing a cast error.
+
+```typescript
+import { Repository, AuditLogEntity, buildAuditTrailJoins, Project } from "@primebrick/dal-pg";
+
+const { joins, projections } = buildAuditTrailJoins(AuditLogEntity, UserProfileEntity);
+
+const rows = await repo.findAll(
+  AuditLogEntity,
+  [...projections, Project.all(AuditLogEntity)],
+  {
+    tableName: "customers_audit",
+    joins,
+    sorting: [Sort.desc(AuditLogEntity, "changed_at")],
+  },
+);
+// Each row now includes changed_by_display_name and changed_by_idp_code
+```
+
+This is distinct from `buildAuditableJoins()` which uses `castRightTo: "text"`
+(no guardrail, text = text) for entities with `created_by`/`updated_by`/
+`deleted_by` columns.
+
+## Automatic audit log writing
+
+When an `AuditPort` is injected via `AuditableWriteOptions.audit`, the
+`Repository` write operations automatically compute a field-level delta and call
+`audit.writeAudit()` (fire-and-forget). The following operations emit audit
+logs:
+
+| Operation | Audit action | Delta |
+|-----------|-------------|-------|
+| `add()` | `INSERT` | `{}` → new record |
+| `upsert()` | `INSERT` (new) or `UPDATE` (conflict) | old record → upserted record |
+| `update()` | `UPDATE` | old record → updated record (forced `updated_at`, `updated_by`) |
+| `delete()` (soft) | `SOFT_DELETE` | old record → deleted record (forced `deleted_at`, `deleted_by`, `updated_at`, `updated_by`) |
+| `restore()` | `RESTORE` | old record → restored record (forced `deleted_at`, `deleted_by`, `updated_at`, `updated_by`) |
+| `hardDelete()` | `HARD_DELETE` | old record → `null` (all fields) |
+
+The delta is computed with `calculateDeltaWithForcedFields()` — unchanged audit
+columns (`updated_at`, `updated_by`, `deleted_at`, `deleted_by`) are force-
+included so the audit trail records who performed the change even when no
+business fields changed.
+
+```typescript
+import { Repository } from "@primebrick/dal-pg";
+import type { AuditPort } from "@primebrick/dal-pg";
+
+const auditPort: AuditPort = {
+  async writeAudit(params) {
+    // params: { entityClassName, tableName, entityId, entityUuid, action, changedAt, version, changedBy, delta }
+    // entityId is bigint
+    await auditRepo.add(AuditLogEntity, {
+      entity_id: params.entityId,
+      entity_uuid: params.entityUuid,
+      action: params.action,
+      changed_at: params.changedAt,
+      changed_by: params.changedBy,
+      version: params.version,
+      delta: params.delta,
+    }, { tableName: `${params.tableName}_audit` });
+  },
+};
+
+await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "New Name" }, {
+  actor: userUuid,
+  audit: auditPort,
+});
+// auditPort.writeAudit() is called with action: "UPDATE" and a field-level delta
+```
+
+### calculateDelta / calculateDeltaWithForcedFields
+
+These functions are exported for direct use when implementing custom audit
+flows:
+
+```typescript
+import { calculateDelta, calculateDeltaWithForcedFields } from "@primebrick/dal-pg";
+
+// Basic delta — only changed fields:
+const delta = calculateDelta(oldRecord, newRecord);
+// → { name: { old: "Alice", new: "Bob" } }
+
+// Force-include specific fields even when unchanged:
+const delta2 = calculateDeltaWithForcedFields(oldRecord, newRecord, ["updated_at", "updated_by"]);
+```
+
+`bigint` values in deltas are converted to `number` for JSON serialization
+when safe (≤ `Number.MAX_SAFE_INTEGER`); larger values remain as `bigint`.
+
+## Next steps
+
+- [Clone](./clone) — copy entity records by UUID with `Repository.clone()`.
