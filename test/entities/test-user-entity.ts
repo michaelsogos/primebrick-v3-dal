@@ -13,26 +13,23 @@ import {
 } from "../../src/index.js";
 
 /**
- * Benchmark entity — simple 5-column table.
- * Used for measuring bulk operation throughput on a narrow row.
+ * Test user entity — used for buildAuditTrailJoins tests.
+ * Has uuid, display_name, idp_code columns for join resolution.
  */
-@Entity("test_bench_simple")
+@Entity("dal_test_users")
 @AuditTrail()
-export class BenchSimpleEntity {
+export class TestUserEntity {
   @Key()
   id!: bigint;
 
   @Unique()
   uuid!: string;
 
-  @Column({ pgType: "varchar", length: 50 })
-  code!: string;
+  @Column({ pgType: "text" })
+  display_name!: string;
 
-  @Column({ pgType: "varchar", length: 200 })
-  name!: string;
-
-  @Column({ pgType: "varchar", length: 20 })
-  status!: string;
+  @Column({ pgType: "text" })
+  idp_code!: string;
 
   @AuditableField(AuditableFieldType.CREATED_AT)
   created_at!: Date;

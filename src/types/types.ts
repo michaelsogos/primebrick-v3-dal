@@ -21,12 +21,16 @@ export type FindByIdOptions = {
 
 /** Options for `find`, `findAll`, `findByPage`. */
 export type FindOptions = {
+  /** If true (default for `find`), throw `NotFoundError` when rowcount !== 1. Set to false to return null. */
+  throwIfNotFound?: boolean;
   deletedRecords?: WithDeletedRecords;
   filters?: FilterExpr[];
   sorting?: SortingExpr[];
   joins?: JoinExpr[];
   /** When true, stream results via pg-query-stream instead of buffering. */
   stream?: boolean;
+  /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
+  tableName?: string;
 };
 
 /** Options for `findByUUID`. */
@@ -38,7 +42,7 @@ export type FindByUUIDOptions = {
 /** Paginated result wrapper. */
 export type PaginatedEntity<TEntity> = {
   entities: TEntity[];
-  total_records: number;
+  total_records: bigint;
 };
 
 /** Base write options — no actor (for non-auditable entities). */
@@ -47,6 +51,8 @@ export type WriteOptions = {
   audit?: AuditPort;
   /** Optional logger port — if not injected, errors are swallowed. */
   logger?: LoggerPort;
+  /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
+  tableName?: string;
 };
 
 /** Write options for auditable entities — actor is required. */
@@ -91,7 +97,7 @@ export interface AuditPort {
 export type AuditParams = {
   entityClassName: string;
   tableName: string;
-  entityId: number;
+  entityId: bigint;
   entityUuid: string;
   action: AuditAction;
   changedAt: Date;

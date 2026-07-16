@@ -26,6 +26,7 @@ export {
   SynchronizableField,
   CloneField,
   AuditTrail,
+  AuditTrailEntity,
   AuditableFieldType,
   DeletableFieldType,
   SynchronizableFieldType,
@@ -127,6 +128,7 @@ export {
 export {
   buildAuditableJoins,
   buildAuditableJoinsSelective,
+  buildAuditTrailJoins,
 } from "./audit/auditable-joins.js";
 
 export {
@@ -134,6 +136,10 @@ export {
   type WithCreatorDisplayName,
   type WithUpdaterDisplayName,
 } from "./audit/auditable-types.js";
+
+export { calculateDelta, calculateDeltaWithForcedFields } from "./audit/delta-calculator.js";
+
+export { AuditLogEntity } from "./audit/audit-log-entity.js";
 
 // Dal gateway — high-level pool-owning singleton with best-practice defaults
 export {

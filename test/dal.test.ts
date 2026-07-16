@@ -210,7 +210,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
       { name: "FindById" },
       { actor: "test" },
     );
-    const found = await dal.findById(SimpleTestEntity, inserted.id as unknown as number);
+    const found = await dal.findById(SimpleTestEntity, inserted.id as unknown as bigint);
     expect(found).toBeDefined();
     expect((found as SimpleTestEntity).name).toBe("FindById");
   });
@@ -219,7 +219,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     await dal.add(SimpleTestEntity, { name: "A" }, { actor: "test" });
     await dal.add(SimpleTestEntity, { name: "B" }, { actor: "test" });
     const count = await dal.count(SimpleTestEntity);
-    expect(count).toBe(2);
+    expect(count).toBe(2n);
   });
 
   // ─── withClient ──────────────────────────────────────────────────────

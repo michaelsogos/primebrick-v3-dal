@@ -12,6 +12,7 @@ export {
   SynchronizableField,
   CloneField,
   AuditTrail,
+  AuditTrailEntity,
   AuditableFieldType,
   DeletableFieldType,
   SynchronizableFieldType,

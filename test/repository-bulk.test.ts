@@ -38,7 +38,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
     expect(inserted).toHaveLength(5);
     for (let i = 0; i < inserted.length; i++) {
-      expect(inserted[i].id).toBeGreaterThan(0);
+      expect(inserted[i].id).toBeGreaterThan(0n);
       expect(inserted[i].uuid).toBeDefined();
       expect(inserted[i].name).toBe(`Bulk ${i}`);
       expect(inserted[i].version).toBe(1);

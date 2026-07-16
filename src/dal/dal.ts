@@ -218,7 +218,7 @@ export class Dal {
 
   async findById<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
-    id: number | string,
+    id: bigint | string,
     options?: FindByIdOptions,
   ): Promise<TResult | null> {
     return this.repo.findById<TEntity, TResult>(entity, id, options);
@@ -258,7 +258,7 @@ export class Dal {
     return this.repo.findByPage<TEntity, TResult>(entity, page, recordsPerPage, fields, options);
   }
 
-  async count(entity: EntityClass): Promise<number> {
+  async count(entity: EntityClass): Promise<bigint> {
     return this.repo.count(entity);
   }
 

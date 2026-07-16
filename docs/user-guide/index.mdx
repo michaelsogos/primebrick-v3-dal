@@ -1,0 +1,53 @@
+---
+title: "@primebrick/dal-pg"
+description: Type-driven, metadata-based PostgreSQL data access layer for Primebrick v3.
+---
+
+# @primebrick/dal-pg
+
+`@primebrick/dal-pg` is a shared Data Access Layer library for Primebrick v3.
+It provides a type-driven, metadata-based `Repository` for PostgreSQL. Entities
+are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
+`@Unique`, `@AuditableField`, `@DeletableField`, and `@CloneField`. The
+`Repository` reads entity metadata at runtime to generate parameterized SQL.
+
+## What's new
+
+### Audit trail entities
+
+A new `@AuditTrailEntity()` decorator and `AuditLogEntity` class let you read
+and write generic audit trail tables (`customers_audit`, `organizations_audit`,
+etc.) through the same `Repository` API. Write operations (`upsert`, `update`,
+`delete`, `restore`, `hardDelete`) now emit field-level audit deltas
+automatically when an `AuditPort` is injected.
+
+See [Audit trail](./audit-trail).
+
+### Clone
+
+`Repository.clone()` copies a record by UUID — excluding the PK and unique
+columns, resetting audit/deletable fields, and stamping a `@CloneField` column
+with the source UUID.
+
+See [Clone](./clone).
+
+## Breaking changes in 0.1.9
+
+If you are upgrading from 0.1.8, review these changes:
+
+| Change | Before | After |
+|--------|--------|-------|
+| `Join.on()` argument order | `Join.on(right, left, type?, options?)` | `Join.on(left, right, type?, options?)` |
+| `Repository.count()` return type | `number` | `bigint` |
+| `PaginatedEntity.total_records` | `number` | `bigint` |
+| `Repository.findById()` id param | `number \| string` | `bigint \| string` |
+| `AuditParams.entityId` | `number` | `bigint` |
+
+The `Join.on()` swap corrects a confusing argument order — the **left** (joined)
+table is now the first argument, matching standard SQL `JOIN ... ON left = right`
+reading order. Update any existing `Join.on()` calls accordingly.
+
+The `bigint` changes align the DAL with PostgreSQL's native `bigint` type
+(parsed via `INT8_OID`). `count()` and `total_records` now return native
+`bigint` values instead of `number`. Use `Number(result)` or `BigInt` arithmetic
+as appropriate.
