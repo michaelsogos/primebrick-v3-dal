@@ -1,0 +1,102 @@
+---
+title: Clone
+description: Copy entity records by UUID with Repository.clone(), preserving non-unique fields and resetting audit columns.
+---
+
+# Clone
+
+`Repository.clone()` copies an entity record by UUID. It fetches the source
+record (including soft-deleted rows), builds a new row, and inserts it with a
+fresh UUID.
+
+## How it works
+
+The clone operation:
+
+1. Fetches the source record by UUID (including soft-deleted rows).
+2. Excludes the PK column (DB auto-generates) and all `@Unique` columns
+   (including `uuid` — a new UUID is generated).
+3. Sets the `@CloneField` column to the source UUID (so the clone knows its
+   origin).
+4. Resets audit fields: `created_at` = now, `created_by` = actor,
+   `updated_at` = now, `updated_by` = actor, `version` = 1.
+5. Resets deletable fields: `deleted_at` = null, `deleted_by` = null.
+6. Copies all other fields from the source.
+7. Inserts the new row with `RETURNING *`.
+
+No audit log is written for the clone itself (matches backend behavior — clone
+does not audit).
+
+## Usage
+
+The entity must implement `IAuditableEntity` and `IClonableEntity`, and have at
+least one `@CloneField` column:
+
+```typescript
+import { Entity, Column, Key, Unique, AuditableField, DeletableField, CloneField } from "@primebrick/dal-pg";
+import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@primebrick/dal-pg";
+
+@Entity("customers")
+export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ pgType: "text" }) name!: string;
+  @Column({ pgType: "text" }) email!: string;
+
+  @AuditableField({ type: "createdAt" }) @Column({ pgType: "timestamptz" }) created_at!: Date;
+  @AuditableField({ type: "createdBy" }) @Column({ pgType: "text" }) created_by!: string;
+  @AuditableField({ type: "updatedAt" }) @Column({ pgType: "timestamptz" }) updated_at!: Date;
+  @AuditableField({ type: "updatedBy" }) @Column({ pgType: "text" }) updated_by!: string;
+  @AuditableField({ type: "version" }) @Column({ pgType: "integer" }) version!: number;
+
+  @DeletableField({ type: "deletedAt" }) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
+  @DeletableField({ type: "deletedBy" }) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+
+  @CloneField() @Column({ pgType: "uuid", nullable: true }) cloned_from!: string | null;
+}
+```
+
+```typescript
+import { Repository } from "@primebrick/dal-pg";
+
+const repo = new Repository(pool);
+
+const cloned = await repo.clone(
+  CustomerEntity,
+  sourceCustomerUuid,
+  { actor: userUuid },
+);
+
+// cloned is a full CustomerEntity with:
+// - new id (auto-generated)
+// - new uuid (randomUUID())
+// - cloned_from = sourceCustomerUuid
+// - created_at/updated_at = now, created_by/updated_by = userUuid
+// - version = 1
+// - deleted_at/deleted_by = null
+// - name, email copied from source
+```
+
+## Signature
+
+```typescript
+repo.clone<TEntity>(
+  entity: EntityClass & { new (): TEntity },
+  sourceUuid: string,
+  options: AuditableWriteOptions,
+): Promise<TEntity>
+```
+
+`AuditableWriteOptions` requires an `actor` (the UUID of the user performing the
+clone). The `audit` and `logger` options are accepted but no audit log is
+written for the clone operation itself.
+
+## Errors
+
+- `NotFoundError` — no record found with the given `sourceUuid`.
+- `Error` — the entity has no `uuid` column (no `@Unique` column found).
+- `Error` — the INSERT returned no rows (clone failed).
+
+## Next steps
+
+- [Audit trail](./audit-trail) — automatic field-level audit logging for write operations.

@@ -38,7 +38,8 @@
     "prepare": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:benchmark": "vitest run --config test/benchmark.vitest.config.ts"
+    "test:benchmark": "vitest run --config test/benchmark.vitest.config.ts",
+    "extract-docs": "node scripts/extract-api-docs.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -51,10 +52,11 @@
     "reflect-metadata": "0.2.2"
   },
   "devDependencies": {
-    "@types/pg": "8.20.0",
     "@types/node": "24.13.3",
+    "@types/pg": "8.20.0",
+    "dotenv": "17.4.2",
+    "typedoc": "0.28.20",
     "typescript": "6.0.3",
-    "vitest": "4.1.10",
-    "dotenv": "17.4.2"
+    "vitest": "4.1.10"
   }
 }

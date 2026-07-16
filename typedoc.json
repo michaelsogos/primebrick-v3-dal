@@ -1,0 +1,12 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "tsconfig": "tsconfig.json",
+  "json": "docs/user-guide/_extracted/api.json",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeProtected": false,
+  "includeVersion": true,
+  "name": "@primebrick/dal-pg API Reference",
+  "sort": ["source-order"]
+}
