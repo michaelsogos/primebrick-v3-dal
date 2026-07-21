@@ -9,7 +9,7 @@ src/
   meta/               entity metadata + decorators + column PG<->JS coercion
     entity-decorators.ts   @Entity, @Column, @Key, @Unique, @AuditableField, @DeletableField, etc.
     entity-meta.ts         re-export barrel for stable import path
-    entity-ts-to-pg.ts     TS design:type → PostgreSQL type inference
+    entity-ts-to-pg.ts     TS design:type → PostgreSQL® type inference
     column-pg-io.ts        JS value ↔ PG parameter/wire value coercion
   query/              query DSL + SQL generation + streaming
     dsl.ts                 field, Filter, Sort, Join, Project (the query DSL)
@@ -30,7 +30,7 @@ src/
 
 ## Entity metadata system
 
-The DAL uses **legacy TypeScript decorators** with a `WeakMap` for metadata storage (not `reflect-metadata` keys, though `reflect-metadata` is imported for `design:type` access).
+The DAL uses **legacy TypeScript® decorators** with a `WeakMap` for metadata storage (not `reflect-metadata` keys, though `reflect-metadata` is imported for `design:type` access).
 
 ### Flow
 
@@ -111,7 +111,7 @@ PG wire value + ColumnPgPersistenceHints
 
 ### bigint handling
 
-PostgreSQL `bigint` columns return as native JS `bigint` (not strings) when the `pg` module is configured with the `INT8_OID` type parser. The DAL expects consumers to configure this in their pool setup:
+PostgreSQL® `bigint` columns return as native JS `bigint` (not strings) when the `pg` module is configured with the `INT8_OID` type parser. The DAL expects consumers to configure this in their pool setup:
 
 ```typescript
 import pg from "pg";
@@ -195,7 +195,7 @@ The DAL includes `calculateDelta()` and `calculateDeltaWithForcedFields()` for c
 
 ### Framework-agnostic
 
-DAL errors extend `DalError` (which extends `Error`) with a stable `code` field. They do NOT contain HTTP status codes, NATS error types, or any framework-specific data. Consumers map them at their own boundary:
+DAL errors extend `DalError` (which extends `Error`) with a stable `code` field. They do NOT contain HTTP status codes, NATS™ error types, or any framework-specific data. Consumers map them at their own boundary:
 
 ```typescript
 // In the BE router:

@@ -47,7 +47,7 @@ await dal.close(); // close(timeoutMs?) — default 10s timeout
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `connectionString` | (required) | PostgreSQL connection string |
+| `connectionString` | (required) | PostgreSQL® connection string |
 | `schema` | undefined | Schema to set as `search_path` on every connection |
 | `max` | `10` | Maximum pool size. Formula: `max ≤ (PG max_connections − reserved) / service_instances` |
 | `statementTimeoutMs` | `30000` | Per-statement timeout (ms). The full wall-clock: command arrival → server completion → all rows transmitted. Set to `0` to disable. |
@@ -101,14 +101,14 @@ Drains the pool (`pool.end()`) with a timeout deadline.
 - **Re-entrant**: concurrent calls return immediately (the first call wins).
 - **Timeout**: if `pool.end()` doesn't complete within `timeoutMs`, the promise resolves anyway (default: 10000ms). The pool is left to be reaped by the OS/TCP stack.
 - **Error containment**: if `pool.end()` throws, the error is logged and swallowed — the caller (typically a signal handler) cannot do anything useful with it.
-- **No process handlers**: the library does NOT install `process.on(...)` handlers. Process lifecycle (signals, crash handlers, Sentry) is a consumer-side concern. The consumer closes ALL long-lived resources (DAL pool, NATS, HTTP server) together.
+- **No process handlers**: the library does NOT install `process.on(...)` handlers. Process lifecycle (signals, crash handlers, Sentry) is a consumer-side concern. The consumer closes ALL long-lived resources (DAL pool, NATS™, HTTP server) together.
 
 ```typescript
 // consumer-side shutdown (NOT in the library — the consumer owns process lifecycle):
 async function shutdown(reason: string, code: number) {
   await Promise.allSettled([
     dal.close(),               // drains pg.Pool (10s internal timeout)
-    natsConnection?.close(),   // drains NATS
+    natsConnection?.close(),   // drains NATS™
   ]);
   process.exit(code);
 }
@@ -123,7 +123,7 @@ Exposes the underlying `pg.Pool` for tooling that needs raw access (e.g. schema 
 
 ### `statement_timeout` semantics
 
-`statement_timeout` measures the **full wall-clock** from command arrival to server completion, **including transmitting all result rows to the client** (verified from PostgreSQL docs + pgsql-hackers). It is NOT preparation time only.
+`statement_timeout` measures the **full wall-clock** from command arrival to server completion, **including transmitting all result rows to the client** (verified from PostgreSQL® docs + pgsql-hackers). It is NOT preparation time only.
 
 **Impact per operation:**
 - Normal CRUD: 30s is plenty.
@@ -386,7 +386,7 @@ const inserted = await repo.addMany(MyEntity, rows, { actor: "admin" });
 // inserted.length === 3
 ```
 
-**Auto-batching:** The batch size is auto-calculated to stay under PostgreSQL's 65535 parameter limit. Override with `options.batchSize`.
+**Auto-batching:** The batch size is auto-calculated to stay under PostgreSQL®'s 65535 parameter limit. Override with `options.batchSize`.
 
 **Empty input:** Returns `[]` silently (no error).
 

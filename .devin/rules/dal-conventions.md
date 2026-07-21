@@ -5,7 +5,7 @@
 - The DAL (`@primebrick/dal-pg`) is a **LEAF dependency**.
 - It **MUST NOT** import from `primebrick-be-v3` or `primebrick-us-v3` (or any other Primebrick application/service package).
 - The DAL only depends on:
-  - `pg` — PostgreSQL client
+  - `pg` — PostgreSQL® client
   - `pg-query-stream` — streaming query support
   - `reflect-metadata` — decorator metadata reflection
 - No other runtime dependencies are permitted. Keep the dependency surface minimal.
@@ -14,7 +14,7 @@
 
 - **snake_case everywhere**:
   - Database column names
-  - TypeScript entity properties
+  - TypeScript® entity properties
   - JSON keys in serialized output and query input
 - Do not mix camelCase into entity definitions, column mappings, or JSON payloads.
 - Table names are snake_case and typically singular unless the domain dictates otherwise.
@@ -41,7 +41,7 @@
   - Source rows are bulk-inserted (e.g. via `COPY` or multi-row `INSERT`) into the temp table.
   - The target table is updated/upserted from the temp table in a single set-based statement.
   - The temp table is dropped at the end (or implicitly on session end).
-- This avoids per-row round-trips and leverages PostgreSQL's set-based execution.
+- This avoids per-row round-trips and leverages PostgreSQL®'s set-based execution.
 
 ## Numeric Handling
 

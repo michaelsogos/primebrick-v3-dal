@@ -10,7 +10,7 @@
 
 ## Repository overview
 
-`@primebrick/dal-pg` is a shared Data Access Layer library for Primebrick v3. It provides a type-driven, metadata-based `Repository` for PostgreSQL. Entities are plain TS classes with decorators (`@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`). The Repository reads entity metadata at runtime to generate parameterized SQL.
+`@primebrick/dal-pg` is a shared Data Access Layer library for Primebrick v3. It provides a type-driven, metadata-based `Repository` for PostgreSQL®. Entities are plain TS classes with decorators (`@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`). The Repository reads entity metadata at runtime to generate parameterized SQL.
 
 **This is a leaf dependency** — it MUST NOT import from `primebrick-be-v3` or `primebrick-us-v3`. It only depends on `pg`, `pg-query-stream`, and `reflect-metadata`.
 

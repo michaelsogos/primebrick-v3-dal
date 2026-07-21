@@ -1,13 +1,13 @@
 ---
 title: "@primebrick/dal-pg"
-description: Type-driven, metadata-based PostgreSQL data access layer for Primebrick v3.
+description: Type-driven, metadata-based PostgreSQL® data access layer for Primebrick v3.
 ---
 
 # @primebrick/dal-pg
 
 `@primebrick/dal-pg` is a shared Data Access Layer library for Primebrick v3.
-It provides a type-driven, metadata-based `Repository` for PostgreSQL. Entities
-are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
+It provides a type-driven, metadata-based `Repository` for PostgreSQL®. Entities
+are plain TypeScript® classes decorated with `@Entity`, `@Column`, `@Key`,
 `@Unique`, `@AuditableField`, `@DeletableField`, and `@CloneField`. The
 `Repository` reads entity metadata at runtime to generate parameterized SQL.
 
@@ -47,7 +47,7 @@ The `Join.on()` swap corrects a confusing argument order — the **left** (joine
 table is now the first argument, matching standard SQL `JOIN ... ON left = right`
 reading order. Update any existing `Join.on()` calls accordingly.
 
-The `bigint` changes align the DAL with PostgreSQL's native `bigint` type
+The `bigint` changes align the DAL with PostgreSQL®'s native `bigint` type
 (parsed via `INT8_OID`). `count()` and `total_records` now return native
 `bigint` values instead of `number`. Use `Number(result)` or `BigInt` arithmetic
 as appropriate.
