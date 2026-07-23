@@ -1,0 +1,349 @@
+---
+title: Optimistic Locking & Concurrency
+description: "How Primebrick DAL prevents lost updates with automatic optimistic concurrency control — field-level collaboration foundation."
+---
+
+# Optimistic locking & concurrency
+
+When two users edit the same record at the same time, the last writer normally
+wins — silently overwriting the first writer's changes. This is the **lost
+update** problem, and it is the single biggest correctness risk in any
+collaborative editing system.
+
+Primebrick DAL solves it with **optimistic concurrency control** (optimistic
+locking): every write carries a `version` number, and the database rejects the
+write if the row's current version no longer matches the version the client
+read. No locks are held during the user's "thinking time"; the check happens
+atomically at write time inside a single SQL statement.
+
+<Mermaid chart={`sequenceDiagram
+  participant A as User A
+  participant DB as PostgreSQL
+  participant B as User B
+  A->>DB: read customer (version = 3)
+  B->>DB: read customer (version = 3)
+  B->>DB: update ... WHERE version = 3
+  DB-->>B: OK — row updated, version = 4
+  A->>DB: update ... WHERE version = 3
+  DB--xA: ERR01 — version mismatch (HTTP 409)
+`} />
+
+The losing writer receives a **409 Conflict** and must re-read, re-merge, and
+retry. The winning writer is never blocked. This is the foundation that
+field-level collaboration and visual merge build on top of.
+
+## Automatic for @AuditTrail entities — zero per-entity configuration
+
+Optimistic locking is **on by default** for every entity decorated with
+`@AuditTrail()`. There is no per-entity `@OptimisticLock()` flag, no
+`enableVersioning: true` option, and no migration to opt in. If the entity has
+an audit trail, it has a version column and the version guard is enforced on
+every write.
+
+```typescript
+import { Entity, Column, Key, AuditTrail, AuditableField, AuditableFieldType } from "@primebrick/dal-pg";
+
+@Entity("customers")
+@AuditTrail()
+export class CustomerEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ pgType: "text" }) name!: string;
+
+  // Auditable fields — the version column is what powers optimistic locking.
+  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+}
+```
+
+The DAL detects the `@AuditableField(AuditableFieldType.VERSION)` column from
+entity metadata at runtime — there is no separate "is this entity
+optimistically locked?" flag. If the version column exists, the guard is
+applied; if it doesn't, writes pass through unguarded (legacy / non-auditable
+entities keep working unchanged).
+
+## The version column
+
+Every auditable entity gets an integer `version` column:
+
+| Property | Value |
+|----------|-------|
+| PG type | `integer` |
+| Default | `1` (applied on `INSERT`) |
+| Increment | `+ 1` on every write (`update`, `upsert` ON CONFLICT, `delete`, `restore`, `hardDelete`) |
+| Read-only | clients must **send** the version they read, but never compute it themselves |
+
+The increment is emitted as a SET clause in the same UPDATE statement —
+`version = version + 1` — so it is atomic with the version guard. There is no
+window where the version has been bumped but the guard has not yet run.
+
+## How the intrinsic optimistic lock works
+
+The version guard is built into the four mutating write operations. In every
+case the guard is a single `WHERE ... AND version = $expected` clause appended
+to the same statement that performs the write — no second round-trip, no
+advisory locks, no `SELECT ... FOR UPDATE`.
+
+| Operation | Version guard | On zero rows |
+|-----------|---------------|--------------|
+| `update()` | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
+| `upsert()` (ON CONFLICT path) | `SET version = version + 1` only when the existing row's `version = $expected` | disambiguate → ERR01 or ERR03 |
+| `delete()` (soft) | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
+| `restore()` | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
+| `hardDelete()` | `WHERE match = $match AND version = $expected` | disambiguate → ERR01 or ERR03 |
+
+For `upsert()`, the version guard only applies on the **ON CONFLICT (update)**
+branch. The pure-INSERT branch (no existing row) starts at `version = 1` and
+needs no guard — there is nothing to conflict with.
+
+### Disambiguation: ERR01 vs ERR03
+
+When a guarded write matches **zero rows**, the DAL cannot tell from the row
+count alone whether:
+
+- the row exists but the **version doesn't match** (a real concurrency
+  violation → `ERR01`), or
+- the row was **hard-deleted by another writer** between the client's read and
+  write (the record is simply gone → `ERR03`).
+
+To distinguish the two, the DAL runs a single disambiguation `SELECT 1 FROM t
+WHERE match = $match LIMIT 1` on the error path only (the rare case, so the
+extra round-trip is acceptable):
+
+- **0 rows** → the row is gone → throw `RecordVanishedError` (`ERR03`).
+- **1 row** → the row exists but the version didn't match → execute
+  `RAISE EXCEPTION ... USING ERRCODE = 'ERR01'` so the error surfaces with the
+  stable SQLSTATE code.
+
+## Error codes
+
+The DAL defines three stable error codes for optimistic concurrency control.
+They are shared between PostgreSQL (as SQLSTATE values via `RAISE EXCEPTION`)
+and TypeScript (as `DalError.code` values), so consumers can branch on the
+string literal regardless of where the error originated.
+
+| Code | Meaning | Origin | HTTP status |
+|------|---------|--------|-------------|
+| `ERR01` | Concurrency violation — the row exists but `version` does not match | PostgreSQL (`RAISE EXCEPTION ... USING ERRCODE = 'ERR01'`) | 409 Conflict |
+| `ERR02` | Missing `version` field on an auditable-entity write | TypeScript (`MissingVersionError`) | 400 Bad Request |
+| `ERR03` | Record vanished — the row was hard-deleted between read and write | TypeScript (`RecordVanishedError`) | 404 Not Found |
+
+The `ERR` + 2 digits convention places the codes outside PostgreSQL's
+SQL-standard SQLSTATE classes (`00`–`99`), so PostgreSQL accepts them as
+custom codes without colliding with built-in error classes.
+
+### How PostgreSQL raises ERR01
+
+When the disambiguation step confirms the row exists but the version doesn't
+match, the DAL executes:
+
+```sql
+DO $$ BEGIN
+  RAISE EXCEPTION 'Optimistic Concurrency Violation'
+    USING ERRCODE = 'ERR01',
+          DETAIL = 'The record exists but the provided version (3) does not match the current version of CustomerEntity.';
+END $$;
+```
+
+PostgreSQL propagates this through `node-postgres` as a `DatabaseError` whose
+`code` property is the string `"ERR01"`. The DAL does **not** catch and
+re-throw this as a TS class in the happy/conflict path — the PG-originated
+error reaches the consumer directly, carrying the stable code. The
+`OptimisticLockError` TS class exists only for ergonomic `instanceof`
+normalization at a consumer boundary (see below).
+
+## DalError and the error classes
+
+All DAL errors extend the abstract `DalError` class, which adds a stable
+`code: string` property to the standard `Error`. The DAL itself never imports
+HTTP or NATS types — it is framework-agnostic. Consumers map the `code` to the
+appropriate boundary response at their own layer.
+
+```typescript
+import { DalError } from "@primebrick/dal-pg";
+
+/** Generic DAL error with a stable `code` field. */
+export abstract class DalError extends Error {
+  abstract readonly code: string;
+  constructor(message: string) {
+    super(message);
+    this.name = this.constructor.name;
+  }
+}
+```
+
+The three optimistic-locking error classes:
+
+```typescript
+import { DalErrorCodes, MissingVersionError, RecordVanishedError, OptimisticLockError } from "@primebrick/dal-pg";
+
+// ERR02 — thrown by the DAL (TS-originated) when an auditable write
+// is missing the required `version` field.
+// HTTP 400.
+export class MissingVersionError extends DalError {
+  readonly code = DalErrorCodes.ERR02; // "ERR02"
+}
+
+// ERR03 — thrown by the DAL (TS-originated) when a guarded write matches
+// zero rows AND a disambiguation SELECT confirms the row no longer exists.
+// HTTP 404. Distinct from NotFoundError (which is for finders).
+export class RecordVanishedError extends DalError {
+  readonly code = DalErrorCodes.ERR03; // "ERR03"
+}
+
+// ERR01 — TS wrapper for the PG-originated optimistic concurrency violation.
+// The DAL does NOT throw this in the conflict path; PostgreSQL raises
+// RAISE EXCEPTION ... USING ERRCODE = 'ERR01' and node-postgres propagates it.
+// This class is provided only for ergonomic `instanceof` checks if a consumer
+// wants to normalize PG errors into TS errors at a boundary.
+// HTTP 409.
+export class OptimisticLockError extends DalError {
+  readonly code = DalErrorCodes.ERR01; // "ERR01"
+}
+```
+
+## Typical update flow with version
+
+The client reads a record (which includes its current `version`), lets the
+user edit, then sends the updated fields **plus the original `version`** back
+to the DAL. The DAL strips `version` out of the SET clause, uses it in the
+WHERE guard, and bumps it by 1.
+
+```typescript
+import { Repository, Filter, MissingVersionError } from "@primebrick/dal-pg";
+import type { Pool } from "pg";
+
+const repo = new Repository(pool as unknown as Pool);
+
+// 1. Read the record — note its version.
+const [customer] = await repo.findAll(CustomerEntity, null, {
+  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+});
+// customer.version === 3
+
+// 2. User edits "name" in the UI. Send the update WITH the version we read.
+const updated = await repo.update(
+  CustomerEntity,
+  { uuid: customerUuid },
+  { name: "Acme Corp", version: customer.version },
+  { actor: userUuid },
+);
+// SQL: UPDATE customers SET name = $1, updated_at = now(), updated_by = $2,
+//      version = version + 1 WHERE uuid = $3 AND version = 4
+// updated.version === 4
+```
+
+If the caller forgets to send `version` on an auditable entity, the DAL throws
+`MissingVersionError` (`ERR02`) before any SQL is issued — a 400 Bad Request,
+not a silent unguarded write.
+
+```typescript
+import { MissingVersionError, DalErrorCodes } from "@primebrick/dal-pg";
+
+try {
+  await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "Acme Corp" }, { actor: userUuid });
+} catch (err) {
+  if (err instanceof MissingVersionError) {
+    // err.code === "ERR02" → HTTP 400
+    // "Auditable entity write requires a 'version' field; entity CustomerEntity
+    //  is auditable but no version was provided."
+  }
+}
+```
+
+## The 409 conflict scenario
+
+When two writers race, the second writer's `WHERE version = $expected` matches
+zero rows. The DAL disambiguates, confirms the row still exists, and raises
+`ERR01` from PostgreSQL. The consumer sees a `DatabaseError` with
+`code === "ERR01"`.
+
+```typescript
+import { DalErrorCodes } from "@primebrick/dal-pg";
+
+// Both User A and User B read the customer at version 3.
+const [forA] = await repo.findAll(CustomerEntity, null, {
+  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+});
+const [forB] = await repo.findAll(CustomerEntity, null, {
+  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+});
+
+// User B saves first — succeeds, row is now version 4.
+await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "B's edit", version: forB.version }, { actor: userBUuid });
+
+// User A saves later — version 3 no longer matches.
+try {
+  await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "A's edit", version: forA.version }, { actor: userAUuid });
+} catch (err: any) {
+  // node-postgres DatabaseError propagated from RAISE EXCEPTION ... ERRCODE = 'ERR01'
+  if (err.code === DalErrorCodes.ERR01) {
+    // → HTTP 409 Conflict
+    // DETAIL: "The record exists but the provided version (3) does not match
+    //          the current version of CustomerEntity."
+    //
+    // The BE typically responds with the current record so the FE can
+    // re-merge and retry.
+  }
+}
+```
+
+A consumer that wants uniform `instanceof` handling can normalize the
+PG-originated error into `OptimisticLockError` at its boundary:
+
+```typescript
+import { OptimisticLockError, DalErrorCodes } from "@primebrick/dal-pg";
+
+try {
+  await repo.update(CustomerEntity, { uuid }, { name, version }, { actor });
+} catch (err: any) {
+  if (err.code === DalErrorCodes.ERR01) {
+    throw new OptimisticLockError(err.message); // now catchable via instanceof
+  }
+  throw err;
+}
+```
+
+## Mapping errors to HTTP status codes
+
+The DAL is framework-agnostic and never imports HTTP types. The backend (BE)
+maps the stable `code` values to HTTP status codes at the controller boundary:
+
+| `err.code` | Error class | HTTP status | Meaning |
+|-------------|-------------|-------------|---------|
+| `ERR01` | `OptimisticLockError` (PG-originated) | **409 Conflict** | Version mismatch — another writer got there first |
+| `ERR02` | `MissingVersionError` (TS-originated) | **400 Bad Request** | Client forgot to send `version` on an auditable write |
+| `ERR03` | `RecordVanishedError` (TS-originated) | **404 Not Found** | The row was hard-deleted between read and write |
+
+```typescript
+// BE controller (illustrative — the BE owns the HTTP mapping, not the DAL).
+import { DalError, DalErrorCodes, MissingVersionError, RecordVanishedError } from "@primebrick/dal-pg";
+
+function dalErrorToHttp(err: unknown): { status: number; body: unknown } {
+  if (err instanceof MissingVersionError) {
+    return { status: 400, body: { code: err.code, message: err.message } };
+  }
+  if (err instanceof RecordVanishedError) {
+    return { status: 404, body: { code: err.code, message: err.message } };
+  }
+  if ((err as { code?: string }).code === DalErrorCodes.ERR01) {
+    // PG-originated concurrency violation
+    return { status: 409, body: { code: DalErrorCodes.ERR01, message: (err as Error).message } };
+  }
+  // ...other DalError subclasses
+  return { status: 500, body: { message: "Internal error" } };
+}
+```
+
+The 409 response typically includes the **current** version of the record so
+the frontend can re-render the merge UI without an extra round-trip.
+
+## Next steps
+
+- [Audit trail](./audit-trail) — the `@AuditTrail()` decorator that turns the
+  version column on, and the audit log that records every version bump.
+- [Collaboration overview](./collaboration) — how optimistic locking,
+  field-level deltas, and visual merge combine into the collaboration module.

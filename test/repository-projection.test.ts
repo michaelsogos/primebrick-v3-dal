@@ -67,7 +67,7 @@ describe("Repository — Project.expr projection", () => {
   it("expr: COUNT(*) with deletedRecords EXCLUDED skips soft-deleted", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "Keep" }, { actor: "u" });
     await repo.add(SimpleTestEntity, { name: "Delete" }, { actor: "u" });
-    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "u", matchBy: "uuid" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid, version: a.version }, { actor: "u", matchBy: "uuid" });
 
     const excluded = await repo.find<SimpleTestEntity, { cnt: bigint }>(
       SimpleTestEntity,

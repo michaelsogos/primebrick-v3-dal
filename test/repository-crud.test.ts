@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
-import { Repository, NotFoundError, MultipleRowsError } from "../src/index.js";
+import { Repository, NotFoundError, MultipleRowsError, RecordVanishedError } from "../src/index.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -163,7 +163,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords EXCLUDED (default)", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid, version: a.version }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Still Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity);
@@ -173,7 +173,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords ONLY", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "ToDelete" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid, version: a.version }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity, null, {
@@ -185,7 +185,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findAll: respects deletedRecords INCLUDED", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "ToDelete" }, { actor: "test-user" });
-    await repo.delete(SimpleTestEntity, { uuid: a.uuid }, { actor: "test-user", matchBy: "uuid" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid, version: a.version }, { actor: "test-user", matchBy: "uuid" });
     await repo.add(SimpleTestEntity, { name: "Active" }, { actor: "test-user" });
 
     const rows = await repo.findAll(SimpleTestEntity, null, {
@@ -243,7 +243,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     const updated = await repo.update(
       SimpleTestEntity,
-      { uuid: inserted.uuid, name: "Updated", description: "New desc" },
+      { uuid: inserted.uuid, name: "Updated", description: "New desc", version: inserted.version },
       { actor: "updater-user", matchBy: "uuid" }
     );
 
@@ -253,14 +253,14 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(updated.version).toBe(inserted.version + 1);
   });
 
-  it("update: throws NotFoundError when uuid not found", async () => {
+  it("update: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: "00000000-0000-0000-0000-000000000000", name: "X" },
+        { uuid: "00000000-0000-0000-0000-000000000000", name: "X", version: 1 },
         { actor: "test-user", matchBy: "uuid" }
       )
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
   it("update: throws ValidationError when no fields to update", async () => {
@@ -271,7 +271,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     );
 
     await expect(
-      repo.update(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" })
+      repo.update(SimpleTestEntity, { uuid: inserted.uuid, version: inserted.version }, { actor: "test-user", matchBy: "uuid" })
     ).rejects.toThrow(/no fields to update/);
   });
 
@@ -284,7 +284,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    const deleted = await repo.delete(SimpleTestEntity, { uuid: inserted.uuid }, {
+    const deleted = await repo.delete(SimpleTestEntity, { uuid: inserted.uuid, version: inserted.version }, {
       actor: "deleter-user",
       matchBy: "uuid",
     });
@@ -294,13 +294,13 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(deleted.version).toBe(inserted.version + 1);
   });
 
-  it("delete: throws NotFoundError when uuid not found", async () => {
+  it("delete: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
   // ─── restore ──────────────────────────────────────────────────────
@@ -312,8 +312,8 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    await repo.delete(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" });
-    const restored = await repo.restore(SimpleTestEntity, { uuid: inserted.uuid }, {
+    const deleted = await repo.delete(SimpleTestEntity, { uuid: inserted.uuid, version: inserted.version }, { actor: "test-user", matchBy: "uuid" });
+    const restored = await repo.restore(SimpleTestEntity, { uuid: inserted.uuid, version: deleted.version }, {
       actor: "restorer-user",
       matchBy: "uuid",
     });
@@ -323,13 +323,13 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(restored.updated_by).toBe("restorer-user");
   });
 
-  it("restore: throws NotFoundError when uuid not found", async () => {
+  it("restore: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
   // ─── hardDelete ───────────────────────────────────────────────────
@@ -341,7 +341,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    await repo.hardDelete(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" });
+    await repo.hardDelete(SimpleTestEntity, { uuid: inserted.uuid, version: inserted.version }, { actor: "test-user", matchBy: "uuid" });
 
     const found = await repo.findByUUID(SimpleTestEntity, inserted.uuid, {
       throwIfNotFound: false,
@@ -349,18 +349,18 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(found).toBeNull();
   });
 
-  it("hardDelete: throws NotFoundError when uuid not found", async () => {
+  it("hardDelete: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
   // ─── upsert ───────────────────────────────────────────────────────
 
-  it("upsert: inserts when no conflict", async () => {
+  it("upsert: inserts when no conflict (INSERT path, no version guard per OD4)", async () => {
     const result = await repo.upsert(
       SimpleTestEntity,
       { name: "Upserted" },
@@ -372,7 +372,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(result.version).toBe(1);
   });
 
-  it("upsert: updates on conflict (uuid already exists)", async () => {
+  it("upsert: updates on conflict (uuid already exists, version guard applies)", async () => {
     const inserted = await repo.add(
       SimpleTestEntity,
       { name: "Original" },
@@ -381,7 +381,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     const result = await repo.upsert(
       SimpleTestEntity,
-      { uuid: inserted.uuid, name: "Upserted Name" },
+      { uuid: inserted.uuid, name: "Upserted Name", version: inserted.version },
       { actor: "upsert-user", conflictTarget: "uuid" }
     );
 

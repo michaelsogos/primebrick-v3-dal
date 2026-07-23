@@ -37,7 +37,7 @@ import type {
   LoggerPort,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
-import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError } from "../errors/errors.js";
+import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError } from "../errors/errors.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
 
@@ -104,6 +104,74 @@ function extractMatchValue(
   const remainingUpdates = { ...updates };
   delete remainingUpdates[matchPropertyKey];
   return { matchValue, remainingUpdates };
+}
+
+/** Find the @AuditableField(VERSION) column from entity metadata, if any. */
+function findVersionColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
+  sqlName: string;
+  propertyKey: string;
+} | null {
+  const col = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+  if (!col) return null;
+  return { sqlName: col.sqlName, propertyKey: col.propertyKey };
+}
+
+/**
+ * Extract the `version` value from the payload and remove it from the SET clause.
+ * Used by `update`/`delete`/`restore`/`hardDelete` for optimistic concurrency control.
+ *
+ * Throws `MissingVersionError` (ERR02) if the entity is auditable (has a version column)
+ * but `version` is not present in the payload.
+ *
+ * For non-auditable entities, returns `null` (no version guard applied).
+ */
+function extractVersion(
+  payload: Record<string, unknown>,
+  versionCol: { sqlName: string; propertyKey: string } | null,
+  entityClassName: string,
+): { expectedVersion: number; remainingPayload: Record<string, unknown> } | null {
+  if (!versionCol) return null; // non-auditable entity — no guard
+  const versionValue = payload[versionCol.propertyKey];
+  if (versionValue === undefined || versionValue === null) {
+    throw new MissingVersionError(
+      `Auditable entity write requires a 'version' field; entity ${entityClassName} is auditable but no version was provided.`,
+    );
+  }
+  const remainingPayload = { ...payload };
+  delete remainingPayload[versionCol.propertyKey];
+  return { expectedVersion: Number(versionValue), remainingPayload };
+}
+
+/**
+ * Disambiguate a zero-row update/delete/restore into ERR01 (version mismatch) or ERR03 (row vanished).
+ *
+ * Runs a `SELECT 1 FROM t WHERE matchCol = $match` — if 0 rows, the row was hard-deleted
+ * (throw RecordVanishedError ERR03); if 1 row, the row exists but version didn't match
+ * (execute PG `RAISE EXCEPTION ... ERRCODE='ERR01'`).
+ *
+ * Called only on the error path (rare), so the extra round-trip is acceptable.
+ */
+async function disambiguateZeroRows(
+  db: Queryable,
+  table: string,
+  matchColSqlName: string,
+  matchParam: unknown,
+  entityClassName: string,
+  expectedVersion: number,
+  versionColSqlName: string,
+): Promise<never> {
+  const checkSql = `SELECT 1 FROM ${table} WHERE ${quoteIdent(matchColSqlName)} = $1 LIMIT 1`;
+  const checkResult = await db.query(checkSql, [matchParam]);
+  if (checkResult.rowCount === 0) {
+    throw new RecordVanishedError(
+      `Entity ${entityClassName}: record vanished — the row was deleted by another writer between read and write.`,
+    );
+  }
+  // Row exists but version doesn't match → PG raises ERR01
+  const raiseSql = `DO $$ BEGIN RAISE EXCEPTION 'Optimistic Concurrency Violation' USING ERRCODE = 'ERR01', DETAIL = 'The record exists but the provided version (${expectedVersion}) does not match the current version of ${entityClassName}.'; END $$;`;
+  await db.query(raiseSql);
+  // Should not reach here — RAISE EXCEPTION aborts the query
+  throw new Error(`Entity ${entityClassName}: disambiguation failed to raise ERR01`);
 }
 
 /** Runtime check: does this entity metadata have auditable columns? */
@@ -428,6 +496,18 @@ export class Repository {
       keys = keys.filter((k) => k !== pk!.propertyKey);
     }
 
+    // Optimistic concurrency: strip version from INSERT keys for auditable entities.
+    // Version is used for the guard (ON CONFLICT path only, per OD4), not for INSERT/SET.
+    const versionCol = findVersionColumn(meta);
+    let expectedVersion: number | null = null;
+    if (versionCol) {
+      const versionValue = rec[versionCol.propertyKey];
+      if (versionValue !== undefined && versionValue !== null) {
+        expectedVersion = Number(versionValue);
+      }
+      keys = keys.filter((k) => k !== versionCol.propertyKey);
+    }
+
     if (keys.length === 0) {
       throw new ValidationError("upsert: no columns to insert (all undefined?)");
     }
@@ -514,15 +594,33 @@ export class Repository {
     const conflictCol = quoteIdent(conflictTarget);
     const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
 
-    // Fetch old record for audit delta (if audit port is provided)
+    // Fetch old record for audit delta AND optimistic concurrency pre-check.
+    // Runs for all auditable entities (not just when audit is enabled) because the
+    // version guard needs to know if the row exists (ON CONFLICT path) or not (INSERT path).
     let oldRecord: Record<string, unknown> | null = null;
-    if (auditable && options.audit && actor !== undefined) {
+    if (auditable) {
       const conflictPropKey = Object.entries(meta.columns).find(([_, c]) => c.sqlName === conflictTarget)?.[1]?.propertyKey;
       const conflictValue = conflictPropKey ? rec[conflictPropKey] : null;
       if (conflictValue !== null && conflictValue !== undefined) {
         const oldSql = `SELECT * FROM ${table} WHERE ${conflictCol} = $1`;
         const oldResult = await this.db.query(oldSql, [conflictValue]);
         oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
+      }
+    }
+
+    // Optimistic concurrency guard — ON CONFLICT path only (row exists), per OD4.
+    // INSERT path (row doesn't exist) skips the guard entirely.
+    if (oldRecord && versionCol) {
+      if (expectedVersion === null) {
+        throw new MissingVersionError(
+          `Auditable entity upsert with existing row requires a 'version' field; entity ${meta.entityClassName} is auditable but no version was provided.`,
+        );
+      }
+      const dbVersion = Number(oldRecord[versionCol.sqlName]);
+      if (dbVersion !== expectedVersion) {
+        // PG raises ERR01 — same mechanism as update/delete/restore/hardDelete
+        const raiseSql = `DO $$ BEGIN RAISE EXCEPTION 'Optimistic Concurrency Violation' USING ERRCODE = 'ERR01', DETAIL = 'The record exists but the provided version (${expectedVersion}) does not match the current version of ${meta.entityClassName}.'; END $$;`;
+        await this.db.query(raiseSql);
       }
     }
 
@@ -534,7 +632,6 @@ export class Repository {
       const pkCol = findPkColumn(meta);
       const entityId = pkCol ? (upserted as any)[pkCol.propertyKey] as bigint : 0n;
       const entityUuid = (upserted as any)["uuid"] as string | undefined ?? "";
-      const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
       const newVersion = versionCol ? (upserted as any)[versionCol.propertyKey] as number : 1;
       const action = oldRecord ? AuditAction.UPDATE : AuditAction.INSERT;
       const delta = oldRecord
@@ -583,6 +680,12 @@ export class Repository {
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
 
+    // Optimistic concurrency: extract version from payload for auditable entities
+    const versionCol = findVersionColumn(meta);
+    const versionExtract = extractVersion(remainingUpdates, versionCol, meta.entityClassName);
+    const expectedVersion = versionExtract?.expectedVersion ?? null;
+    const finalUpdates = versionExtract?.remainingPayload ?? remainingUpdates;
+
     const setClauses: string[] = [];
     const values: unknown[] = [];
     const now = new Date();
@@ -591,7 +694,6 @@ export class Repository {
     if (auditable && actor !== undefined) {
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-      const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
       if (updatedAtCol) {
         setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
@@ -606,9 +708,9 @@ export class Repository {
       }
     }
 
-    // Add user-provided updates
+    // Add user-provided updates (version already stripped by extractVersion)
     let userFieldCount = 0;
-    for (const [key, value] of Object.entries(remainingUpdates)) {
+    for (const [key, value] of Object.entries(finalUpdates)) {
       if (value === undefined) continue;
       const sqlName = getColumnName(entity, key);
       const colMeta = meta.columns[sqlName];
@@ -636,11 +738,23 @@ export class Repository {
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex} RETURNING *`;
+    // Build WHERE clause with optional version guard for optimistic concurrency
+    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
     values.push(matchParam);
+    if (expectedVersion !== null && versionCol) {
+      const versionParamIndex = values.length + 1;
+      values.push(expectedVersion);
+      whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
+    }
+
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
+      if (expectedVersion !== null && versionCol) {
+        // Auditable entity with version guard — disambiguate ERR01 (version mismatch) vs ERR03 (row vanished)
+        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+      }
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
@@ -697,11 +811,16 @@ export class Repository {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
+
+    // Optimistic concurrency: extract version from match payload for auditable entities
+    const versionCol = findVersionColumn(meta);
+    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const expectedVersion = versionExtract?.expectedVersion ?? null;
 
     const now = new Date();
     const setClauses: string[] = [];
@@ -711,7 +830,6 @@ export class Repository {
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
     const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-    const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
     if (deletedAtCol) {
       setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
@@ -745,11 +863,22 @@ export class Repository {
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex} RETURNING *`;
+    // Build WHERE clause with optional version guard for optimistic concurrency
+    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
     values.push(matchParam);
+    if (expectedVersion !== null && versionCol) {
+      const versionParamIndex = values.length + 1;
+      values.push(expectedVersion);
+      whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
+    }
+
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
+      if (expectedVersion !== null && versionCol) {
+        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+      }
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
@@ -807,11 +936,16 @@ export class Repository {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
+
+    // Optimistic concurrency: extract version from match payload for auditable entities
+    const versionCol = findVersionColumn(meta);
+    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const expectedVersion = versionExtract?.expectedVersion ?? null;
 
     const now = new Date();
     const setClauses: string[] = [];
@@ -821,7 +955,6 @@ export class Repository {
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
     const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-    const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
     if (deletedAtCol) {
       setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = NULL`);
@@ -853,11 +986,22 @@ export class Repository {
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex} RETURNING *`;
+    // Build WHERE clause with optional version guard for optimistic concurrency
+    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
     values.push(matchParam);
+    if (expectedVersion !== null && versionCol) {
+      const versionParamIndex = values.length + 1;
+      values.push(expectedVersion);
+      whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
+    }
+
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
+      if (expectedVersion !== null && versionCol) {
+        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+      }
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
@@ -915,9 +1059,14 @@ export class Repository {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+
+    // Optimistic concurrency: extract version from match payload for auditable entities
+    const versionCol = findVersionColumn(meta);
+    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const expectedVersion = versionExtract?.expectedVersion ?? null;
 
     const matchColMeta = meta.columns[matchCol.sqlName];
     const matchParam = jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta));
@@ -930,10 +1079,21 @@ export class Repository {
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
-    const sql = `DELETE FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
-    const result = await this.db.query(sql, [matchParam]);
+    // Build WHERE clause with optional version guard for optimistic concurrency
+    const values: unknown[] = [matchParam];
+    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
+    if (expectedVersion !== null && versionCol) {
+      values.push(expectedVersion);
+      whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${values.length}`;
+    }
+
+    const sql = `DELETE FROM ${table} ${whereClause}`;
+    const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
+      if (expectedVersion !== null && versionCol) {
+        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+      }
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 

@@ -87,7 +87,7 @@ async function benchmark<T>(
 async function cleanup(entity: any, rows: { uuid: string }[]): Promise<void> {
   for (const r of rows) {
     try {
-      await repo.hardDelete(entity, { uuid: r.uuid }, { actor: "bench", matchBy: "uuid" });
+      await repo.hardDelete(entity, { uuid: r.uuid, version: (r as any).version }, { actor: "bench", matchBy: "uuid" });
     } catch {
       // ignore — already deleted
     }
