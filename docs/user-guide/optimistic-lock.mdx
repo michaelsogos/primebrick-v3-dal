@@ -99,6 +99,26 @@ For `upsert()`, the version guard only applies on the **ON CONFLICT (update)**
 branch. The pure-INSERT branch (no existing row) starts at `version = 1` and
 needs no guard — there is nothing to conflict with.
 
+### Guard flow
+
+<Mermaid chart={`flowchart TD
+  Read([Client reads row<br/>version = 3]) --> Edit[Client edits fields]
+  Edit --> Send[Send update WITH version=3]
+  Send --> Sql["UPDATE ... SET version = version + 1<br/>WHERE match = $match AND version = 3"]
+  Sql --> Check{rowCount?}
+  Check -->|1 row| Success([Success — row now version 4])
+  Check -->|0 rows| Disamb[Disambiguation SELECT<br/>SELECT 1 FROM t WHERE match = $match]
+  Disamb --> Exists{Row exists?}
+  Exists -->|no| Err03[throw RecordVanishedError<br/>ERR03 — HTTP 404]
+  Exists -->|yes| Raise["RAISE EXCEPTION<br/>USING ERRCODE = 'ERR01'"]
+  Raise --> Err01([DatabaseError code=ERR01<br/>HTTP 409])
+`} />
+
+The guard, the version increment, and the write all happen in a single SQL
+statement — there is no window where the version has been bumped but the guard
+has not yet run. The disambiguation `SELECT` runs only on the error path (the
+rare case), so the extra round-trip is acceptable.
+
 ### Disambiguation: ERR01 vs ERR03
 
 When a guarded write matches **zero rows**, the DAL cannot tell from the row
@@ -213,23 +233,23 @@ to the DAL. The DAL strips `version` out of the SET clause, uses it in the
 WHERE guard, and bumps it by 1.
 
 ```typescript
-import { Repository, Filter, MissingVersionError } from "@primebrick/dal-pg";
+import { Repository, Filter, field, MissingVersionError } from "@primebrick/dal-pg";
 import type { Pool } from "pg";
 
 const repo = new Repository(pool as unknown as Pool);
 
 // 1. Read the record — note its version.
 const [customer] = await repo.findAll(CustomerEntity, null, {
-  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+  filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
 // customer.version === 3
 
 // 2. User edits "name" in the UI. Send the update WITH the version we read.
 const updated = await repo.update(
   CustomerEntity,
-  { uuid: customerUuid },
+  customerUuid,                              // matchValue (scalar)
   { name: "Acme Corp", version: customer.version },
-  { actor: userUuid },
+  { actor: userUuid, matchBy: "uuid" },
 );
 // SQL: UPDATE customers SET name = $1, updated_at = now(), updated_by = $2,
 //      version = version + 1 WHERE uuid = $3 AND version = 4
@@ -244,7 +264,7 @@ not a silent unguarded write.
 import { MissingVersionError, DalErrorCodes } from "@primebrick/dal-pg";
 
 try {
-  await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "Acme Corp" }, { actor: userUuid });
+  await repo.update(CustomerEntity, customerUuid, { name: "Acme Corp" }, { actor: userUuid, matchBy: "uuid" });
 } catch (err) {
   if (err instanceof MissingVersionError) {
     // err.code === "ERR02" → HTTP 400
@@ -262,22 +282,22 @@ zero rows. The DAL disambiguates, confirms the row still exists, and raises
 `code === "ERR01"`.
 
 ```typescript
-import { DalErrorCodes } from "@primebrick/dal-pg";
+import { DalErrorCodes, Filter, field } from "@primebrick/dal-pg";
 
 // Both User A and User B read the customer at version 3.
 const [forA] = await repo.findAll(CustomerEntity, null, {
-  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+  filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
 const [forB] = await repo.findAll(CustomerEntity, null, {
-  filters: [Filter.eq(CustomerEntity, "uuid", customerUuid)],
+  filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
 
 // User B saves first — succeeds, row is now version 4.
-await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "B's edit", version: forB.version }, { actor: userBUuid });
+await repo.update(CustomerEntity, customerUuid, { name: "B's edit", version: forB.version }, { actor: userBUuid, matchBy: "uuid" });
 
 // User A saves later — version 3 no longer matches.
 try {
-  await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "A's edit", version: forA.version }, { actor: userAUuid });
+  await repo.update(CustomerEntity, customerUuid, { name: "A's edit", version: forA.version }, { actor: userAUuid, matchBy: "uuid" });
 } catch (err: any) {
   // node-postgres DatabaseError propagated from RAISE EXCEPTION ... ERRCODE = 'ERR01'
   if (err.code === DalErrorCodes.ERR01) {
@@ -298,7 +318,7 @@ PG-originated error into `OptimisticLockError` at its boundary:
 import { OptimisticLockError, DalErrorCodes } from "@primebrick/dal-pg";
 
 try {
-  await repo.update(CustomerEntity, { uuid }, { name, version }, { actor });
+  await repo.update(CustomerEntity, uuid, { name, version }, { actor, matchBy: "uuid" });
 } catch (err: any) {
   if (err.code === DalErrorCodes.ERR01) {
     throw new OptimisticLockError(err.message); // now catchable via instanceof
@@ -341,9 +361,139 @@ function dalErrorToHttp(err: unknown): { status: number; body: unknown } {
 The 409 response typically includes the **current** version of the record so
 the frontend can re-render the merge UI without an extra round-trip.
 
+## Retry pattern
+
+When a writer receives `ERR01` (409), the standard recovery is: re-read the
+current row, re-apply the user's edits on top of it, and retry the write with
+the new version. A bounded retry loop prevents infinite loops under sustained
+contention.
+
+```typescript
+import { DalErrorCodes, type Dal } from "@primebrick/dal-pg";
+import type { CustomerEntity } from "./entities/customer.entity.js";
+
+async function updateWithRetry(
+  dal: Dal,
+  customerUuid: string,
+  applyEdits: (current: CustomerEntity) => Partial<CustomerEntity>,
+  actor: string,
+  maxAttempts = 3,
+): Promise<CustomerEntity> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // 1. Read the current row (its version is what we must match).
+    const current = await dal.findByUUID(CustomerEntity, customerUuid);
+
+    // 2. Apply the user's edits on top of the current row.
+    const edits = applyEdits(current);
+
+    // 3. Attempt the write with the version we just read.
+    try {
+      return await dal.update(
+        CustomerEntity,
+        customerUuid,
+        { ...edits, version: current.version },
+        { actor, matchBy: "uuid" },
+      );
+    } catch (err: any) {
+      if (err.code === DalErrorCodes.ERR01 && attempt < maxAttempts) {
+        // 409 — another writer got there first. Loop, re-read, retry.
+        continue;
+      }
+      if (err.code === DalErrorCodes.ERR03) {
+        // 404 — the row was hard-deleted by another writer. Don't retry.
+        throw err;
+      }
+      throw err;
+    }
+  }
+  throw new Error("unreachable");
+}
+
+// Usage — the caller expresses the edit as a pure function of the current row:
+const updated = await updateWithRetry(
+  dal,
+  customerUuid,
+  (current) => ({ name: `${current.name} (edited)` }),
+  userUuid,
+);
+```
+
+The `applyEdits` function is a pure function of the current row — this is what
+makes the retry safe. If the row changed between attempts, the edit is
+re-applied on top of the new state, not the stale state.
+
+## Bulk operations
+
+The version guard applies per-row inside bulk operations too:
+
+| Operation | Version guard behavior |
+|-----------|-------------------------|
+| `addMany` | No guard — pure INSERT, all rows start at `version = 1` |
+| `upsertMany` | Guard applies on the ON CONFLICT (update) branch only; the pure-INSERT branch starts at `version = 1` |
+| `updateMany` | Guard applies per row — each row in the batch must include its `version`, and the TEMP TABLE UPDATE emits `WHERE match = $match AND version = $expected` per row |
+| `deleteMany` | Guard applies per row — each soft-delete emits `WHERE match = $match AND version = $expected` |
+
+```typescript
+// updateMany — every row must carry its version.
+const updated = await dal.updateMany(CustomerEntity, [
+  { id: 1n, name: "Alice 2", version: 3 },
+  { id: 2n, name: "Bob 2",   version: 5 },
+], { actor: "system", matchBy: "id", timeoutMs: 60_000 });
+// If any row's version doesn't match, the whole batch fails with ERR01.
+// Use a smaller batch + retry per-row if partial success is required.
+```
+
+If partial success is required (some rows succeed, some conflict), split the
+batch into individual `update` calls and catch `ERR01` per row — the TEMP TABLE
+strategy is all-or-nothing by design (atomicity is the point).
+
+## Express error-handling example
+
+A complete Express middleware that maps the three optimistic-locking codes to
+HTTP responses, including the 409-with-current-record pattern:
+
+```typescript
+import type { Request, Response, NextFunction } from "express";
+import { DalErrorCodes, MissingVersionError, RecordVanishedError, DalError } from "@primebrick/dal-pg";
+
+export async function updateCustomer(req: Request, res: Response, next: NextFunction) {
+  try {
+    const updated = await dal.update(
+      CustomerEntity,
+      req.params.uuid,
+      { ...req.body },  // body must include `version`
+      { actor: req.user.uuid, matchBy: "uuid" },
+    );
+    res.json(updated);
+  } catch (err) {
+    if (err instanceof MissingVersionError) {
+      res.status(400).json({ code: err.code, message: err.message });
+      return;
+    }
+    if (err instanceof RecordVanishedError) {
+      res.status(404).json({ code: err.code, message: err.message });
+      return;
+    }
+    if ((err as { code?: string }).code === DalErrorCodes.ERR01) {
+      // 409 — include the current record so the FE can re-merge without a refetch.
+      const current = await dal.findByUUID(CustomerEntity, req.params.uuid, { throwIfNotFound: false });
+      res.status(409).json({
+        code: DalErrorCodes.ERR01,
+        message: "The record was modified by another user. Please re-merge and retry.",
+        current_version: current?.version,
+        current_record: current,
+      });
+      return;
+    }
+    next(err);
+  }
+}
+```
+
 ## Next steps
 
 - [Audit trail](./audit-trail) — the `@AuditTrail()` decorator that turns the
   version column on, and the audit log that records every version bump.
-- [Collaboration overview](./collaboration) — how optimistic locking,
-  field-level deltas, and visual merge combine into the collaboration module.
+- [Repository](./repository) — the `update`/`upsert`/`delete`/`restore`/`hardDelete` signatures.
+- [Architecture](./architecture) — the error-handling philosophy and stable code design.
+- [Connections & transactions](./connections) — how `statement_timeout` interacts with the guard.

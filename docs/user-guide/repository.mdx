@@ -1,0 +1,404 @@
+---
+title: Repository
+description: Finders, writes, bulk operations, streaming, and clone — the full Repository API.
+---
+
+# Repository
+
+The `Repository` is the low-level engine that turns entity metadata + the
+[Query DSL](./query-dsl) into parameterized SQL. The Dal gateway delegates to
+an internal `Repository(pool)`, so `dal.findById(...)` and `repo.findById(...)`
+are the same call. Use `new Repository(client)` directly only when you need to
+participate in a transaction via `dal.withClient()` — see
+[Connections & transactions](./connections).
+
+```typescript
+import { getDal, Repository } from "@primebrick/dal-pg";
+
+const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp" });
+
+// dal.add, dal.findAll, dal.update, ... all delegate to an internal Repository.
+// Inside a transaction, construct a Repository backed by the pooled client:
+await dal.withClient(async (client) => {
+  const repo = new Repository(client);
+  await client.query("BEGIN");
+  await repo.add(CustomerEntity, { name: "TX" }, { actor: "tx" });
+  await client.query("COMMIT");
+});
+```
+
+## Finders
+
+### `findById(entity, id, options?)`
+
+Find a single row by its `@Key()` column. `id` is `bigint | string` (matches
+`bigint` PKs). Throws `NotFoundError` by default if no row matches; pass
+`throwIfNotFound: false` to return `null` instead.
+
+```typescript
+const found = await dal.findById(CustomerEntity, 42n);
+// SELECT ... FROM customers WHERE id = $1 LIMIT 1
+
+const maybe = await dal.findById(CustomerEntity, 42n, { throwIfNotFound: false });
+// maybe is null if no row matches
+```
+
+### `findByUUID(entity, uuid, options?)`
+
+Find a single row by its UUID. Assumes the entity has a `uuid` column (the
+convention enforced by `IExposableEntity`). Same throw/return semantics as
+`findById`.
+
+```typescript
+const found = await dal.findByUUID(CustomerEntity, "550e8400-e29b-41d4-a716-446655440000");
+```
+
+### `find(entity, projections, options?)`
+
+Find a single row matching the filters. Throws `NotFoundError` by default if
+zero rows match; throws `MultipleRowsError` if more than one row matches. Pass
+`throwIfNotFound: false` to return `null` instead of throwing on zero rows.
+
+```typescript
+import { Filter, field } from "@primebrick/dal-pg";
+
+const found = await dal.find(CustomerEntity, null, {
+  filters: [Filter.fieldValue(field(CustomerEntity, "email"), "=", "alice@example.com")],
+});
+// SELECT ... FROM customers WHERE email = $1 LIMIT 2
+// (LIMIT 2 so the DAL can detect >1 row and throw MultipleRowsError)
+```
+
+### `findAll(entity, projections, options?)`
+
+Find all rows matching the filters. Returns `TResult[]` (empty array if no
+matches). Pass `stream: true` to get an `AsyncIterable` instead — see
+[Streaming](#streaming) below.
+
+```typescript
+import { Filter, Sort, field } from "@primebrick/dal-pg";
+
+const rows = await dal.findAll(CustomerEntity, null, {
+  filters: [Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true)],
+  sorting: [Sort.by(field(CustomerEntity, "created_at"), "DESC")],
+});
+```
+
+### `findByPage(entity, projections, options?)`
+
+Paginated find. Returns `PaginatedEntity&lt;TEntity&gt;` — `&lbrace; entities, total_records &rbrace;`.
+`total_records` is `bigint` (PostgreSQL `COUNT(*)` returns `bigint`). Pass
+`limit` and `offset` on the options.
+
+```typescript
+const page = await dal.findByPage(CustomerEntity, null, {
+  filters: [Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true)],
+  sorting: [Sort.by(field(CustomerEntity, "created_at"), "DESC")],
+  limit: 20,
+  offset: 0,
+});
+console.log(page.entities.length);          // ≤ 20
+console.log(page.total_records);            // bigint — total matching rows
+```
+
+### `count(entity, options?)`
+
+Count rows matching the filters. Returns `bigint`.
+
+```typescript
+const total = await dal.count(CustomerEntity, {
+  filters: [Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true)],
+});
+// total is bigint — use Number(total) if you know it's < 2^53
+```
+
+### `FindOptions`
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `throwIfNotFound` | `boolean` | `true` (for `find`) | Throw `NotFoundError` on zero rows |
+| `deletedRecords` | `"EXCLUDED" \| "ONLY" \| "INCLUDED"` | `"EXCLUDED"` | How to handle soft-deleted rows |
+| `filters` | `FilterExpr[]` | `[]` | WHERE predicates |
+| `sorting` | `SortingExpr[]` | `[]` | ORDER BY clauses |
+| `joins` | `JoinExpr[]` | `[]` | JOIN clauses |
+| `stream` | `boolean` | `false` | Stream results via `pg-query-stream` |
+| `tableName` | `string` | entity's table | Override the table name (e.g. for audit tables) |
+
+### `deletedRecords` modes
+
+| Mode | Behavior |
+|------|----------|
+| `"EXCLUDED"` (default) | `WHERE deleted_at IS NULL` — soft-deleted rows invisible |
+| `"INCLUDED"` | No `deleted_at` filter — all rows returned |
+| `"ONLY"` | `WHERE deleted_at IS NOT NULL` — only soft-deleted rows returned |
+
+```typescript
+// Default — exclude soft-deleted:
+await dal.findAll(CustomerEntity, null, {});
+
+// Include soft-deleted:
+await dal.findAll(CustomerEntity, null, { deletedRecords: "INCLUDED" });
+
+// Only soft-deleted (e.g. for a trash bin UI):
+await dal.findAll(CustomerEntity, null, { deletedRecords: "ONLY" });
+```
+
+## Writes
+
+Every write returns the full hydrated row (`RETURNING *`). For auditable
+entities, pass `AuditableWriteOptions` (which requires `actor`); for
+non-auditable entities, pass plain `WriteOptions`.
+
+### `add(entity, values, options?)`
+
+Insert a single row. The DAL auto-fills `created_at`, `created_by`,
+`updated_at`, `updated_by`, `version` for auditable entities — you only pass
+business fields.
+
+```typescript
+const created = await dal.add(CustomerEntity, {
+  name: "Alice",
+  email: "alice@example.com",
+  is_active: true,
+}, { actor: "system" });
+// INSERT INTO customers (name, email, is_active, created_at, created_by, updated_at, updated_by, version)
+// VALUES ($1, $2, $3, now(), $4, now(), $4, 1) RETURNING *
+// created.version === 1
+```
+
+### `upsert(entity, values, options?)`
+
+Insert or update on conflict. `conflictTarget` defaults to the `@Key()` column;
+override with `UpsertOptions.conflictTarget` (e.g. `"email"` for a natural key).
+The version guard applies on the ON CONFLICT (update) branch only — the
+pure-INSERT branch starts at `version = 1`.
+
+```typescript
+const upserted = await dal.upsert(CustomerEntity, {
+  uuid: "550e8400-e29b-41d4-a716-446655440000",
+  name: "Alice 2",
+  email: "alice@example.com",
+  version: 3,
+}, {
+  actor: "system",
+  conflictTarget: "uuid",
+});
+// INSERT ... ON CONFLICT (uuid) DO UPDATE SET ... WHERE customers.version = $expected
+```
+
+### `update(entity, matchValue, updates, options?)`
+
+Update a single row. `matchValue` is the value of the `matchBy` column
+(defaults to `@Key()`). For auditable entities, `updates` must include the
+`version` you read — the version guard runs atomically in the same UPDATE
+statement. See [Optimistic locking](./optimistic-lock).
+
+```typescript
+// Match by PK (default):
+const updated = await dal.update(
+  CustomerEntity,
+  42n,                            // matchValue — the PK value
+  { name: "Alice 2", version: 3 },
+  { actor: "system" },
+);
+// UPDATE customers SET name = $1, updated_at = now(), updated_by = $2, version = version + 1
+// WHERE id = $3 AND version = $4 RETURNING *
+
+// Match by uuid instead of PK:
+const updated2 = await dal.update(
+  CustomerEntity,
+  "550e8400-e29b-41d4-a716-446655440000",
+  { name: "Alice 3", version: 4 },
+  { actor: "system", matchBy: "uuid" },
+);
+```
+
+### `delete(entity, matchValue, options?)` — soft delete
+
+Soft-delete a row: sets `deleted_at` and `deleted_by`, increments `version`.
+The row stays in the table and is excluded from default finders. Returns the
+deleted row.
+
+```typescript
+const deleted = await dal.delete(CustomerEntity, 42n, { actor: "system" });
+// UPDATE customers SET deleted_at = now(), deleted_by = $1, updated_at = now(), updated_by = $1, version = version + 1
+// WHERE id = $2 AND version = $3 RETURNING *
+console.log(deleted.deleted_at); // Date
+```
+
+### `restore(entity, matchValue, options?)`
+
+Restore a soft-deleted row: clears `deleted_at` and `deleted_by`, increments
+`version`. Returns the restored row.
+
+```typescript
+const restored = await dal.restore(CustomerEntity, 42n, { actor: "system" });
+// UPDATE customers SET deleted_at = NULL, deleted_by = NULL, updated_at = now(), updated_by = $1, version = version + 1
+// WHERE id = $2 AND version = $3 RETURNING *
+console.log(restored.deleted_at); // null
+```
+
+### `hardDelete(entity, matchValue, options?)`
+
+Permanently delete a row (`DELETE FROM ...`). The row is gone — no soft-delete
+flag, no restore. The version guard still applies (so a concurrent writer can't
+hard-delete a row you're about to update). Returns `void`.
+
+```typescript
+await dal.hardDelete(CustomerEntity, 42n, { actor: "system" });
+// DELETE FROM customers WHERE id = $1 AND version = $2
+```
+
+### `WriteOptions` and `AuditableWriteOptions`
+
+| Field | Type | Required for | Purpose |
+|-------|------|--------------|---------|
+| `actor` | `string` | auditable entities | Stamped into `created_by`/`updated_by`/`deleted_by` |
+| `audit` | `AuditPort` | optional | If injected, write ops emit field-level audit deltas |
+| `logger` | `LoggerPort` | optional | If injected, audit errors are logged instead of swallowed |
+| `tableName` | `string` | optional | Override the table name (e.g. for audit tables) |
+
+### `MatchByOptions`
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `matchBy` | `keyof TEntity & string` | the `@Key()` column | Which property to use as the WHERE left operand |
+
+## Bulk operations
+
+Bulk ops handle large row counts without hitting PostgreSQL's 65535-parameter
+limit. See [Architecture: bulk strategies](./architecture#bulk-operation-strategies)
+for the TEMP TABLE strategy used by `updateMany`.
+
+### `addMany(entity, rows, options?)`
+
+Batched multi-row INSERT. Auto-calculated batch size stays under the parameter
+limit. Returns all inserted rows.
+
+```typescript
+const inserted = await dal.addMany(CustomerEntity, [
+  { name: "Alice", email: "alice@x.com" },
+  { name: "Bob",   email: "bob@x.com" },
+  { name: "Carol", email: "carol@x.com" },
+], { actor: "system" });
+// INSERT INTO customers (name, email, ...) VALUES ($1, $2, ...), ($n, $n+1, ...) RETURNING *
+```
+
+### `upsertMany(entity, rows, options?)`
+
+Batched INSERT ... ON CONFLICT DO UPDATE. Uses the TEMP TABLE strategy for
+large batches. Returns all upserted rows.
+
+```typescript
+const upserted = await dal.upsertMany(CustomerEntity, [
+  { uuid: "uuid-1", name: "Alice 2", email: "alice@x.com", version: 2 },
+  { uuid: "uuid-2", name: "Bob 2",   email: "bob@x.com",   version: 2 },
+], { actor: "system", conflictTarget: "uuid", timeoutMs: 60_000 });
+// timeoutMs emits SET LOCAL statement_timeout inside the tx (no leakage)
+```
+
+### `updateMany(entity, rows, options?)`
+
+Batched UPDATE using the TEMP TABLE strategy: `CREATE TEMP TABLE`, batched
+INSERT into it, then `UPDATE target SET ... FROM temp WHERE target.id = temp.id`.
+Atomic and SQL-injection safe. Returns all updated rows.
+
+```typescript
+const updated = await dal.updateMany(CustomerEntity, [
+  { id: 1n, name: "Alice 2", version: 2 },
+  { id: 2n, name: "Bob 2",   version: 2 },
+], { actor: "system", matchBy: "id", timeoutMs: 60_000 });
+```
+
+### `deleteMany(entity, matchValues, options?)`
+
+Bulk soft-delete. `matchValues` is an array of match values (PK by default).
+Returns `void`.
+
+```typescript
+await dal.deleteMany(CustomerEntity, [1n, 2n, 3n], { actor: "system" });
+```
+
+### `BulkOptions`
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `batchSize` | `number` | auto-calculated | Override the batch size (rarely needed) |
+| `timeoutMs` | `number` | session default | Per-statement timeout in ms (transaction-scoped) |
+
+## Clone
+
+### `clone(entity, sourceUuid, options)`
+
+Copy a record by UUID. Fetches the source (including soft-deleted rows),
+excludes the PK and `@Unique` columns, stamps the `@CloneField` column with the
+source UUID, resets audit/deletable fields, and inserts the new row. See
+[Clone](./clone) for the full 7-step flow.
+
+```typescript
+const cloned = await dal.clone(CustomerEntity, sourceUuid, { actor: userUuid });
+// cloned.uuid is a new random UUID
+// cloned.cloned_from === sourceUuid
+// cloned.version === 1
+```
+
+## Streaming
+
+`findAll` with `stream: true` returns an `AsyncIterable` backed by
+`pg-query-stream`. Each `FETCH` batch is bounded by the session
+`statement_timeout` — safe for very large result sets that would otherwise
+exhaust memory.
+
+```typescript
+const stream = await dal.findAll(CustomerEntity, null, {
+  stream: true,
+}) as AsyncIterable<typeof CustomerEntity.prototype>;
+
+for await (const row of stream) {
+  console.log(row.id, row.name);
+  // row-by-row streaming — no buffering of the full result set
+}
+```
+
+The stream is a Node.js async iterator; you can use `for await ... of`, pipe it
+through a transform, or collect it with `Array.fromAsync` (Node 22+).
+
+## Error handling
+
+Every DAL error extends the abstract `DalError` class, which adds a stable
+`code: string` property. Branch on `instanceof` or on `err.code` — both work.
+
+```typescript
+import {
+  NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError,
+  MissingVersionError, RecordVanishedError, OptimisticLockError,
+  DalErrorCodes,
+} from "@primebrick/dal-pg";
+
+try {
+  await dal.findByUUID(CustomerEntity, "nonexistent-uuid");
+} catch (err) {
+  if (err instanceof NotFoundError) {
+    // err.code === "NOT_FOUND"
+  } else if (err instanceof MissingVersionError) {
+    // err.code === DalErrorCodes.ERR02 ("ERR02")
+  } else if (err instanceof RecordVanishedError) {
+    // err.code === DalErrorCodes.ERR03 ("ERR03")
+  } else {
+    throw err;
+  }
+}
+```
+
+See [Architecture: error handling philosophy](./architecture#error-handling-philosophy)
+for the full code table, and [Optimistic locking](./optimistic-lock) for the
+`ERR01`/`ERR02`/`ERR03` flow.
+
+## Next steps
+
+- [Connections & transactions](./connections) — pool config, `withClient`, per-call timeouts, graceful shutdown.
+- [Query DSL](./query-dsl) — the expressions passed to finders.
+- [Audit trail](./audit-trail) — the `AuditPort` system that hooks into write ops.
+- [Optimistic locking](./optimistic-lock) — the version guard on auditable writes.
+- [Clone](./clone) — the 7-step clone flow.
+- [API reference](./api-reference) — the full mechanical listing of every exported symbol.

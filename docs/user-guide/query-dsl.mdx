@@ -1,0 +1,295 @@
+---
+title: Query DSL
+description: Build type-safe filters, sorts, joins, and projections with field, Filter, Sort, Join, and Project.
+---
+
+# Query DSL
+
+The Query DSL is a composable, type-safe way to express `WHERE`, `ORDER BY`,
+`JOIN`, and `SELECT` clauses. Every expression is a plain object the
+`Repository` resolves into parameterized SQL at query time — no string
+interpolation, no SQL injection.
+
+The five building blocks are:
+
+| Building block | Purpose | SQL clause |
+|----------------|---------|-----------|
+| `field(Entity, "prop")` | Type-safe column reference | `table.column` |
+| `Filter.fieldValue` / `fieldField` / `raw` / `group` | WHERE predicates | `WHERE ...` |
+| `Sort.by` | Sort direction | `ORDER BY ...` |
+| `Join.on` | Join another entity | `JOIN ... ON ...` |
+| `Project.field` / `expr` | Select specific columns or expressions | `SELECT ...` |
+
+## `field()` — type-safe column reference
+
+`field(Entity, "property_name")` returns a `FieldRef` — a typed reference to a
+column on an entity. The property name is checked at compile time against the
+entity's keys, so a typo is a TypeScript error, not a runtime SQL error.
+
+```typescript
+import { field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+
+const nameRef = field(CustomerEntity, "name");
+//    ^? FieldRef<CustomerEntity, "name">
+
+// TypeScript error: Argument of type '"nme"' is not assignable to parameter of type 'keyof CustomerEntity & string'.
+// const bad = field(CustomerEntity, "nme");
+```
+
+Every `Filter`, `Sort`, `Join`, and `Project.field` accepts a `FieldRef`. The
+`Repository` resolves it to the qualified `&lt;schema&gt;.&lt;table&gt;.&lt;column&gt;` name
+using entity metadata at query time.
+
+## `Filter` — WHERE predicates
+
+`Filter` is a namespace with four factories. Each returns a `FilterExpr` — a
+plain object the query builder turns into a parameterized `WHERE` clause.
+
+### `Filter.fieldValue(left, op, right, operand?)`
+
+The most common form: compare a column to a literal value. `right` is bound as
+a `$n` parameter — never interpolated into the SQL string.
+
+```typescript
+import { Filter, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+
+const filters = [
+  Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true),
+  Filter.fieldValue(field(CustomerEntity, "name"), "ILIKE", "Alice%"),
+];
+// → WHERE customers.is_active = $1 AND customers.name ILIKE $2
+```
+
+### `Filter.fieldField(left, op, right, operand?)`
+
+Compare two columns (useful in joins and self-comparisons).
+
+```typescript
+import { Filter, field } from "@primebrick/dal-pg";
+import { OrderEntity } from "./entities/order.entity.js";
+
+const filters = [
+  Filter.fieldField(field(OrderEntity, "shipped_at"), ">", field(OrderEntity, "created_at")),
+];
+// → WHERE orders.shipped_at > orders.created_at
+```
+
+### `Filter.raw(left, op, right, operand?)`
+
+Escape hatch for raw SQL fragments. Use sparingly — `left` and `right` are
+emitted as-is into the SQL string, so you are responsible for safety. Prefer
+`fieldValue` whenever the operand is a literal.
+
+```typescript
+import { Filter } from "@primebrick/dal-pg";
+
+const filters = [
+  Filter.raw("EXTRACT(YEAR FROM customers.created_at)", "=", "2025"),
+];
+// → WHERE EXTRACT(YEAR FROM customers.created_at) = 2025
+```
+
+### `Filter.group(filters, operand?)`
+
+Group filters with parentheses. The `operand` controls whether the group is
+AND-ed or OR-ed with its siblings.
+
+```typescript
+import { Filter, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+
+const filters = [
+  Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true),
+  Filter.group([
+    Filter.fieldValue(field(CustomerEntity, "name"), "ILIKE", "Alice%"),
+    Filter.fieldValue(field(CustomerEntity, "name"), "ILIKE", "Bob%"),
+  ], "OR"),
+];
+// → WHERE customers.is_active = $1 AND (customers.name ILIKE $2 OR customers.name ILIKE $3)
+```
+
+### `SqlOperator`
+
+The full set of operators accepted by `Filter.fieldValue` / `fieldField` /
+`raw`:
+
+| Operator | SQL | Notes |
+|----------|-----|-------|
+| `=` | `=` | equality |
+| `!=` / `<>` | `!=` / `<>` | inequality (both accepted) |
+| `<`, `<=`, `>`, `>=` | `<`, `<=`, `>`, `>=` | comparison |
+| `ILIKE` | `ILIKE` | case-insensitive LIKE (PostgreSQL) |
+| `LIKE` | `LIKE` | case-sensitive LIKE |
+| `IN` | `IN` | `right` is an array → `= ANY($n)` |
+| `NOT IN` | `NOT IN` | `right` is an array → `<> ALL($n)` |
+| `BETWEEN` | `BETWEEN` | `right` is `[low, high]` |
+| `IS` / `IS NOT` | `IS` / `IS NOT` | for `NULL` / `TRUE` / `FALSE` |
+
+### `SqlExpressionOperand`
+
+Every filter accepts an optional `operand: "AND" | "OR"` (default `"AND"`)
+that controls how it combines with the previous filter in the array. This is
+how you build `WHERE a AND (b OR c)` without nested groups — though `Filter.group`
+is clearer for that case.
+
+## `Sort` — ORDER BY
+
+`Sort.by(field, dir?)` returns a `SortingExpr`. `dir` defaults to `"ASC"`.
+
+```typescript
+import { Sort, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+
+const sorting = [
+  Sort.by(field(CustomerEntity, "created_at"), "DESC"),
+  Sort.by(field(CustomerEntity, "name"), "ASC"),
+];
+// → ORDER BY customers.created_at DESC, customers.name ASC
+```
+
+`SqlSortDirection` is `"ASC" | "DESC"`.
+
+## `Join` — JOIN another entity
+
+`Join.on(left, right, type?, options?)` returns a `JoinExpr`. The `left` is the
+**joined** table's field; `right` is the **base** table's field. The argument
+order matches standard SQL `JOIN left ON left.x = right.y` reading order.
+
+> **Breaking change in 0.1.9:** the argument order was swapped from
+> `Join.on(right, left, ...)` to `Join.on(left, right, ...)`. See
+> [Changelog](./changelog).
+
+```typescript
+import { Join, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+import { OrderEntity } from "./entities/order.entity.js";
+
+const joins = [
+  Join.on(
+    field(OrderEntity, "customer_id"),   // left  — joined table
+    field(CustomerEntity, "id"),         // right — base table
+    "LEFT",                              // type  — INNER | LEFT | RIGHT (default INNER)
+  ),
+];
+// → LEFT JOIN orders ON orders.customer_id = customers.id
+```
+
+### `castRightTo` / `castLeftTo` — type casts in the ON clause
+
+When the two sides of an `ON` have different PG types (e.g. `text` vs `uuid`),
+use `castRightTo` / `castLeftTo` to add an explicit cast. This is how
+`buildAuditTrailJoins()` safely joins `changed_by` (text) to `user_profile.uuid`
+(uuid): the cast triggers a regex guardrail that excludes non-UUID values like
+`"system"` rather than throwing a cast error.
+
+```typescript
+Join.on(
+  field(UserProfileEntity, "uuid"),
+  field(AuditLogEntity, "changed_by"),
+  "LEFT",
+  { castRightTo: "uuid", castLeftTo: "uuid" },
+),
+// → LEFT JOIN user_profile ON user_profile.uuid::uuid = audit_log.changed_by::uuid
+```
+
+`SqlJoinType` is `"INNER" | "LEFT" | "RIGHT"`.
+
+## `Project` — SELECT specific columns or expressions
+
+By default, finders select every column of the entity. Pass a `projections`
+array to select specific columns or SQL expressions. Each projection becomes a
+column in the result row.
+
+### `Project.field(fieldRef, alias?)`
+
+Select a column from the entity (or a joined entity).
+
+```typescript
+import { Project, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+
+const projections = [
+  Project.field(field(CustomerEntity, "uuid")),
+  Project.field(field(CustomerEntity, "name"), "display_name"),
+];
+// → SELECT customers.uuid, customers.name AS display_name
+```
+
+### `Project.expr(expr, alias)`
+
+Select a raw SQL expression with an alias. Use for aggregates, function calls,
+or computed columns.
+
+```typescript
+import { Project } from "@primebrick/dal-pg";
+
+const projections = [
+  Project.expr("COUNT(*)", "row_count"),
+  Project.expr("MAX(customers.created_at)", "latest_created"),
+];
+// → SELECT COUNT(*) AS row_count, MAX(customers.created_at) AS latest_created
+```
+
+## Putting it all together
+
+A complete query with filters, sorting, a join, and projections:
+
+```typescript
+import { getDal, Filter, Sort, Join, Project, field } from "@primebrick/dal-pg";
+import { CustomerEntity } from "./entities/customer.entity.js";
+import { OrderEntity } from "./entities/order.entity.js";
+import { UserProfileEntity } from "./entities/user-profile.entity.js";
+
+const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp" });
+
+const rows = await dal.findAll(
+  CustomerEntity,
+  [
+    Project.field(field(CustomerEntity, "uuid")),
+    Project.field(field(CustomerEntity, "name")),
+    Project.field(field(UserProfileEntity, "display_name"), "created_by_name"),
+    Project.expr("COUNT(orders.id)", "order_count"),
+  ],
+  {
+    filters: [
+      Filter.fieldValue(field(CustomerEntity, "is_active"), "=", true),
+      Filter.fieldValue(field(CustomerEntity, "created_at"), ">=", new Date("2025-01-01")),
+    ],
+    joins: [
+      Join.on(field(OrderEntity, "customer_id"), field(CustomerEntity, "id"), "LEFT"),
+      Join.on(
+        field(UserProfileEntity, "uuid"),
+        field(CustomerEntity, "created_by"),
+        "LEFT",
+        { castRightTo: "uuid", castLeftTo: "uuid" },
+      ),
+    ],
+    sorting: [
+      Sort.by(field(CustomerEntity, "created_at"), "DESC"),
+    ],
+  },
+);
+// Each row has: { uuid, name, created_by_name, order_count }
+```
+
+The generated SQL (simplified):
+
+```sql
+SELECT customers.uuid, customers.name,
+       user_profile.display_name AS created_by_name,
+       COUNT(orders.id) AS order_count
+FROM customers
+LEFT JOIN orders ON orders.customer_id = customers.id
+LEFT JOIN user_profile ON user_profile.uuid::uuid = customers.created_by::uuid
+WHERE customers.is_active = $1 AND customers.created_at >= $2
+ORDER BY customers.created_at DESC
+```
+
+## Next steps
+
+- [Repository](./repository) — pass these expressions to `findAll`, `findByPage`, `find`, `count`.
+- [Entities & decorators](./entities) — the entities that `field()` references.
+- [Audit trail](./audit-trail) — `buildAuditTrailJoins()` uses `Join.on` with `castRightTo`.
+- [Architecture](./architecture) — how the query builder turns these expressions into SQL.

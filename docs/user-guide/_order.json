@@ -1,3 +1,3 @@
 {
-  "pages": ["audit-trail", "optimistic-lock", "clone", "api-reference"]
+  "pages": ["index", "getting-started", "architecture", "entities", "query-dsl", "repository", "connections", "audit-trail", "optimistic-lock", "clone", "changelog", "api-reference"]
 }
