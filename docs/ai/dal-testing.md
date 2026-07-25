@@ -5,7 +5,7 @@ How to write and run tests against the DAL.
 ## Test infrastructure
 
 - **Framework:** Vitest
-- **Database:** Real PostgreSQL (no mocks, no in-memory substitutes)
+- **Database:** Real PostgreSQL® (no mocks, no in-memory substitutes)
 - **Test runner config:** `vitest.config.ts` (main), `test/benchmark.vitest.config.ts` (benchmarks)
 
 ## Environment setup

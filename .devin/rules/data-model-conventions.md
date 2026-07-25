@@ -13,7 +13,7 @@ trigger: always_on
 - DB columns, TS interfaces/types, JSON request bodies, JSON response bodies, FE types — ALL use `snake_case`.
 - A field named `oidc_issuer_url` in the DB must be `oidc_issuer_url` in the TS interface, `oidc_issuer_url` in the JSON response, and `oidc_issuer_url` in the FE type.
 - NEVER rename `oidc_issuer_url` → `oidcIssuerUrl` (camelCase) between layers. The name is identical from DB to FE.
-- **Exception:** External API adapters (e.g. Casdoor REST API expects `clientId` as a query param). The camelCase is dictated by the external API, not by our convention. The translation happens ONLY at the adapter boundary, never in our internal data flow.
+- **Exception:** External API adapters (e.g. Casdoor™ REST API expects `clientId` as a query param). The camelCase is dictated by the external API, not by our convention. The translation happens ONLY at the adapter boundary, never in our internal data flow.
 
 ### 2. No DTO transformation between DB models and TS models
 - If the DB returns `{ oidc_issuer_url, casdoor_endpoint, auth_mode }`, the TS interface is `{ oidc_issuer_url, casdoor_endpoint, auth_mode }` — NOT a rebuilt object with renamed fields.

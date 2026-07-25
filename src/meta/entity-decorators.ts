@@ -167,6 +167,10 @@ export function Entity(tableName?: string, schema?: string) {
     const m = ensureMeta(ctor);
     m.tableName = tableName ?? ctor.name;
     if (schema) m.tableSchema = schema;
+    // Expose table name via standard Reflect API for external consumers (no import needed).
+    // Used by the SDK's CacheKeyBuilder and any other tooling that needs the table name
+    // without importing @primebrick/dal-pg.
+    Reflect.defineMetadata("primebrick:tableName", m.tableName, ctor);
     return ctor;
   };
 }
@@ -265,6 +269,13 @@ export function Key(opts?: KeyOptions): PropertyDecorator {
     if (dt && typeof (dt as { name?: string }).name === "string") {
       col.tsDesignTypeCtorName = (dt as Function).name;
     }
+    // Expose key column via standard Reflect API for external consumers (no import needed).
+    // Used by the SDK's CacheKeyBuilder as the pkey fallback when no @CacheKey() and no uuid.
+    Reflect.defineMetadata(
+      "primebrick:keyColumn",
+      { propertyKey: String(propertyKey), sqlName: col.sqlName },
+      ctor,
+    );
   };
 }
 

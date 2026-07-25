@@ -3,7 +3,7 @@
 ## Test Framework
 
 - Tests use **Vitest**.
-- Tests run against a **REAL PostgreSQL database** — **no mocks**.
+- Tests run against a **REAL PostgreSQL® database** — **no mocks**.
   - Do not stub `pg` or the connection pool in tests.
   - Mock-based tests are not acceptable for verifying DAL behavior.
 

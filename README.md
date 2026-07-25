@@ -1,10 +1,10 @@
 # @primebrick/dal-pg
 
-Type-driven PostgreSQL Data Access Layer for Primebrick v3.
+Type-driven PostgreSQL® Data Access Layer for Primebrick v3.
 
 ## What it is
 
-A shared library that provides a metadata-based, type-safe `Repository` for PostgreSQL. Entities are plain TS classes decorated with `@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`. The Repository reads entity metadata at runtime to generate parameterized SQL — no hand-written queries, no DTOs, snake_case everywhere.
+A shared library that provides a metadata-based, type-safe `Repository` for PostgreSQL®. Entities are plain TS classes decorated with `@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`. The Repository reads entity metadata at runtime to generate parameterized SQL — no hand-written queries, no DTOs, snake_case everywhere.
 
 The `Dal` gateway class (`getDal()`) owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults (`statement_timeout`, `connectionTimeoutMillis`, `search_path`, `application_name`) to prevent connection throttling under high-async REST traffic. One singleton instance per process per database, reused across all requests — zero per-request allocation.
 

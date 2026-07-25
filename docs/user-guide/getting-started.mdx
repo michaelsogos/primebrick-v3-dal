@@ -1,0 +1,232 @@
+---
+title: Getting started
+description: Install @primebrick/dal-pg, bootstrap the Dal gateway, define an entity, and run your first query.
+---
+
+# Getting started
+
+This page takes you from zero to a working query in about 10 minutes: install,
+bootstrap the Dal gateway, define an entity, and run insert + read + update +
+delete. It assumes you already have a PostgreSQL database reachable via a
+connection string.
+
+## 1. Install
+
+```bash
+pnpm add @primebrick/dal-pg pg pg-query-stream reflect-metadata
+```
+
+`@primebrick/dal-pg` is a leaf dependency — it only depends on `pg`,
+`pg-query-stream`, and `reflect-metadata`. It must not import from
+`primebrick-be-v3` or `primebrick-us-v3`.
+
+`reflect-metadata` must be imported **once, at the entry point of your
+process**, before any entity class is loaded. The decorators rely on the
+`Reflect.getMetadata("design:type", ...)` reflection that
+`reflect-metadata` polyfills.
+
+```typescript
+// src/index.ts — your process entry point
+import "reflect-metadata";
+// ... rest of your bootstrap
+```
+
+## 2. Bootstrap the Dal gateway
+
+The Dal gateway (`getDal()`) is a singleton that owns the `pg.Pool`, registers
+type parsers (`INT8`→`bigint`, `NUMERIC`→`number`), and sets `search_path`,
+`statement_timeout`, and `application_name` on every connection. Create it once
+at process startup and reuse it for every request — zero per-request allocation.
+
+```typescript
+// src/db.ts
+import "reflect-metadata";
+import { getDal, type Dal } from "@primebrick/dal-pg";
+
+let _dal: Dal | undefined;
+
+export function getDb(): Dal {
+  if (!_dal) {
+    _dal = getDal({
+      connectionString: process.env.DATABASE_URL!,
+      schema: "myapp",
+      max: 10,
+      statementTimeoutMs: 30_000,
+      connectionTimeoutMillis: 5_000,
+      applicationName: "my-service",
+    });
+  }
+  return _dal;
+}
+
+export async function closeDb(): Promise<void> {
+  if (_dal) {
+    await _dal.close();
+    _dal = undefined;
+  }
+}
+```
+
+Wire graceful shutdown so the pool drains on `SIGTERM`:
+
+```typescript
+// src/index.ts
+import { getDb, closeDb } from "./db.js";
+
+process.on("SIGTERM", async () => {
+  await closeDb();
+  process.exit(0);
+});
+
+// ... start your HTTP server / NATS subscriber here
+```
+
+## 3. Define your first entity
+
+Entities are plain TypeScript classes decorated with `@Entity`, `@Key`,
+`@Column`, and `@AuditableField`. The class maps to a table; each decorated
+property maps to a column. snake_case is used everywhere — DB column, TS
+property, JSON response.
+
+```typescript
+// src/entities/customer.entity.ts
+import {
+  Entity, Column, Key, Unique,
+  AuditableField, AuditableFieldType,
+  DeletableField, DeletableFieldType,
+} from "@primebrick/dal-pg";
+import type { IAuditableEntity, IDeletableEntity } from "@primebrick/dal-pg";
+
+@Entity("customers")
+export class CustomerEntity implements IAuditableEntity, IDeletableEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ pgType: "text" }) name!: string;
+  @Column({ pgType: "text" }) email!: string;
+
+  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+
+  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+}
+```
+
+The `@AuditableField(AuditableFieldType.VERSION)` column is what powers
+optimistic locking — see [Optimistic locking](./optimistic-lock).
+
+## 4. Run your first query
+
+```typescript
+// src/demo.ts
+import { getDb } from "./db.js";
+import { CustomerEntity } from "./entities/customer.entity.js";
+import { NotFoundError } from "@primebrick/dal-pg";
+
+async function main() {
+  const dal = getDb();
+
+  // INSERT — RETURNING * gives you the full hydrated row.
+  const created = await dal.add(CustomerEntity, {
+    name: "Alice",
+    email: "alice@example.com",
+  }, { actor: "system" });
+  console.log("created:", created.uuid, "version:", created.version); // version: 1
+
+  // READ by UUID — throws NotFoundError by default if no row matches.
+  const found = await dal.findByUUID(CustomerEntity, created.uuid);
+  console.log("found:", found.name);
+
+  // UPDATE — pass the match value (PK by default) + the version you read.
+  // The version guard runs atomically in the same UPDATE statement.
+  const updated = await dal.update(
+    CustomerEntity,
+    created.uuid,                       // match value (PK)
+    { name: "Alice 2", version: 1 },    // updates + the version you read
+    { actor: "system" },
+  );
+  console.log("updated:", updated.name, "version:", updated.version); // version: 2
+
+  // SOFT DELETE — sets deleted_at/deleted_by; row stays in the table.
+  const deleted = await dal.delete(CustomerEntity, updated.uuid, {
+    actor: "system",
+    // matchBy defaults to the @Key() column; pass matchBy: "uuid" to use uuid.
+  });
+  console.log("soft-deleted at:", deleted.deleted_at);
+
+  // Finders exclude soft-deleted rows by default (deletedRecords: "EXCLUDED").
+  // To include them, pass deletedRecords: "INCLUDED".
+  const all = await dal.findAll(CustomerEntity, null, {
+    deletedRecords: "INCLUDED",
+  });
+  console.log("rows including deleted:", all.length);
+
+  // Error handling — stable code on every DalError.
+  try {
+    await dal.findByUUID(CustomerEntity, "00000000-0000-0000-0000-000000000000");
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      console.log("not found, code:", err.code); // code: "NOT_FOUND"
+    } else {
+      throw err;
+    }
+  }
+}
+
+main().catch(console.error);
+```
+
+Run it:
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/myapp tsx src/demo.ts
+```
+
+## 5. What each step does
+
+<Mermaid chart={`sequenceDiagram
+  participant App
+  participant Dal as getDal()
+  participant Pool as pg.Pool
+  participant PG as PostgreSQL
+  App->>Dal: getDal(config)
+  Dal->>Pool: new Pool(onConnect)
+  Note over Pool: registers type parsers<br/>(INT8 -> bigint, NUMERIC -> number)
+  App->>Dal: dal.add(Entity, values, opts)
+  Dal->>Pool: acquire connection
+  Pool->>PG: onConnect: SET search_path, statement_timeout, application_name
+  Dal->>PG: INSERT ... RETURNING *
+  PG-->>Dal: hydrated row (bigint id, Date created_at)
+  Dal-->>App: CustomerEntity instance
+  Pool-->>Pool: release connection
+`} />
+
+1. **`getDal(config)`** — creates the singleton pool, registers type parsers,
+   and stores the `onConnect` hook that sets session defaults.
+2. **`dal.add(Entity, values, opts)`** — the Dal delegates to an internal
+   `Repository(pool)`. The Repository reads entity metadata, builds a
+   parameterized `INSERT ... RETURNING *`, and hydrates the result row into an
+   entity instance (with `bigint` for `INT8`, `Date` for `timestamptz`, etc.).
+3. **Connection release** — the pool reclaims the connection for the next
+   request. No per-request allocation.
+
+## 6. Common pitfalls
+
+| Pitfall | Symptom | Fix |
+|---------|---------|-----|
+| Forgot `import "reflect-metadata"` at the entry point | Decorators silently don't register; `getEntityPersistenceMeta` throws | Add `import "reflect-metadata"` as the **first line** of your entry point |
+| Forgot `@Key()` | `update`/`delete` throw "Entity has no @Key() column — specify matchBy" | Add `@Key()` to exactly one column, or pass `matchBy` on every write |
+| Auditable write missing `version` | `MissingVersionError` (`ERR02`, HTTP 400) | Always send the `version` you read back in the update payload |
+| Pool exhausted under load | `connectionTimeoutMillis` exceeded → `Error: timeout exceeded` | Raise `max`, lower `statementTimeoutMs`, or audit slow queries |
+| `bigint` not serializing to JSON | `TypeError: Do not know how to serialize a BigInt` | Use `@primebrick/sdk`'s Ext-JSON middleware, or `Number(value)` for safe values |
+
+## Next steps
+
+- [Architecture](./architecture) — how the layers fit together and why.
+- [Entities & decorators](./entities) — every decorator and entity interface.
+- [Query DSL](./query-dsl) — `field()`, `Filter`, `Sort`, `Join`, `Project`.
+- [Repository](./repository) — finders, writes, bulk ops, streaming.
+- [Connections & transactions](./connections) — pool config, `withClient`, timeouts, shutdown.

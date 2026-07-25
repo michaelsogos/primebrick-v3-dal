@@ -11,6 +11,19 @@ fresh UUID.
 
 ## How it works
 
+<Mermaid chart={`flowchart TD
+  Start([repo.clone Entity, sourceUuid, opts]) --> Fetch[Fetch source row by UUID<br/>including soft-deleted rows]
+  Fetch --> Exclude[Exclude PK column<br/>and all @Unique columns<br/>including uuid]
+  Exclude --> Stamp[Stamp @CloneField column<br/>with source UUID]
+  Stamp --> ResetAudit[Reset audit fields<br/>created_at/by = now/actor<br/>updated_at/by = now/actor<br/>version = 1]
+  ResetAudit --> ResetDel[Reset deletable fields<br/>deleted_at = null<br/>deleted_by = null]
+  ResetDel --> Copy[Copy all other fields from source]
+  Copy --> Insert[INSERT new row<br/>RETURNING *]
+  Insert --> End([Return cloned TEntity])
+  Fetch -.->|no row| NotFound[throw NotFoundError]
+  Insert -.->|no rows returned| InsertFail[throw Error: clone failed]
+`} />
+
 The clone operation:
 
 1. Fetches the source record by UUID (including soft-deleted rows).
@@ -26,6 +39,17 @@ The clone operation:
 
 No audit log is written for the clone itself (matches backend behavior — clone
 does not audit).
+
+## Use cases
+
+- **Template-based record creation** — clone a "template" customer with
+  pre-filled defaults, then edit the clone.
+- **Duplicate-and-edit** — let a user copy an existing record instead of
+  re-typing all fields.
+- **Soft-delete recovery** — clone a soft-deleted record (the clone fetches
+  soft-deleted rows too) to restore its data into a fresh, live row.
+- **Branching workflows** — clone a record before applying a risky change so
+  the original is preserved.
 
 ## Usage
 
@@ -97,6 +121,29 @@ written for the clone operation itself.
 - `Error` — the entity has no `uuid` column (no `@Unique` column found).
 - `Error` — the INSERT returned no rows (clone failed).
 
+### Error handling with try/catch
+
+```typescript
+import { NotFoundError } from "@primebrick/dal-pg";
+
+async function cloneCustomer(sourceUuid: string, actor: string) {
+  try {
+    const cloned = await dal.clone(CustomerEntity, sourceUuid, { actor });
+    return cloned;
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      // err.code === "NOT_FOUND" — the source UUID doesn't exist
+      throw new Error(`Cannot clone: customer ${sourceUuid} not found`);
+    }
+    // UnknownColumnError, ValidationError, etc. — rethrow for the boundary to map
+    throw err;
+  }
+}
+```
+
 ## Next steps
 
 - [Audit trail](./audit-trail) — automatic field-level audit logging for write operations.
+- [Optimistic locking](./optimistic-lock) — the version guard on auditable writes.
+- [Repository](./repository) — the full write API.
+- [Entities & decorators](./entities) — the `@CloneField` decorator and `IClonableEntity` interface.

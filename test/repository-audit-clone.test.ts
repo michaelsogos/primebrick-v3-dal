@@ -71,7 +71,7 @@ describe("Repository — clone operation", () => {
   it("clone: resets audit fields (version=1, created_by=actor)", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "user1" });
     // Update to bump version
-    await repo.update(SimpleTestEntity, { name: "Updated", uuid: source.uuid }, { actor: "user2", matchBy: "uuid" });
+    await repo.update(SimpleTestEntity, { name: "Updated", uuid: source.uuid, version: source.version }, { actor: "user2", matchBy: "uuid" });
     // Clone
     const cloned = await repo.clone(SimpleTestEntity, source.uuid, { actor: "cloner" });
 
@@ -83,7 +83,7 @@ describe("Repository — clone operation", () => {
   it("clone: resets deletable fields (deleted_at=null, deleted_by=null)", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "To Clone" }, { actor: "u" });
     // Soft-delete the source
-    await repo.delete(SimpleTestEntity, { uuid: source.uuid }, { actor: "u", matchBy: "uuid" });
+    await repo.delete(SimpleTestEntity, { uuid: source.uuid, version: source.version }, { actor: "u", matchBy: "uuid" });
     // Clone the soft-deleted source
     const cloned = await repo.clone(SimpleTestEntity, source.uuid, { actor: "cloner" });
 
@@ -144,7 +144,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     const updated = await repo.update(
       SimpleTestEntity,
-      { name: "After", uuid: inserted.uuid },
+      { name: "After", uuid: inserted.uuid, version: inserted.version },
       { actor: "updater", audit: auditPort, matchBy: "uuid" },
     );
 
@@ -172,7 +172,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     await repo.delete(
       SimpleTestEntity,
-      { uuid: inserted.uuid },
+      { uuid: inserted.uuid, version: inserted.version },
       { actor: "deleter", audit: auditPort, matchBy: "uuid" },
     );
 
@@ -190,16 +190,16 @@ describe("Repository — audit-on-all-writes", () => {
       { name: "ToRestore" },
       { actor: "u", audit: auditPort },
     );
-    await repo.delete(
+    const deleted = await repo.delete(
       SimpleTestEntity,
-      { uuid: inserted.uuid },
+      { uuid: inserted.uuid, version: inserted.version },
       { actor: "u", audit: auditPort, matchBy: "uuid" },
     );
     auditPort.reset();
 
     await repo.restore(
       SimpleTestEntity,
-      { uuid: inserted.uuid },
+      { uuid: inserted.uuid, version: deleted.version },
       { actor: "restorer", audit: auditPort, matchBy: "uuid" },
     );
 
@@ -220,7 +220,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     await repo.hardDelete(
       SimpleTestEntity,
-      { uuid: inserted.uuid },
+      { uuid: inserted.uuid, version: inserted.version },
       { actor: "hard-deleter", audit: auditPort, matchBy: "uuid" },
     );
 
@@ -256,7 +256,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     await repo.upsert(
       SimpleTestEntity,
-      { name: "Updated", uuid: inserted.uuid },
+      { name: "Updated", uuid: inserted.uuid, version: inserted.version },
       { actor: "updater", audit: auditPort, conflictTarget: "uuid" },
     );
 
