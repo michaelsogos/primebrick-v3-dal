@@ -96,7 +96,13 @@ export {
   MultipleRowsError,
   UnknownColumnError,
   ValidationError,
+  MissingVersionError,
+  RecordVanishedError,
+  OptimisticLockError,
 } from "./errors/errors.js";
+
+// Error codes (optimistic concurrency control)
+export { DalErrorCodes, type DalErrorCode } from "./errors/error-codes.js";
 
 // Types
 export {

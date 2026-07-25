@@ -1,0 +1,278 @@
+---
+title: Connections & transactions
+description: The Dal gateway, getDal singleton, pool config, withClient transactions, per-call timeouts, type parsers, and graceful shutdown.
+---
+
+# Connections & transactions
+
+The Dal gateway (`getDal()`) is the recommended entry point. It owns the
+`pg.Pool`, registers type parsers once per process, and sets `search_path`,
+`statement_timeout`, and `application_name` on every connection. The existing
+`Repository` class stays exported as the low-level engine — for transaction
+participation via `withClient`, and for tests that inject a mock `Queryable`.
+
+## `getDal(config)` — the singleton gateway
+
+`getDal(config)` returns a process-wide singleton. Calling it twice with the
+same config returns the same `Dal` instance; the pool is created once and
+reused for every request. Use `resetDal()` only in tests to tear down the
+singleton between cases.
+
+```typescript
+import "reflect-metadata";
+import { getDal, type Dal } from "@primebrick/dal-pg";
+
+const dal = getDal({
+  connectionString: process.env.DATABASE_URL!,
+  schema: "myapp",
+  max: 10,
+  statementTimeoutMs: 30_000,
+  connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000,
+  applicationName: "my-service",
+});
+```
+
+### `DalConfig`
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `connectionString` | `string` | (required) | PostgreSQL connection string |
+| `schema` | `string` | undefined (DB default) | Set as `search_path` on every connection |
+| `max` | `number` | `10` | Maximum pool size. Formula: `max ≤ (PG max_connections − reserved) / service_instances` |
+| `statementTimeoutMs` | `number` | `30000` | Per-statement timeout in ms, set via `SET statement_timeout`. Set to `0` to disable |
+| `connectionTimeoutMillis` | `number` | `5000` | Time to wait when acquiring a connection before erroring. Fail fast when pool exhausted |
+| `idleTimeoutMillis` | `number` | `30000` | How long an idle connection is kept before closing |
+| `maxUses` | `number` | undefined (off) | Recycle connections after N uses to clear per-session state |
+| `applicationName` | `string` | `"primebrick-dal"` | Set as `application_name` for PG-side observability (`pg_stat_activity`) |
+
+### What the constructor does
+
+<Mermaid chart={`sequenceDiagram
+  participant App
+  participant Dal as getDal(config)
+  participant TP as Type parsers
+  participant Pool as pg.Pool
+  participant PG as PostgreSQL
+  App->>Dal: getDal(config)
+  Dal->>TP: ensureTypeParsers() (idempotent, once per process)
+  Note over TP: INT8 -> bigint<br/>NUMERIC -> number
+  Dal->>Pool: new Pool({ connectionString, max, onConnect })
+  App->>Dal: dal.add(Entity, values, opts)
+  Dal->>Pool: acquire connection
+  Pool->>PG: onConnect: SET search_path, statement_timeout, application_name
+  Dal->>PG: INSERT ... RETURNING *
+  PG-->>Dal: hydrated row (bigint, Date, ...)
+  Dal-->>App: TEntity
+  Pool-->>Pool: release connection
+`} />
+
+1. **`ensureTypeParsers()`** — registers `INT8 → bigint` and `NUMERIC → number`
+   parsers idempotently. Called once per process; subsequent calls are no-ops.
+2. **`new pg.Pool(config)`** — creates the pool with the merged config and an
+   `onConnect` hook.
+3. **`onConnect`** — runs on every new connection: `SET search_path TO &lt;schema&gt;`,
+   `SET statement_timeout TO &lt;ms&gt;`, `SET application_name TO '&lt;name&gt;'`. The
+   `application_name` is single-quote-escaped to prevent injection.
+4. **Per-request** — `dal.add(...)` acquires a connection from the pool, runs
+   the parameterized SQL, hydrates the result row, and releases the connection.
+   No per-request allocation.
+
+## Pool lifecycle
+
+### `dal.getPool()`
+
+Returns the underlying `pg.Pool`. Exposed for migration tooling, snapshot
+scripts, or anything that needs raw access. Don't use it for normal queries —
+go through `dal.add`/`findAll`/etc. so the Repository handles metadata and
+hydration.
+
+```typescript
+const pool = dal.getPool();
+await pool.query("VACUUM ANALYZE customers");
+```
+
+### `dal.close(timeoutMs = 10000)`
+
+Graceful shutdown — drains the pool with a timeout deadline. Re-entrant
+(concurrent calls return immediately; the first call wins). If `pool.end()`
+throws, the error is logged and swallowed. Does **not** install `process.on()`
+handlers — that is a consumer-side concern.
+
+```typescript
+process.on("SIGTERM", async () => {
+  await dal.close();      // waits up to 10s for pool.end()
+  process.exit(0);
+});
+
+// Custom deadline:
+await dal.close(5_000);   // wait up to 5s
+```
+
+## Transactions with `withClient`
+
+`dal.withClient(fn)` acquires a pooled client, runs `fn(client)`, and releases
+the client back to the pool (even if `fn` throws). Inside `fn`, construct a
+`new Repository(client)` to participate in the transaction — the Repository
+accepts any `Queryable` (pool or pooled client).
+
+```typescript
+import { Repository } from "@primebrick/dal-pg";
+
+await dal.withClient(async (client) => {
+  const repo = new Repository(client);
+  await client.query("BEGIN");
+  try {
+    const customer = await repo.add(CustomerEntity, { name: "Alice" }, { actor: "tx" });
+    await repo.add(OrderEntity, { customer_id: customer.id, total: 100 }, { actor: "tx" });
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  }
+});
+```
+
+The Dal gateway does not manage `BEGIN`/`COMMIT` for you — that's deliberate,
+so you can use savepoints, nested transactions, or any other PG feature inside
+`fn`. The contract is: the client is released when `fn` returns or throws.
+
+## Per-call timeout override
+
+`withClient` accepts an optional `WithClientOptions` with a `timeoutMs` field.
+It emits `SET LOCAL statement_timeout` on that specific client and resets it to
+the session default on release. Use it for ad-hoc long queries that should not
+hold a connection for the default 30s.
+
+```typescript
+// A long-running export query that needs 2 minutes:
+await dal.withClient(
+  async (client) => {
+    const result = await client.query("SELECT * FROM large_export_table");
+    console.log(result.rowCount);
+  },
+  { timeoutMs: 120_000 },
+);
+// After fn returns, the client's statement_timeout is reset to the session
+// default before release — no leakage to the next request on that connection.
+```
+
+The bulk operations (`addMany`, `upsertMany`, `updateMany`) accept
+`options.timeoutMs` directly — they emit `SET LOCAL statement_timeout` inside
+their own transaction (transaction-scoped, no leakage).
+
+## Type parsers
+
+The Dal gateway registers two type parsers once per process via
+`ensureTypeParsers()`:
+
+| PG type OID | JS type | Reason |
+|-------------|---------|--------|
+| `INT8_OID` (20) | `bigint` | Preserve precision for PKs and counts above 2^53 |
+| `NUMERIC_OID` (1700) | `number` (or `string` if too large for a safe number) | `numeric`/`decimal` columns |
+
+Without these parsers, `node-postgres` returns `int8` as a `string` (to avoid
+precision loss) and `numeric` as a `string`. The Dal gateway opts into native
+`bigint` and `number` because:
+
+- `bigint` PKs are the convention in Primebrick (`id bigint`).
+- `numeric` columns are usually `numeric(18,2)` money/quantity fields that fit
+  safely in a JS `number`.
+
+If you have a `numeric` column that can exceed `Number.MAX_SAFE_INTEGER`, cast
+it to `string` in your query (`SELECT my_col::text`) or handle it explicitly.
+
+### JSON serialization caveat
+
+`JSON.stringify` throws on `bigint` (`TypeError: Do not know how to serialize a
+BigInt`). When returning `bigint` values over HTTP, use `@primebrick/sdk`'s
+Ext-JSON middleware (which serializes `bigint` as a string with a `$n` tag), or
+cast with `Number(value)` when you know the value is < 2^53.
+
+## Pool sizing guidance
+
+The pool size is the single most impactful knob for high-async REST traffic:
+
+- **Too small** → requests queue waiting for a connection; `connectionTimeoutMillis`
+  errors under load.
+- **Too large** → PostgreSQL server-side connection contention; `pg_stat_activity`
+  shows many idle connections holding memory.
+
+The formula (from the `DalConfig` docs):
+
+```
+max ≤ (PG max_connections − reserved) / service_instances
+```
+
+For a single service against a PG server with `max_connections = 100` and 20
+reserved for admin/migrations, `max = 10` leaves headroom for 8 service
+instances (8 × 10 = 80 ≤ 80). Scale horizontally by adding PG connections or
+service instances, not by cranking `max` to 100.
+
+The other anti-throttling knob is `statementTimeoutMs` (default 30s). A slow
+query holding a connection starves the pool; the per-session timeout guarantees
+connection release. Lower it (e.g. 5s) for latency-sensitive services; raise it
+(e.g. 60s) for analytical services, or use per-call `timeoutMs` overrides for
+the occasional long query.
+
+## Putting it all together
+
+A complete bootstrap module with graceful shutdown:
+
+```typescript
+// src/db.ts
+import "reflect-metadata";
+import { getDal, resetDal, type Dal } from "@primebrick/dal-pg";
+
+let _dal: Dal | undefined;
+
+export function getDb(): Dal {
+  if (!_dal) {
+    _dal = getDal({
+      connectionString: process.env.DATABASE_URL!,
+      schema: "myapp",
+      max: 10,
+      statementTimeoutMs: 30_000,
+      connectionTimeoutMillis: 5_000,
+      applicationName: "my-service",
+    });
+  }
+  return _dal;
+}
+
+export async function closeDb(): Promise<void> {
+  if (_dal) {
+    await _dal.close();
+    resetDal();
+    _dal = undefined;
+  }
+}
+```
+
+```typescript
+// src/index.ts
+import "reflect-metadata";
+import { getDb, closeDb } from "./db.js";
+import { startHttpServer } from "./http.js";
+
+async function main() {
+  const dal = getDb();
+  process.on("SIGTERM", async () => {
+    await closeDb();
+    process.exit(0);
+  });
+  await startHttpServer(dal);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+```
+
+## Next steps
+
+- [Repository](./repository) — the methods you call on `dal`/`repo`.
+- [Architecture](./architecture) — how the gateway, pool, and Repository fit together.
+- [Getting started](./getting-started) — the end-to-end bootstrap walkthrough.
+- [Optimistic locking](./optimistic-lock) — how `statement_timeout` interacts with the version guard.

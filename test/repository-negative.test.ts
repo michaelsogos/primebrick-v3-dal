@@ -6,6 +6,7 @@ import {
   MultipleRowsError,
   UnknownColumnError,
   ValidationError,
+  RecordVanishedError,
 } from "../src/index.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
@@ -73,41 +74,41 @@ describe("Repository — negative / failure paths", () => {
     ).rejects.toThrow(NotFoundError);
   });
 
-  it("update: throws NotFoundError for non-existent uuid", async () => {
+  it("update: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: "00000000-0000-0000-0000-000000000000", name: "X" },
+        { uuid: "00000000-0000-0000-0000-000000000000", name: "X", version: 1 },
         { actor: "test-user", matchBy: "uuid" }
       )
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
-  it("delete: throws NotFoundError for non-existent uuid", async () => {
+  it("delete: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
-  it("restore: throws NotFoundError for non-existent uuid", async () => {
+  it("restore: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
-  it("hardDelete: throws NotFoundError for non-existent uuid", async () => {
+  it("hardDelete: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000" }, {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(RecordVanishedError);
   });
 
   // ─── ValidationError ──────────────────────────────────────────────
@@ -135,7 +136,7 @@ describe("Repository — negative / failure paths", () => {
       { actor: "test-user" }
     );
     await expect(
-      repo.update(SimpleTestEntity, { uuid: inserted.uuid }, { actor: "test-user", matchBy: "uuid" })
+      repo.update(SimpleTestEntity, { uuid: inserted.uuid, version: inserted.version }, { actor: "test-user", matchBy: "uuid" })
     ).rejects.toThrow(ValidationError);
   });
 
@@ -148,7 +149,7 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: inserted.uuid, name: undefined },
+        { uuid: inserted.uuid, name: undefined, version: inserted.version },
         { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(ValidationError);
@@ -193,7 +194,7 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: inserted.uuid, non_existent_col: "value" } as any,
+        { uuid: inserted.uuid, non_existent_col: "value", version: inserted.version } as any,
         { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(UnknownColumnError);

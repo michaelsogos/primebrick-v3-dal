@@ -1,0 +1,236 @@
+---
+title: Architecture
+description: How the Dal gateway, Repository, query builder, metadata system, and type coercion fit together.
+---
+
+# Architecture
+
+`@primebrick/dal-pg` is a leaf dependency with three layers: a **Dal gateway**
+that owns the connection pool, a **Repository** that turns entity metadata into
+parameterized SQL, and a **Query DSL** that lets callers compose filters, sorts,
+joins, and projections in a type-safe way. This page explains how the layers fit
+together and the design decisions behind them.
+
+## High-level architecture
+
+<Mermaid chart={`flowchart TB
+  subgraph Consumer code
+    App[Your service<br/>BE or US]
+  end
+  subgraph "@primebrick/dal-pg"
+    Gateway["Dal gateway<br/>getDal() singleton"]
+    Repo[Repository]
+    QB[Query builder]
+    Meta[Entity metadata<br/>WeakMap + decorators]
+    DSL["Query DSL<br/>field/Filter/Sort/Join/Project"]
+    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> number]
+  end
+  subgraph PostgreSQL
+    Pool[(pg.Pool)]
+    DB[(Database)]
+  end
+  App -->|dal.add/findAll/...| Gateway
+  App -->|Repository(client)<br/>inside withClient| Repo
+  Gateway -->|delegates| Repo
+  Repo --> Meta
+  Repo --> DSL
+  Repo --> QB
+  QB -->|parameterized SQL| Pool
+  Gateway -->|owns| Pool
+  Gateway -->|registers once| TP
+  Pool -->|onConnect: search_path,<br/>statement_timeout,<br/>application_name| DB
+  TP -->|parses result rows| DB
+`} />
+
+The **Dal gateway** is the recommended entry point. It owns the `pg.Pool`,
+registers type parsers once per process, and sets session defaults on every
+connection. The **Repository** is the low-level engine — it accepts any
+`Queryable` (pool or pooled client), which is how it participates in
+transactions via `dal.withClient(client => new Repository(client))`.
+
+## Module structure
+
+The library is organized into focused modules under `src/`:
+
+| Module | Responsibility | Public exports |
+|--------|---------------|----------------|
+| `meta/` | Entity decorators + metadata storage | `@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`, `@CloneField`, `@AuditTrail`, `@AuditTrailEntity`, `syncImplicitEntityColumns`, `getEntityPersistenceMeta` |
+| `query/` | Query DSL + SQL builder + streaming | `field`, `Filter`, `Sort`, `Join`, `Project`, `buildSelectQuery`, `createStream` |
+| `repository/` | The `Repository` class (finders, writes, bulk, clone) | `Repository` |
+| `dal/` | The `Dal` gateway + type parsers | `Dal`, `getDal`, `resetDal`, `DalConfig`, `WithClientOptions` |
+| `types/` | Public option types + entity interfaces | `FindOptions`, `WriteOptions`, `AuditableWriteOptions`, `BulkOptions`, `AuditPort`, `LoggerPort`, `IAuditableEntity`, `IDeletableEntity`, `IClonableEntity`, `IExposableEntity` |
+| `errors/` | Framework-agnostic error classes + stable codes | `DalError`, `NotFoundError`, `MultipleRowsError`, `UnknownColumnError`, `ValidationError`, `MissingVersionError`, `RecordVanishedError`, `OptimisticLockError`, `DalErrorCodes` |
+| `audit/` | Audit helpers + the generic `AuditLogEntity` | `AuditLogEntity`, `buildAuditableJoins`, `buildAuditTrailJoins`, `calculateDelta`, `calculateDeltaWithForcedFields` |
+
+## Entity metadata system
+
+Entity metadata is stored in a module-private `WeakMap&lt;Function, ClassEntityMeta&gt;`
+keyed by the class constructor. Each decorator mutates the metadata for its
+class. There is no global registry, no schema file, and no code generation —
+the metadata is built at class-declaration time and read at query time.
+
+<Mermaid chart={`sequenceDiagram
+  participant Code as Your code
+  participant Dec as Decorators
+  participant WM as WeakMap<Function, Meta>
+  participant Repo as Repository
+  participant QB as Query builder
+  Code->>Dec: @Entity("customers") class CustomerEntity
+  Dec->>WM: ensureMeta(CustomerEntity); set tableName
+  Code->>Dec: @Key() id
+  Dec->>WM: touchColumn; set isKey=true
+  Code->>Dec: @AuditableField(VERSION) version
+  Dec->>WM: touchColumn; set auditableType=VERSION
+  Code->>Repo: dal.findAll(CustomerEntity, ...)
+  Repo->>WM: getEntityPersistenceMeta(CustomerEntity)
+  WM-->>Repo: columns Map, tableName, isAuditable
+  Repo->>QB: buildSelectQuery(meta, projections, filters, ...)
+  QB-->>Repo: parameterized SQL + params
+  Repo->>Repo: pool.query(sql, params)
+`} />
+
+### `syncImplicitEntityColumns`
+
+When a class is loaded, every own enumerable property of `new ctor()` is
+treated as a column by convention — you only need `@Column()` to override
+`sqlName`, `pgType`, `nullable`, `length`, `precision`, `scale`, `defaultSql`,
+or `castInJoin`. `syncImplicitEntityColumns(ctor)` walks the discovered
+property keys, reads `Reflect.getMetadata("design:type", ...)`, and infers
+nullability from the TS design type (`Date | null` → nullable, `@Key()` →
+not nullable, `@Unique()` → not nullable). This is why a property declared
+without any decorator still becomes a column.
+
+## Query builder pipeline
+
+The Repository turns a finder call into SQL in four stages:
+
+<Mermaid chart={`flowchart LR
+  A["FindOptions<br/>filters/sorting/joins/projections"] --> B[Resolve FieldRefs<br/>to qualified column names]
+  B --> C[Build SELECT/FROM/JOIN/WHERE/ORDER BY<br/>with $1, $2, ... placeholders]
+  C --> D["pool.query(sql, params)<br/>parameterized"]
+  D --> E[Hydrate rows<br/>pgValueToJsValue per column]
+  E --> F[Return TEntity[]]
+`} />
+
+1. **Resolve `FieldRef`s** — each `field(Entity, "prop")` is mapped to its
+   qualified `&lt;schema&gt;.&lt;table&gt;.&lt;column&gt;` name using entity metadata.
+2. **Build the SQL string** — `buildSelectQuery` emits `SELECT ... FROM ...
+   [JOIN ...] [WHERE ...] [ORDER BY ...]` with `$1, $2, ...` placeholders for
+   every operand. Identifiers are quoted via `quoteIdent` to prevent SQL
+   injection.
+3. **Execute parameterized** — `pool.query(sql, params)` sends the SQL and
+   the params separately to PostgreSQL. No string interpolation of values.
+4. **Hydrate rows** — each result row is coerced from PG representation to
+   JS representation via `pgValueToJsValue` per column (e.g. `INT8`→`bigint`
+   via the registered type parser, `timestamptz`→`Date`).
+
+## Type coercion pipeline
+
+PG types and JS types are not 1:1. The Dal gateway registers type parsers once
+per process so that `node-postgres` returns the right JS type for each PG type:
+
+| PG type | JS type | Mechanism |
+|---------|---------|-----------|
+| `int8` / `bigint` | `bigint` | `pg.types.setTypeParser(INT8_OID, v => BigInt(v))` |
+| `numeric` / `decimal` | `number` (or `string` if too large) | `pg.types.setTypeParser(NUMERIC_OID, ...)` |
+| `timestamptz` / `timestamp` | `Date` | native `node-postgres` default |
+| `jsonb` / `json` | parsed object | native `node-postgres` default |
+| `uuid` / `text` / `varchar` | `string` | native `node-postgres` default |
+
+For writes, `jsValueToPgParam` does the reverse: a `Date` is bound as an ISO
+string for `timestamptz`, a `bigint` is bound as a string for `INT8`, etc. The
+`pgType` hint on `@Column({ pgType: ... })` controls which coercion path is
+used when the TS design type is ambiguous (e.g. `Date` could be `date` or
+`timestamptz`).
+
+## Bulk operation strategies
+
+Bulk operations (`addMany`, `upsertMany`, `updateMany`) handle large row counts
+without hitting PostgreSQL's 65535-parameter limit per statement.
+
+| Operation | Strategy | Why |
+|-----------|----------|-----|
+| `addMany` | Batched multi-row `INSERT ... VALUES (...), (...), ...` with auto-calculated batch size | Simple, fast, reuses single statement plan |
+| `upsertMany` | `INSERT ... ON CONFLICT (...) DO UPDATE SET ...` batched | Atomic upsert in one statement per batch |
+| `updateMany` | **TEMP TABLE strategy**: `CREATE TEMP TABLE`, `COPY`/batched `INSERT` rows into it, then `UPDATE target SET ... FROM temp WHERE target.id = temp.id` | PostgreSQL has no native multi-row `UPDATE FROM VALUES`; the TEMP TABLE approach is atomic and SQL-injection safe (no dynamic SQL per row) |
+
+`autoBatchSize(columnCount)` returns `min(1000, floor(65535 / columnCount))` so
+each batch stays under the parameter limit. Callers can override with
+`options.batchSize`.
+
+For long-running bulk ops, pass `options.timeoutMs` — the Dal emits
+`SET LOCAL statement_timeout` inside the transaction (transaction-scoped, no
+leakage to other queries on the same connection).
+
+## Audit integration
+
+Audit is **port-based and optional**. The Repository accepts an `AuditPort`
+via `AuditableWriteOptions.audit`. If no port is injected, audit is silently
+skipped — microservices that don't need it aren't forced to implement it.
+
+<Mermaid chart={`sequenceDiagram
+  participant App
+  participant Repo as Repository
+  participant DB as PostgreSQL
+  participant Audit as AuditPort.writeAudit
+  App->>Repo: repo.update(Entity, match, updates, opts)
+  Repo->>DB: SELECT old row
+  DB-->>Repo: old row
+  Repo->>DB: UPDATE ... RETURNING *
+  DB-->>Repo: new row
+  Repo->>Repo: calculateDeltaWithForcedFields(old, new, forcedFields)
+  Repo->>Audit: writeAudit(params) (fire-and-forget)
+  Note over Audit: consumer writes to<br/>customers_audit table<br/>via another Repository
+  Repo-->>App: new row (audit happens in background)
+`} />
+
+The `writeAudit` call is fire-and-forget (`.catch(logger?.error ?? noop)`) — a
+slow audit writer never blocks the main write. The delta is computed with
+`calculateDeltaWithForcedFields` so audit columns (`updated_at`, `updated_by`,
+`deleted_at`, `deleted_by`) are force-included even when unchanged, recording
+who performed the change.
+
+## Error handling philosophy
+
+The DAL is **framework-agnostic**: it never imports HTTP or NATS types. Every
+error extends the abstract `DalError` class, which adds a stable `code: string`
+property to the standard `Error`. Consumers map the `code` to the appropriate
+boundary response at their own layer.
+
+| Code | Class | Meaning | Typical HTTP |
+|------|-------|---------|--------------|
+| `NOT_FOUND` | `NotFoundError` | Finder returned 0 rows with `throwIfNotFound: true` | 404 |
+| `MULTIPLE_ROWS` | `MultipleRowsError` | Single-row finder returned >1 row | 500 |
+| `UNKNOWN_COLUMN` | `UnknownColumnError` | Write received a property not in entity metadata | 400 |
+| `VALIDATION` | `ValidationError` | Empty updates, missing actor, missing match value | 400 |
+| `ERR01` | `OptimisticLockError` (PG-originated) | Version mismatch on guarded write | 409 |
+| `ERR02` | `MissingVersionError` | Auditable write missing `version` field | 400 |
+| `ERR03` | `RecordVanishedError` | Row hard-deleted between read and write | 404 |
+
+The `ERR` + 2 digits convention places the optimistic-lock codes outside
+PostgreSQL's SQL-standard SQLSTATE classes (`00`–`99`), so PostgreSQL accepts
+them as custom codes without colliding with built-in error classes. See
+[Optimistic locking](./optimistic-lock) for the full disambiguation flow.
+
+## Design decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| **Metadata via WeakMap, not codegen** | No build step, no schema files to keep in sync, decorators work at runtime. Trade-off: requires `reflect-metadata`. |
+| **`RETURNING *` on every write** | The DB returns the full row, hydrated into entity shape. No need for a separate read-after-write. |
+| **`throwIfNotFound: true` by default** | The common case is "I expect this row to exist"; opting out (`throwIfNotFound: false`) is explicit. |
+| **`deletedRecords: "EXCLUDED"` by default** | Soft-deleted rows are invisible by default; opting in (`"INCLUDED"` / `"ONLY"`) is explicit. |
+| **TEMP TABLE for `updateMany`** | PostgreSQL has no native multi-row `UPDATE FROM VALUES`; the TEMP TABLE approach is atomic and injection-safe. |
+| **`bigint` via `INT8_OID`** | Native `bigint` preserves precision for PKs and counts; `number` would lose precision above 2^53. |
+| **Port-based audit (fire-and-forget)** | Microservices that don't need audit aren't forced to implement it; a slow audit writer never blocks the main write. |
+| **Framework-agnostic errors** | The DAL is a leaf dependency; it must not import HTTP or NATS types. Consumers map `code` to their boundary. |
+| **`statement_timeout` as the anti-throttling core** | A slow query holding a connection starves the pool; the per-session timeout guarantees connection release under high-async REST traffic. |
+
+## Next steps
+
+- [Entities & decorators](./entities) — every decorator and entity interface in detail.
+- [Query DSL](./query-dsl) — `field()`, `Filter`, `Sort`, `Join`, `Project`.
+- [Repository](./repository) — finders, writes, bulk ops, streaming.
+- [Connections & transactions](./connections) — pool config, `withClient`, timeouts, shutdown.
+- [Audit trail](./audit-trail) — the port-based audit system in action.
+- [Optimistic locking](./optimistic-lock) — the `ERR01`/`ERR02`/`ERR03` flow.

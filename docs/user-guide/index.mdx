@@ -1,53 +1,118 @@
 ---
 title: "@primebrick/dal-pg"
-description: Type-driven, metadata-based PostgreSQL® data access layer for Primebrick v3.
+description: Type-driven, metadata-based PostgreSQL data access layer for Primebrick v3.
 ---
 
 # @primebrick/dal-pg
 
 `@primebrick/dal-pg` is a shared Data Access Layer library for Primebrick v3.
-It provides a type-driven, metadata-based `Repository` for PostgreSQL®. Entities
-are plain TypeScript® classes decorated with `@Entity`, `@Column`, `@Key`,
+It provides a type-driven, metadata-based `Repository` for PostgreSQL. Entities
+are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
 `@Unique`, `@AuditableField`, `@DeletableField`, and `@CloneField`. The
 `Repository` reads entity metadata at runtime to generate parameterized SQL.
 
-## What's new
+## What it gives you
 
-### Audit trail entities
+- **Type-safe entities** — plain TS classes + decorators, no schema files to keep in sync.
+- **Metadata-driven SQL** — `Repository` reads entity metadata at runtime and emits parameterized SQL (`RETURNING *` on every write).
+- **Query DSL** — composable `field()`, `Filter`, `Sort`, `Join`, `Project` expressions, type-checked at compile time.
+- **Bulk operations** — `addMany`, `upsertMany`, `updateMany` using a TEMP TABLE strategy (atomic, SQL-injection safe).
+- **Soft delete** — opt in via `@DeletableField`; finders exclude soft-deleted rows by default.
+- **Audit trail** — `@AuditTrail()` + `AuditPort` produce field-level deltas fire-and-forget.
+- **Optimistic locking** — automatic for auditable entities; stable `ERR01`/`ERR02`/`ERR03` codes.
+- **Clone** — `Repository.clone()` copies a record by UUID, resetting audit/unique fields.
+- **Streaming** — `findAll({ stream: true })` returns an `AsyncIterable` backed by a pg cursor.
+- **Dal gateway** — `getDal()` singleton owns the pool, registers type parsers (`INT8`→`bigint`, `NUMERIC`→`number`), and sets `search_path`/`statement_timeout`/`application_name` on every connection.
+- **Framework-agnostic errors** — `DalError` carries a stable `code` string; consumers map it to HTTP/NATS at their own boundary.
 
-A new `@AuditTrailEntity()` decorator and `AuditLogEntity` class let you read
-and write generic audit trail tables (`customers_audit`, `organizations_audit`,
-etc.) through the same `Repository` API. Write operations (`upsert`, `update`,
-`delete`, `restore`, `hardDelete`) now emit field-level audit deltas
-automatically when an `AuditPort` is injected.
+## Architecture at a glance
 
-See [Audit trail](./audit-trail).
+<Mermaid chart={`flowchart LR
+  subgraph Your app
+    A[Entity class<br/>+ decorators] --> R[Repository]
+    Q[Query DSL<br/>field/Filter/Sort/Join/Project] --> R
+    R --> QB[Query builder<br/>parameterized SQL]
+  end
+  subgraph Dal gateway
+    D[getDal singleton] --> P[(pg.Pool)]
+    P -->|onConnect| S["search_path<br/>statement_timeout<br/>application_name"]
+    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> number"]
+  end
+  QB --> P
+  P --> PG[(PostgreSQL)]
+  S --> PG
+  TP --> PG
+`} />
 
-### Clone
+The **Dal gateway** owns the connection pool and is the recommended entry point.
+The **Repository** is the low-level engine — it accepts any `Queryable` (pool or
+pooled client), which is how it participates in transactions via `dal.withClient()`.
 
-`Repository.clone()` copies a record by UUID — excluding the PK and unique
-columns, resetting audit/deletable fields, and stamping a `@CloneField` column
-with the source UUID.
+## Hello World
 
-See [Clone](./clone).
+A minimal end-to-end example: define an entity, bootstrap the Dal gateway, and
+perform one insert + one read.
 
-## Breaking changes in 0.1.9
+```typescript
+import "reflect-metadata";
+import {
+  Entity, Column, Key, Unique,
+  AuditableField, AuditableFieldType,
+  getDal,
+} from "@primebrick/dal-pg";
 
-If you are upgrading from 0.1.8, review these changes:
+// 1. Define an entity — plain TS class + decorators.
+@Entity("customers")
+export class CustomerEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ pgType: "text" }) name!: string;
 
-| Change | Before | After |
-|--------|--------|-------|
-| `Join.on()` argument order | `Join.on(right, left, type?, options?)` | `Join.on(left, right, type?, options?)` |
-| `Repository.count()` return type | `number` | `bigint` |
-| `PaginatedEntity.total_records` | `number` | `bigint` |
-| `Repository.findById()` id param | `number \| string` | `bigint \| string` |
-| `AuditParams.entityId` | `number` | `bigint` |
+  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+}
 
-The `Join.on()` swap corrects a confusing argument order — the **left** (joined)
-table is now the first argument, matching standard SQL `JOIN ... ON left = right`
-reading order. Update any existing `Join.on()` calls accordingly.
+// 2. Bootstrap the Dal gateway once at process startup.
+const dal = getDal({
+  connectionString: process.env.DATABASE_URL!,
+  schema: "myapp",
+  statementTimeoutMs: 30_000,
+});
 
-The `bigint` changes align the DAL with PostgreSQL®'s native `bigint` type
-(parsed via `INT8_OID`). `count()` and `total_records` now return native
-`bigint` values instead of `number`. Use `Number(result)` or `BigInt` arithmetic
-as appropriate.
+// 3. Insert — RETURNING * gives you the full hydrated row.
+const created = await dal.add(CustomerEntity, {
+  name: "Alice",
+}, { actor: "system" });
+// created.uuid, created.id, created.version === 1, created.created_at, ...
+
+// 4. Read by UUID — throws NotFoundError by default if no row matches.
+const found = await dal.findByUUID(CustomerEntity, created.uuid);
+console.log(found.name); // "Alice"
+
+// 5. Graceful shutdown on SIGTERM.
+process.on("SIGTERM", async () => { await dal.close(); process.exit(0); });
+```
+
+## Where to go next
+
+| If you want to… | Read |
+|------------------|------|
+| Get a service running end-to-end | [Getting started](./getting-started) |
+| Understand the layers and design decisions | [Architecture](./architecture) |
+| Define entities with all decorators | [Entities & decorators](./entities) |
+| Build type-safe queries | [Query DSL](./query-dsl) |
+| Use the Repository API (finders, writes, bulk, streaming) | [Repository](./repository) |
+| Manage the pool, transactions, timeouts, shutdown | [Connections & transactions](./connections) |
+| Track field-level changes | [Audit trail](./audit-trail) |
+| Prevent lost updates | [Optimistic locking](./optimistic-lock) |
+| Copy records by UUID | [Clone](./clone) |
+| See what changed per release | [Changelog](./changelog) |
+| Look up a specific symbol | [API reference](./api-reference) |
+
+## Next steps
+
+- [Getting started](./getting-started) — install, configure, and run your first query.
+- [Architecture](./architecture) — how the layers fit together.
