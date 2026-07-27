@@ -1,0 +1,356 @@
+---
+title: Repository Pattern
+description: "How to define entities, perform CRUD operations, use filters, pagination, transactions, soft delete, and audit trails with the DAL Repository."
+---
+
+# Repository Pattern
+
+The DAL `Repository` class is the primary data access interface. It maps
+TypeScript entity classes to PostgreSQL tables and provides type-safe CRUD,
+filtering, pagination, bulk operations, soft delete, and audit trail — all
+without writing raw SQL.
+
+## Defining an entity
+
+Entities are plain TypeScript classes decorated with metadata. Every
+property is a SQL column by default (snake_case). Decorators are only
+needed for overrides.
+
+```typescript
+import {
+  Entity, Column, Key, Unique,
+  AuditableField, DeletableField,
+} from "@primebrick/dal-pg";
+
+@Entity("organizations")
+export class OrganizationEntity {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ pgType: "text" }) idp_code!: string;
+  @Column({ pgType: "text", nullable: true }) display_name?: string;
+
+  @AuditableField({ type: "createdAt" }) @Column({ pgType: "timestamptz" }) created_at!: Date;
+  @AuditableField({ type: "createdBy" }) @Column({ pgType: "text" }) created_by!: string;
+  @AuditableField({ type: "updatedAt" }) @Column({ pgType: "timestamptz" }) updated_at!: Date;
+  @AuditableField({ type: "updatedBy" }) @Column({ pgType: "text" }) updated_by!: string;
+  @AuditableField({ type: "version" }) @Column({ pgType: "integer" }) version!: number;
+
+  @DeletableField({ type: "deletedAt" }) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
+  @DeletableField({ type: "deletedBy" }) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+}
+```
+
+### Decorator reference
+
+| Decorator | Purpose |
+|-----------|---------|
+| `@Entity(table, schema?)` | Maps class to a table |
+| `@Key()` | Marks the primary key column |
+| `@Unique()` | Creates a unique index |
+| `@Column({ pgType, nullable })` | Overrides column type or nullability |
+| `@IsNotColumn()` | Excludes a property from persistence |
+| `@AuditableField({ type })` | Marks an audit field (`createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `version`) |
+| `@DeletableField({ type })` | Marks a soft-delete field (`deletedAt`, `deletedBy`) |
+| `@SynchronizableField({ type })` | Marks a sync tracking field (`lastSyncedAt`) |
+| `@CloneField()` | Marks the clone source field (`cloned_from`) |
+| `@AuditTrail()` | Marks entity as having an audit trail table |
+| `@AuditTrailEntity({ changedByColumn })` | Marks class as being an audit trail entity |
+
+## Creating a Repository
+
+The `Dal` gateway manages the connection pool. Use `getDal()` to access it:
+
+```typescript
+import { getDal, Repository } from "@primebrick/dal-pg";
+
+const dal = getDal({
+  connectionString: process.env.DATABASE_URL!,
+  schema: "public",
+  max: 10,
+  statementTimeoutMs: 30000,
+  applicationName: "my-app",
+});
+
+const pool = dal.getPool();
+const repo = new Repository(pool);
+```
+
+## CRUD operations
+
+### Create
+
+```typescript
+const org = await repo.add(OrganizationEntity, {
+  uuid: randomUUID(),
+  idp_code: "ACME",
+  display_name: "Acme Inc.",
+}, {
+  actor: userUuid,       // sets created_by, updated_by
+  audit: auditPort,      // writes audit log (optional)
+});
+```
+
+### Read by UUID
+
+```typescript
+const org = await repo.findByUUID(OrganizationEntity, uuid);
+if (!org) throw new NotFoundError();
+```
+
+### Read by ID
+
+```typescript
+const org = await repo.findById(OrganizationEntity, BigInt(123));
+```
+
+### Find single record with filters
+
+```typescript
+import { Filter, field } from "@primebrick/dal-pg";
+
+const org = await repo.find(OrganizationEntity, null, {
+  filters: [
+    Filter.fieldValue(field(OrganizationEntity, "idp_code"), "=", "ACME"),
+  ],
+  throwIfNotFound: true,
+});
+```
+
+### Update
+
+```typescript
+await repo.update(OrganizationEntity,
+  { uuid, display_name: "New Name" },
+  { actor: userUuid, audit: auditPort },
+);
+```
+
+### Soft delete
+
+```typescript
+await repo.delete(OrganizationEntity,
+  { uuid },
+  { actor: userUuid, audit: auditPort },
+);
+```
+
+### Restore
+
+```typescript
+await repo.restore(OrganizationEntity,
+  { uuid },
+  { actor: userUuid, audit: auditPort },
+);
+```
+
+### Hard delete
+
+```typescript
+await repo.hardDelete(OrganizationEntity, { uuid });
+```
+
+## Filtering
+
+The `Filter` DSL supports field-value comparisons, field-field comparisons,
+raw filters, and grouped AND/OR logic.
+
+### Operators
+
+| Operator | Description |
+|----------|-------------|
+| `=`, `!=`, `<>` | Equality |
+| `<`, `<=`, `>`, `>=` | Comparison |
+| `ILIKE`, `LIKE` | Pattern matching |
+| `IN`, `NOT IN` | Set membership |
+| `BETWEEN` | Range |
+| `IS`, `IS NOT` | Null checks |
+
+### Examples
+
+```typescript
+// Field-value
+Filter.fieldValue(field(Entity, "name"), "=", "Alice")
+
+// Field-field
+Filter.fieldField(field(Entity, "created_at"), ">", field(Entity, "updated_at"))
+
+// Raw
+Filter.raw("name", "ILIKE", "%alice%")
+
+// Grouped (OR)
+Filter.group([
+  Filter.fieldValue(field(Entity, "name"), "ILIKE", "%alice%"),
+  Filter.fieldValue(field(Entity, "email"), "ILIKE", "%example%"),
+], "OR")
+```
+
+## Pagination
+
+```typescript
+const result = await repo.findByPage(
+  OrganizationEntity,
+  page,           // 1-based
+  pageSize,       // records per page
+  null,           // fields (null = all)
+  {
+    filters: [Filter.fieldValue(field(OrganizationEntity, "deleted_at"), "IS", null)],
+    sorting: [Sort.by(field(OrganizationEntity, "created_at"), "DESC")],
+    deletedRecords: "EXCLUDED",  // "EXCLUDED" | "ONLY" | "INCLUDED"
+  },
+);
+
+// result.entities — array of records
+// result.total_records — total count (bigint)
+```
+
+### Soft delete filtering
+
+| `deletedRecords` | Behavior |
+|------------------|----------|
+| `"EXCLUDED"` (default) | Only non-deleted records |
+| `"ONLY"` | Only soft-deleted records |
+| `"INCLUDED"` | All records (deleted and non-deleted) |
+
+## Sorting
+
+```typescript
+import { Sort, field } from "@primebrick/dal-pg";
+
+const sorting = [
+  Sort.by(field(OrganizationEntity, "created_at"), "DESC"),
+  Sort.by(field(OrganizationEntity, "display_name"), "ASC"),
+];
+```
+
+## Joins
+
+```typescript
+import { Join, field, buildAuditableJoins } from "@primebrick/dal-pg";
+
+// Manual join
+const joins = [
+  Join.on(
+    field(UserProfileEntity, "uuid"),
+    field(OrganizationEntity, "created_by"),
+    "LEFT",
+    { castLeftTo: "text", castRightTo: "text", alias: "creator" },
+  ),
+];
+
+// Helper: join all auditable fields (created_by, updated_by, deleted_by)
+const joins = buildAuditableJoins(OrganizationEntity, UserProfileEntity);
+```
+
+## Transactions
+
+Use `withClient()` to run multiple operations in a single transaction:
+
+```typescript
+await dal.withClient(async (client) => {
+  const txRepo = new Repository(client);
+
+  await txRepo.add(OrganizationEntity, orgData, { actor: userUuid });
+  await txRepo.add(MembershipEntity, memberData, { actor: userUuid });
+
+  // Commit happens automatically on success.
+  // Any throw rolls back the transaction.
+});
+```
+
+### Timeout override
+
+```typescript
+await dal.withClient(async (client) => {
+  // Long-running operation
+}, { timeoutMs: 60000 });  // overrides statement_timeout for this tx
+```
+
+## Bulk operations
+
+Bulk operations use a TEMP TABLE strategy for performance:
+
+```typescript
+// Bulk insert
+await repo.addMany(Entity, rows, {
+  actor: userUuid,
+  batchSize: 500,
+  timeoutMs: 120000,
+});
+
+// Bulk upsert
+await repo.upsertMany(Entity, rows, {
+  conflictColumns: ["uuid"],
+  batchSize: 500,
+});
+
+// Bulk update
+await repo.updateMany(Entity, updates, {
+  matchColumn: "uuid",
+  batchSize: 500,
+});
+```
+
+## Audit trail
+
+When `@AuditTrail()` is applied to an entity and an `AuditPort` is provided
+in write options, the Repository automatically computes field-level deltas
+and writes them to the audit table.
+
+```typescript
+import { calculateDelta } from "@primebrick/dal-pg";
+
+// The Repository calls audit.writeAudit() automatically on add/update/delete.
+// You only need to provide the AuditPort:
+await repo.update(OrganizationEntity,
+  { uuid, display_name: "New Name" },
+  { actor: userUuid, audit: auditPort },
+);
+
+// Manual delta calculation (for custom audit logic):
+const delta = calculateDelta(oldRecord, newRecord);
+const deltaWithForced = calculateDeltaWithForcedFields(oldRecord, newRecord, ["updated_at"]);
+```
+
+### AuditLogEntity
+
+Audit tables share a common shape, mapped by `AuditLogEntity`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `bigint` | PK |
+| `entity_id` | `bigint` | FK to the audited entity |
+| `entity_uuid` | `uuid` | UUID of the audited entity |
+| `action` | `text` | `INSERT`, `UPDATE`, `SOFT_DELETE`, `HARD_DELETE`, `RESTORE` |
+| `changed_at` | `timestamptz` | When the change happened |
+| `changed_by` | `text` | Who made the change |
+| `version` | `integer` | Entity version at change time |
+| `delta` | `jsonb` | Field-level diff: `{ field: { old, new } }` |
+
+## Clone
+
+```typescript
+const cloned = await repo.clone(
+  OrganizationEntity,
+  sourceUuid,
+  { actor: userUuid },
+);
+```
+
+Clone behavior:
+- Copies all fields from the source record
+- Generates a new UUID (excludes PK and `@Unique` columns)
+- Sets `@CloneField` column to the source UUID
+- Resets audit fields (created_at/updated_at = now, version = 1)
+- Resets soft-delete fields (deleted_at/deleted_by = null)
+- No audit log written
+
+## Type parsers
+
+The `Dal` gateway registers custom pg type parsers automatically:
+
+| PG type | JS type | Notes |
+|---------|---------|-------|
+| `INT8` | `bigint` | Native BigInt (not string) |
+| `NUMERIC` | `number` or `string` | Number when safe, string when precision overflows `MAX_SAFE_INTEGER` |
+
+These are registered once per process (idempotent).
