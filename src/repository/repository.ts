@@ -447,7 +447,11 @@ export class Repository {
     if (auditable && options.audit && pk && actor !== undefined) {
       const entityId = (inserted as any)[pk.propertyKey] as bigint;
       const entityUuid = (inserted as any)["uuid"] as string | undefined ?? "";
-      const delta = calculateDelta({}, { ...rec, updated_at: now, updated_by: actor });
+      // Use the full inserted record (RETURNING *) as the delta source.
+      // This includes ALL columns: business fields, created_at, created_by,
+      // updated_at, updated_by, uuid, id, version — giving a complete snapshot
+      // of the row at creation time.
+      const delta = calculateDelta({}, inserted as Record<string, unknown>);
       options.audit.writeAudit({
         entityClassName: meta.entityClassName,
         tableName: meta.tableName,
@@ -1231,7 +1235,14 @@ export class Repository {
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────
 
-  /** Bulk add — auditable entity (actor required). */
+  /**
+   * Bulk add — auditable entity (actor required).
+   *
+   * @remarks No optimistic concurrency control — INSERT does not need version
+   * guards since there is no existing record to compare against.
+   * TODO: if a conflict-target upsert variant is added, version guards must be
+   * implemented the same way as the single `upsert` method.
+   */
   async addMany<TEntity extends object & IAuditableEntity>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
@@ -1358,7 +1369,17 @@ export class Repository {
     return results;
   }
 
-  /** Bulk upsert — auditable entity (actor required). */
+  /**
+   * Bulk upsert — auditable entity (actor required).
+   *
+   * @remarks No optimistic concurrency control — unlike the single `upsert`
+   * method, `upsertMany` does NOT extract or verify `version` against the
+   * existing record. The ON CONFLICT DO UPDATE path increments version
+   * unconditionally without checking the expected version. This means
+   * concurrent upserts can silently overwrite stale data.
+   * TODO: add per-row version guard in the ON CONFLICT WHERE clause so that
+   * a row is only updated when `${table}.version = EXCLUDED.expected_version`.
+   */
   async upsertMany<TEntity extends object & IAuditableEntity>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
@@ -1592,7 +1613,18 @@ export class Repository {
     return result.rows as TEntity[];
   }
 
-  /** Bulk update — auditable entity (actor required). */
+  /**
+   * Bulk update — auditable entity (actor required).
+   *
+   * @remarks No optimistic concurrency control — unlike the single `update`
+   * method, `updateMany` does NOT extract or verify `version` against the
+   * existing record. The UPDATE FROM temp table does not include a version
+   * guard in the WHERE clause, so concurrent updates can silently overwrite
+   * stale data.
+   * TODO: add per-row version guard by including `expected_version` in the
+   * temp table and adding `AND ${table}.version = tmp.expected_version` to
+   * the UPDATE WHERE clause, then verify rowCount === expected count.
+   */
   async updateMany<TEntity extends object & IAuditableEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
@@ -1740,8 +1772,64 @@ export class Repository {
       });
       setCols.push(...auditSetCols);
 
+      // If audit is enabled, capture old records BEFORE the update (same transaction)
+      // so we can compute deltas and insert audit records atomically.
+      let tmpOldName: string | null = null;
+      const auditEnabled = !!(auditable && actor !== undefined && (options as AuditableWriteOptions).audit);
+
+      if (auditEnabled) {
+        // Create a temp table snapshot of the rows that will be updated.
+        // INNER JOIN with the update temp table for efficient matching.
+        tmpOldName = `tmp_old_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        await client.query(
+          `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
+          `SELECT t.* FROM ${table} t ` +
+          `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
+          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+        );
+      }
+
       const updateSql = `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)} RETURNING *`;
       const result = await client.query(updateSql);
+
+      // 4. Insert audit records atomically (same transaction as the UPDATE).
+      // Delta is computed entirely in SQL using jsonb_build_object + jsonb_strip_nulls.
+      // No records are fetched into Node.js memory — fully scalable.
+      if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
+        const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
+        const pkCol = findPkColumn(meta);
+        const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+
+        // Build the jsonb_build_object(...) argument list dynamically from meta.columns.
+        // Exclude audit-only fields that don't change during UPDATE:
+        // CREATED_AT, CREATED_BY (AuditableFieldType)
+        // DELETED_AT, DELETED_BY (DeletableFieldType)
+        // Identified by metadata enums, not by hardcoded column names.
+        const deltaColumns = Object.values(meta.columns).filter((c) =>
+          c.auditableType !== AuditableFieldType.CREATED_AT &&
+          c.auditableType !== AuditableFieldType.CREATED_BY &&
+          c.deletableType !== DeletableFieldType.DELETED_AT &&
+          c.deletableType !== DeletableFieldType.DELETED_BY,
+        );
+
+        const deltaExpr = deltaColumns
+          .map((c) => {
+            const col = quoteIdent(c.sqlName);
+            return `'${c.sqlName}', CASE WHEN o.${col} IS DISTINCT FROM u.${col} THEN jsonb_build_object('old', o.${col}, 'new', u.${col}) END`;
+          })
+          .join(",\n          ");
+
+        const auditSql =
+          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'UPDATE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `            jsonb_strip_nulls(jsonb_build_object(\n` +
+          `              ${deltaExpr}\n` +
+          `            ))\n` +
+          `          FROM ${table} u\n` +
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+
+        await client.query(auditSql, [now, actor]);
+      }
 
       await client.query("COMMIT");
       return result.rows as TEntity[];

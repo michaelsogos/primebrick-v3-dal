@@ -147,6 +147,9 @@ export { calculateDelta, calculateDeltaWithForcedFields } from "./audit/delta-ca
 
 export { AuditLogEntity } from "./audit/audit-log-entity.js";
 
+// Config entity base — standard dictionary-style config table entity
+export { ConfigEntityBase } from "./entities/config-entity-base.js";
+
 // Dal gateway — high-level pool-owning singleton with best-practice defaults
 export {
   Dal,
