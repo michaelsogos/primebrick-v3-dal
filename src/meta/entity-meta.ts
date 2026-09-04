@@ -28,5 +28,6 @@ export {
   type EntityClass,
   type ColumnOptions,
   type KeyOptions,
+  type UniqueOptions,
   type EntityPersistenceMeta,
 } from "./entity-decorators.js";

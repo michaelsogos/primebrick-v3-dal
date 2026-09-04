@@ -45,6 +45,10 @@ type ColumnRegistration = {
   sqlName: string;
   isKey: boolean;
   isUnique: boolean;
+  /** Composite unique index name — columns sharing the same name form a composite unique index. */
+  uniqueIndexName?: string;
+  /** Order priority within a composite unique index (0-based). Lower = first in index. */
+  uniqueIndexOrder?: number;
   nullable?: boolean;
   pgType?: string;
   /** For varchar/char/bit varying etc. */
@@ -233,13 +237,34 @@ export function IsNotColumn(): PropertyDecorator {
   };
 }
 
+/** Unique constraint options for composite unique indexes. */
+export type UniqueOptions = {
+  /**
+   * Composite unique index name. Columns sharing the same `indexName` form a
+   * composite unique index, ordered by `orderPriority` (ascending).
+   * If omitted, the column gets a single-column unique index (legacy behavior).
+   */
+  indexName?: string;
+  /**
+   * Order priority within a composite unique index (0-based).
+   * Lower values come first in the index. Only meaningful when `indexName` is set.
+   */
+  orderPriority?: number;
+};
+
 /** Unique constraint (PostgreSQL: unique index in generated patches). */
-export function Unique(): PropertyDecorator {
+export function Unique(): PropertyDecorator;
+export function Unique(indexName: string, orderPriority: number): PropertyDecorator;
+export function Unique(indexName?: string, orderPriority?: number): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
     col.isUnique = true;
     col.nullable = false;
+    if (indexName !== undefined) {
+      col.uniqueIndexName = indexName;
+      col.uniqueIndexOrder = orderPriority ?? 0;
+    }
     const dt = Reflect.getMetadata("design:type", target, propertyKey);
     if (dt && typeof (dt as { name?: string }).name === "string") {
       col.tsDesignTypeCtorName = (dt as Function).name;
@@ -453,6 +478,10 @@ export type EntityPersistenceMeta = {
       sqlName: string;
       isKey: boolean;
       isUnique: boolean;
+      /** Composite unique index name (if part of a composite unique). */
+      uniqueIndexName?: string;
+      /** Order priority within a composite unique index (0-based). */
+      uniqueIndexOrder?: number;
       nullable?: boolean;
       pgType?: string;
       tsDesignTypeCtorName?: string;
@@ -523,6 +552,8 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
       inferredPgType,
       usePostgresIdentity,
     };
+    if (reg.uniqueIndexName !== undefined) entry.uniqueIndexName = reg.uniqueIndexName;
+    if (reg.uniqueIndexOrder !== undefined) entry.uniqueIndexOrder = reg.uniqueIndexOrder;
     if (reg.pgType !== undefined) entry.pgType = reg.pgType;
     entry.nullable = reg.nullable ?? (reg.isKey || reg.isUnique ? false : true);
     if (reg.defaultSql !== undefined) entry.defaultSql = reg.defaultSql;

@@ -42,6 +42,7 @@ export {
   type EntityClass,
   type ColumnOptions,
   type KeyOptions,
+  type UniqueOptions,
   type EntityPersistenceMeta,
 } from "./meta/entity-meta.js";
 
@@ -149,6 +150,9 @@ export { AuditLogEntity } from "./audit/audit-log-entity.js";
 
 // Config entity base — standard dictionary-style config table entity
 export { ConfigEntityBase } from "./entities/config-entity-base.js";
+
+// Translation entity base — standard i18n translations table entity
+export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 
 // Dal gateway — high-level pool-owning singleton with best-practice defaults
 export {
