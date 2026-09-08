@@ -40,6 +40,7 @@
 - **TEMP TABLE strategy** for bulk update/upsert — atomic, SQL-injection safe.
 - **bigint via INT8_OID** — native `bigint`, not strings.
 - **Metadata-driven types** — `@Column({ dbType: ... })` controls PG<->JS type coercion.
+- **Naming convention** — PG table = snake_case **plural** (collection of rows, e.g. `customers`). Entity class = PascalCase **singular** (one row schema, e.g. `CustomerEntity`). This is enforced by the `@Entity` decorator — the table name is plural, the class name is singular.
 
 ## GitFlow
 
