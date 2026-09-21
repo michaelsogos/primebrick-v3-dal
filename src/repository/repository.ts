@@ -179,6 +179,81 @@ function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMeta>): b
   return meta.isAuditable === true || Object.values(meta.columns).some((c) => c.isAuditable);
 }
 
+/**
+ * Build the RETURNING clause for a single-row write, honoring TResult.
+ *
+ * - `fields` given: emit exactly those projections (`field` → `"col" AS "alias"`,
+ *   `expr` → `expr AS "alias"`). Field projections must target the base entity —
+ *   RETURNING cannot reference joined tables.
+ * - `fields` absent: emit every persisted column EXCEPT the identity PK
+ *   (`id` bigint — not JSON-safe), aliased to its property key.
+ *
+ * Internal bookkeeping columns (`id`, `uuid`, `version`) are always emitted so
+ * the audit path can still read them; they are stripped from the returned
+ * object unless the caller explicitly projected them.
+ */
+function buildReturningClause(
+  entity: EntityClass,
+  fields?: FieldProjector[] | null,
+): { clause: string; visibleKeys: string[]; rowKeyToSqlName: Map<string, string> } {
+  const meta = getEntityPersistenceMeta(entity);
+  const pk = findPkColumn(meta);
+  const projections: string[] = [];
+  const visibleKeys: string[] = [];
+  const emittedSqlNames = new Set<string>();
+  const rowKeyToSqlName = new Map<string, string>();
+
+  const emit = (sqlName: string, alias: string, visible: boolean) => {
+    projections.push(`${quoteIdent(sqlName)} AS ${quoteIdent(alias)}`);
+    rowKeyToSqlName.set(alias, sqlName);
+    if (visible) visibleKeys.push(alias);
+    emittedSqlNames.add(sqlName);
+  };
+
+  if (fields && fields.length > 0) {
+    for (const f of fields) {
+      if (f.kind === "expr") {
+        projections.push(`${f.expr} AS ${quoteIdent(f.alias)}`);
+        rowKeyToSqlName.set(f.alias, f.alias);
+        visibleKeys.push(f.alias);
+      } else {
+        if (f.field.entity !== entity) {
+          throw new ValidationError("returning: field projections must target the base entity — RETURNING cannot reference joined tables");
+        }
+        const sqlName = getColumnName(entity, f.field.key);
+        emit(sqlName, f.alias ?? sqlName, true);
+      }
+    }
+    // Internal bookkeeping — needed by the audit path even when not projected.
+    const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+    for (const sqlName of [pk?.sqlName, "uuid", versionCol?.sqlName]) {
+      if (sqlName && meta.columns[sqlName] && !emittedSqlNames.has(sqlName)) {
+        emit(sqlName, sqlName, false);
+      }
+    }
+  } else {
+    for (const c of Object.values(meta.columns)) {
+      const isPk = pk !== null && c.sqlName === pk.sqlName;
+      emit(c.sqlName, c.propertyKey, !isPk);
+    }
+  }
+  return { clause: `RETURNING ${projections.join(", ")}`, visibleKeys, rowKeyToSqlName };
+}
+
+/** Strip internal bookkeeping keys — the result carries exactly the projected keys. */
+function pickReturningRow<TResult>(raw: Record<string, unknown>, visibleKeys: string[]): TResult {
+  const out: Record<string, unknown> = {};
+  for (const k of visibleKeys) out[k] = raw[k];
+  return out as TResult;
+}
+
+/** Rebuild a sqlName-keyed record from a RETURNING row (for audit deltas). */
+function remapReturningRow(raw: Record<string, unknown>, rowKeyToSqlName: Map<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) out[rowKeyToSqlName.get(k) ?? k] = v;
+  return out;
+}
+
 /** Auto-calculate safe batch size to stay under PG's 65535 parameter limit. */
 function autoBatchSize(columnCount: number): number {
   if (columnCount <= 0) return 1000;
@@ -190,6 +265,10 @@ export class Repository {
 
   // ─── Finders ───────────────────────────────────────────────────────────────
 
+  /**
+   * @deprecated Internal/FK-driven use only. API paths must identify rows by
+   * uuid — the INT8 `id` exists for FK/JOIN performance, never for callers.
+   */
   async findById<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     id: bigint | string,
@@ -350,22 +429,22 @@ export class Repository {
   // ─── Write ops ─────────────────────────────────────────────────────────────
 
   /** Add — auditable entity (actor required). */
-  async add<TEntity extends object & IAuditableEntity>(
+  async add<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions,
-  ): Promise<TEntity>;
+  ): Promise<TResult>;
   /** Add — non-auditable entity (actor rejected). */
-  async add<TEntity extends object>(
+  async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions,
-  ): Promise<TEntity>;
-  async add<TEntity extends object>(
+  ): Promise<TResult>;
+  async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions | AuditableWriteOptions,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = options.tableName
       ? `${quoteIdent(meta.tableSchema)}.${quoteIdent(options.tableName)}`
@@ -439,19 +518,23 @@ export class Repository {
       }
     }
 
-    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) RETURNING *`;
+    // createIfAbsent === false → statement-level idempotent insert:
+    // bare ON CONFLICT DO NOTHING skips a conflicting row without aborting
+    // the surrounding transaction (RETURNING yields zero rows → inserted undefined).
+    const conflictClause = options.createIfAbsent === false ? " ON CONFLICT DO NOTHING" : "";
+    const ret = buildReturningClause(entity, options.returning);
+    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")})${conflictClause} ${ret.clause}`;
     const result = await this.db.query(sql, values);
-    const inserted = result.rows?.[0] as TEntity;
+    const inserted = result.rows?.[0] as Record<string, unknown> | undefined;
 
-    // Write audit if port is injected
-    if (auditable && options.audit && pk && actor !== undefined) {
-      const entityId = (inserted as any)[pk.propertyKey] as bigint;
-      const entityUuid = (inserted as any)["uuid"] as string | undefined ?? "";
-      // Use the full inserted record (RETURNING *) as the delta source.
-      // This includes ALL columns: business fields, created_at, created_by,
-      // updated_at, updated_by, uuid, id, version — giving a complete snapshot
-      // of the row at creation time.
-      const delta = calculateDelta({}, inserted as Record<string, unknown>);
+    // Write audit if port is injected (skipped when the row was a no-op conflict)
+    if (inserted && auditable && options.audit && pk && actor !== undefined) {
+      const insertedRecord = remapReturningRow(inserted, ret.rowKeyToSqlName);
+      const entityId = (insertedRecord[pk.sqlName] ?? inserted[pk.propertyKey]) as bigint;
+      const entityUuid = (insertedRecord["uuid"] ?? "") as string;
+      // Use the full inserted record (RETURNING) as the delta source —
+      // all projected columns plus internal bookkeeping (id/uuid/version).
+      const delta = calculateDelta({}, insertedRecord);
       options.audit.writeAudit({
         entityClassName: meta.entityClassName,
         tableName: meta.tableName,
@@ -465,215 +548,225 @@ export class Repository {
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
-    return inserted;
+    // May be undefined when createIfAbsent === false and the row was skipped.
+    return inserted === undefined ? (undefined as TResult) : pickReturningRow<TResult>(inserted, ret.visibleKeys);
   }
 
-  /** Upsert — auditable entity (actor required). */
-  async upsert<TEntity extends object & IAuditableEntity>(
-    entity: EntityClass & { new (): TEntity },
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: AuditableWriteOptions & UpsertOptions,
-  ): Promise<TEntity>;
-  /** Upsert — non-auditable entity (actor rejected). */
-  async upsert<TEntity extends object>(
-    entity: EntityClass & { new (): TEntity },
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions & UpsertOptions,
-  ): Promise<TEntity>;
-  async upsert<TEntity extends object>(
-    entity: EntityClass,
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: (WriteOptions | AuditableWriteOptions) & UpsertOptions,
-  ): Promise<TEntity> {
-    const meta = getEntityPersistenceMeta(entity);
-    const table = getQualifiedTableName(entity);
-    const pk = findPkColumn(meta);
-    const auditable = isAuditableEntity(meta);
-    const actor = (options as AuditableWriteOptions).actor;
-    // Default conflict target: @Key() column's SQL name (was "uuid")
-    const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
-
-    const rec = row as Record<string, unknown>;
-    let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
-
-    if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
-      keys = keys.filter((k) => k !== pk!.propertyKey);
-    }
-
-    // Optimistic concurrency: strip version from INSERT keys for auditable entities.
-    // Version is used for the guard (ON CONFLICT path only, per OD4), not for INSERT/SET.
-    const versionCol = findVersionColumn(meta);
-    let expectedVersion: number | null = null;
-    if (versionCol) {
-      const versionValue = rec[versionCol.propertyKey];
-      if (versionValue !== undefined && versionValue !== null) {
-        expectedVersion = Number(versionValue);
-      }
-      keys = keys.filter((k) => k !== versionCol.propertyKey);
-    }
-
-    if (keys.length === 0) {
-      throw new ValidationError("upsert: no columns to insert (all undefined?)");
-    }
-
-    for (const k of keys) {
-      const sqlName = getColumnName(entity, k);
-      if (!meta.columns[sqlName]) {
-        throw new UnknownColumnError(`upsert: unknown column/property ${k}`);
-      }
-    }
-
-    const now = new Date();
-    const values: unknown[] = [];
-    const colsSql: string[] = [];
-    const params: string[] = [];
-
-    for (const k of keys) {
-      const sqlName = getColumnName(entity, k);
-      const colMeta = meta.columns[sqlName];
-      colsSql.push(quoteIdent(sqlName));
-      const rawVal = rec[k] ?? null;
-      const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-      values.push(pgVal);
-      params.push(`$${values.length}`);
-    }
-
-    // Add audit stamping for INSERT path
-    if (auditable && actor !== undefined) {
-      const createdAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_AT);
-      const createdByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_BY);
-      const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
-      const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-
-      if (createdAtCol && !keys.includes(createdAtCol.propertyKey)) {
-        colsSql.push(quoteIdent(createdAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-      }
-      if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
-        colsSql.push(quoteIdent(createdByCol.sqlName));
-        values.push(actor);
-        params.push(`$${values.length}`);
-      }
-      if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
-        colsSql.push(quoteIdent(updatedAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-      }
-      if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
-        colsSql.push(quoteIdent(updatedByCol.sqlName));
-        values.push(actor);
-        params.push(`$${values.length}`);
-      }
-    }
-
-    // Build ON CONFLICT DO UPDATE SET — audit-aware
-    const updateCols: string[] = [];
-    const actorParamIdx = values.length + 1;
-    values.push(actor);
-    const nowParamIdx = values.length + 1;
-    values.push(now);
-
-    for (const k of keys) {
-      const sqlName = getColumnName(entity, k);
-      // Don't update the conflict target itself, created_at, or created_by on conflict
-      const col = meta.columns[sqlName];
-      if (sqlName === conflictTarget) continue;
-      if (col?.auditableType === AuditableFieldType.CREATED_AT) continue;
-      if (col?.auditableType === AuditableFieldType.CREATED_BY) continue;
-      updateCols.push(`${quoteIdent(sqlName)} = EXCLUDED.${quoteIdent(sqlName)}`);
-    }
-
-    // Add audit stamping for UPDATE path
-    if (auditable && actor !== undefined) {
-      const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
-      const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-      const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-
-      if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = $${nowParamIdx}`);
-      if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = $${actorParamIdx}`);
-      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
-    }
-
-    const conflictCol = quoteIdent(conflictTarget);
-    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
-
-    // Fetch old record for audit delta AND optimistic concurrency pre-check.
-    // Runs for all auditable entities (not just when audit is enabled) because the
-    // version guard needs to know if the row exists (ON CONFLICT path) or not (INSERT path).
-    let oldRecord: Record<string, unknown> | null = null;
-    if (auditable) {
-      const conflictPropKey = Object.entries(meta.columns).find(([_, c]) => c.sqlName === conflictTarget)?.[1]?.propertyKey;
-      const conflictValue = conflictPropKey ? rec[conflictPropKey] : null;
-      if (conflictValue !== null && conflictValue !== undefined) {
-        const oldSql = `SELECT * FROM ${table} WHERE ${conflictCol} = $1`;
-        const oldResult = await this.db.query(oldSql, [conflictValue]);
-        oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
-      }
-    }
-
-    // Optimistic concurrency guard — ON CONFLICT path only (row exists), per OD4.
-    // INSERT path (row doesn't exist) skips the guard entirely.
-    if (oldRecord && versionCol) {
-      if (expectedVersion === null) {
-        throw new MissingVersionError(
-          `Auditable entity upsert with existing row requires a 'version' field; entity ${meta.entityClassName} is auditable but no version was provided.`,
-        );
-      }
-      const dbVersion = Number(oldRecord[versionCol.sqlName]);
-      if (dbVersion !== expectedVersion) {
-        // PG raises ERR01 — same mechanism as update/delete/restore/hardDelete
-        const raiseSql = `DO $$ BEGIN RAISE EXCEPTION 'Optimistic Concurrency Violation' USING ERRCODE = 'ERR01', DETAIL = 'The record exists but the provided version (${expectedVersion}) does not match the current version of ${meta.entityClassName}.'; END $$;`;
-        await this.db.query(raiseSql);
-      }
-    }
-
-    const result = await this.db.query(sql, values);
-    const upserted = result.rows?.[0] as TEntity;
-
-    // Write audit log (fire-and-forget) — INSERT if new, UPDATE if conflict
-    if (auditable && options.audit && actor !== undefined) {
-      const pkCol = findPkColumn(meta);
-      const entityId = pkCol ? (upserted as any)[pkCol.propertyKey] as bigint : 0n;
-      const entityUuid = (upserted as any)["uuid"] as string | undefined ?? "";
-      const newVersion = versionCol ? (upserted as any)[versionCol.propertyKey] as number : 1;
-      const action = oldRecord ? AuditAction.UPDATE : AuditAction.INSERT;
-      const delta = oldRecord
-        ? calculateDeltaWithForcedFields(oldRecord, upserted as Record<string, unknown>, [])
-        : calculateDelta({}, upserted as Record<string, unknown>);
-      options.audit.writeAudit({
-        entityClassName: meta.entityClassName,
-        tableName: meta.tableName,
-        entityId,
-        entityUuid,
-        action,
-        changedAt: now,
-        version: newVersion,
-        changedBy: actor,
-        delta,
-      }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
-    }
-
-    return upserted;
-  }
+  // ─── upsert (single-record) REMOVED ─────────────────────────────────────────
+  // Intentionally disabled. upsert() had become a workaround that eluded the
+  // optimistic-concurrency model: callers either passed a just-fetched version
+  // (self-comparison, guard vacuous) or nothing (silent merge of unknown state).
+  // The honest contract is: add() when the row is expected absent (unique
+  // violation on conflict is a correct, visible failure), or update() with the
+  // observed version when it exists. Bulk upsertMany (temp-table) is unaffected.
+  // See ai-plans/bugfix-auditable-update-version-propagation.md
+  // ────────────────────────────────────────────────────────────────────────────
+  //   /** Upsert — auditable entity (actor required). */
+  //   async upsert<TEntity extends object & IAuditableEntity>(
+  //     entity: EntityClass & { new (): TEntity },
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: AuditableWriteOptions & UpsertOptions,
+  //   ): Promise<TEntity>;
+  //   /** Upsert — non-auditable entity (actor rejected). */
+  //   async upsert<TEntity extends object>(
+  //     entity: EntityClass & { new (): TEntity },
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: WriteOptions & UpsertOptions,
+  //   ): Promise<TEntity>;
+  //   async upsert<TEntity extends object>(
+  //     entity: EntityClass,
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: (WriteOptions | AuditableWriteOptions) & UpsertOptions,
+  //   ): Promise<TEntity> {
+  //     const meta = getEntityPersistenceMeta(entity);
+  //     const table = getQualifiedTableName(entity);
+  //     const pk = findPkColumn(meta);
+  //     const auditable = isAuditableEntity(meta);
+  //     const actor = (options as AuditableWriteOptions).actor;
+  //     // Default conflict target: @Key() column's SQL name (was "uuid")
+  //     const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
+  // 
+  //     const rec = row as Record<string, unknown>;
+  //     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
+  // 
+  //     if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
+  //       keys = keys.filter((k) => k !== pk!.propertyKey);
+  //     }
+  // 
+  //     // Optimistic concurrency: strip version from INSERT keys for auditable entities.
+  //     // Version is used for the guard (ON CONFLICT path only, per OD4), not for INSERT/SET.
+  //     const versionCol = findVersionColumn(meta);
+  //     let expectedVersion: number | null = null;
+  //     if (versionCol) {
+  //       const versionValue = rec[versionCol.propertyKey];
+  //       if (versionValue !== undefined && versionValue !== null) {
+  //         expectedVersion = Number(versionValue);
+  //       }
+  //       keys = keys.filter((k) => k !== versionCol.propertyKey);
+  //     }
+  // 
+  //     if (keys.length === 0) {
+  //       throw new ValidationError("upsert: no columns to insert (all undefined?)");
+  //     }
+  // 
+  //     for (const k of keys) {
+  //       const sqlName = getColumnName(entity, k);
+  //       if (!meta.columns[sqlName]) {
+  //         throw new UnknownColumnError(`upsert: unknown column/property ${k}`);
+  //       }
+  //     }
+  // 
+  //     const now = new Date();
+  //     const values: unknown[] = [];
+  //     const colsSql: string[] = [];
+  //     const params: string[] = [];
+  // 
+  //     for (const k of keys) {
+  //       const sqlName = getColumnName(entity, k);
+  //       const colMeta = meta.columns[sqlName];
+  //       colsSql.push(quoteIdent(sqlName));
+  //       const rawVal = rec[k] ?? null;
+  //       const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+  //       values.push(pgVal);
+  //       params.push(`$${values.length}`);
+  //     }
+  // 
+  //     // Add audit stamping for INSERT path
+  //     if (auditable && actor !== undefined) {
+  //       const createdAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_AT);
+  //       const createdByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.CREATED_BY);
+  //       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+  //       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
+  // 
+  //       if (createdAtCol && !keys.includes(createdAtCol.propertyKey)) {
+  //         colsSql.push(quoteIdent(createdAtCol.sqlName));
+  //         values.push(now);
+  //         params.push(`$${values.length}`);
+  //       }
+  //       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
+  //         colsSql.push(quoteIdent(createdByCol.sqlName));
+  //         values.push(actor);
+  //         params.push(`$${values.length}`);
+  //       }
+  //       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
+  //         colsSql.push(quoteIdent(updatedAtCol.sqlName));
+  //         values.push(now);
+  //         params.push(`$${values.length}`);
+  //       }
+  //       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
+  //         colsSql.push(quoteIdent(updatedByCol.sqlName));
+  //         values.push(actor);
+  //         params.push(`$${values.length}`);
+  //       }
+  //     }
+  // 
+  //     // Build ON CONFLICT DO UPDATE SET — audit-aware
+  //     const updateCols: string[] = [];
+  //     const actorParamIdx = values.length + 1;
+  //     values.push(actor);
+  //     const nowParamIdx = values.length + 1;
+  //     values.push(now);
+  // 
+  //     for (const k of keys) {
+  //       const sqlName = getColumnName(entity, k);
+  //       // Don't update the conflict target itself, created_at, or created_by on conflict
+  //       const col = meta.columns[sqlName];
+  //       if (sqlName === conflictTarget) continue;
+  //       if (col?.auditableType === AuditableFieldType.CREATED_AT) continue;
+  //       if (col?.auditableType === AuditableFieldType.CREATED_BY) continue;
+  //       updateCols.push(`${quoteIdent(sqlName)} = EXCLUDED.${quoteIdent(sqlName)}`);
+  //     }
+  // 
+  //     // Add audit stamping for UPDATE path
+  //     if (auditable && actor !== undefined) {
+  //       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+  //       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
+  //       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+  // 
+  //       if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = $${nowParamIdx}`);
+  //       if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = $${actorParamIdx}`);
+  //       if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
+  //     }
+  // 
+  //     const conflictCol = quoteIdent(conflictTarget);
+  //     const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
+  // 
+  //     // Fetch old record for audit delta AND optimistic concurrency pre-check.
+  //     // Runs for all auditable entities (not just when audit is enabled) because the
+  //     // version guard needs to know if the row exists (ON CONFLICT path) or not (INSERT path).
+  //     let oldRecord: Record<string, unknown> | null = null;
+  //     if (auditable) {
+  //       const conflictPropKey = Object.entries(meta.columns).find(([_, c]) => c.sqlName === conflictTarget)?.[1]?.propertyKey;
+  //       const conflictValue = conflictPropKey ? rec[conflictPropKey] : null;
+  //       if (conflictValue !== null && conflictValue !== undefined) {
+  //         const oldSql = `SELECT * FROM ${table} WHERE ${conflictCol} = $1`;
+  //         const oldResult = await this.db.query(oldSql, [conflictValue]);
+  //         oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
+  //       }
+  //     }
+  // 
+  //     // Optimistic concurrency guard — ON CONFLICT path only (row exists), per OD4.
+  //     // INSERT path (row doesn't exist) skips the guard entirely.
+  //     if (oldRecord && versionCol) {
+  //       if (expectedVersion === null) {
+  //         throw new MissingVersionError(
+  //           `Auditable entity upsert with existing row requires a 'version' field; entity ${meta.entityClassName} is auditable but no version was provided.`,
+  //         );
+  //       }
+  //       const dbVersion = Number(oldRecord[versionCol.sqlName]);
+  //       if (dbVersion !== expectedVersion) {
+  //         // PG raises ERR01 — same mechanism as update/delete/restore/hardDelete
+  //         const raiseSql = `DO $$ BEGIN RAISE EXCEPTION 'Optimistic Concurrency Violation' USING ERRCODE = 'ERR01', DETAIL = 'The record exists but the provided version (${expectedVersion}) does not match the current version of ${meta.entityClassName}.'; END $$;`;
+  //         await this.db.query(raiseSql);
+  //       }
+  //     }
+  // 
+  //     const result = await this.db.query(sql, values);
+  //     const upserted = result.rows?.[0] as TEntity;
+  // 
+  //     // Write audit log (fire-and-forget) — INSERT if new, UPDATE if conflict
+  //     if (auditable && options.audit && actor !== undefined) {
+  //       const pkCol = findPkColumn(meta);
+  //       const entityId = pkCol ? (upserted as any)[pkCol.propertyKey] as bigint : 0n;
+  //       const entityUuid = (upserted as any)["uuid"] as string | undefined ?? "";
+  //       const newVersion = versionCol ? (upserted as any)[versionCol.propertyKey] as number : 1;
+  //       const action = oldRecord ? AuditAction.UPDATE : AuditAction.INSERT;
+  //       const delta = oldRecord
+  //         ? calculateDeltaWithForcedFields(oldRecord, upserted as Record<string, unknown>, [])
+  //         : calculateDelta({}, upserted as Record<string, unknown>);
+  //       options.audit.writeAudit({
+  //         entityClassName: meta.entityClassName,
+  //         tableName: meta.tableName,
+  //         entityId,
+  //         entityUuid,
+  //         action,
+  //         changedAt: now,
+  //         version: newVersion,
+  //         changedBy: actor,
+  //         delta,
+  //       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
+  //     }
+  // 
+  //     return upserted;
+  //   }
 
   /** Update — auditable entity (actor required). */
-  async update<TEntity extends object & IAuditableEntity>(
+  async update<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
+  ): Promise<TResult>;
   /** Update — non-auditable entity (actor rejected). */
-  async update<TEntity extends object>(
+  async update<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async update<TEntity extends object>(
+  ): Promise<TResult>;
+  async update<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -751,7 +844,8 @@ export class Repository {
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
+    const ret = buildReturningClause(entity, options.returning);
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
@@ -762,15 +856,16 @@ export class Repository {
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
-    const updated = result.rows[0] as TEntity;
+    const updatedRaw = result.rows[0] as Record<string, unknown>;
+    const updated = remapReturningRow(updatedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const pk = findPkColumn(meta);
-      const entityId = pk ? (updated as any)[pk.propertyKey] as bigint : 0n;
-      const entityUuid = (updated as any)["uuid"] as string | undefined ?? "";
+      const entityId = pk ? (updated[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityUuid = (updated["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-      const newVersion = versionCol ? (updated as any)[versionCol.propertyKey] as number : 1;
+      const newVersion = versionCol ? (updated[versionCol.sqlName] as number) : 1;
       const forcedFields: string[] = [];
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
@@ -778,7 +873,7 @@ export class Repository {
       if (updatedByCol) forcedFields.push(updatedByCol.sqlName);
       const delta = calculateDeltaWithForcedFields(
         oldRecord,
-        updated as Record<string, unknown>,
+        { ...oldRecord, ...updated },
         forcedFields,
       );
       options.audit.writeAudit({
@@ -794,24 +889,24 @@ export class Repository {
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
-    return updated;
+    return pickReturningRow<TResult>(updatedRaw, ret.visibleKeys);
   }
-  async delete<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+  async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
+  ): Promise<TResult>;
   /** Soft-delete — deletable but non-auditable entity (actor rejected). */
-  async delete<TEntity extends object & IDeletableEntity>(
+  async delete<TEntity extends object & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async delete<TEntity extends object>(
+  ): Promise<TResult>;
+  async delete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -876,7 +971,8 @@ export class Repository {
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
+    const ret = buildReturningClause(entity, options.returning);
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
@@ -886,14 +982,15 @@ export class Repository {
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
-    const deleted = result.rows[0] as TEntity;
+    const deletedRaw = result.rows[0] as Record<string, unknown>;
+    const deleted = remapReturningRow(deletedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const pk = findPkColumn(meta);
-      const entityId = pk ? (deleted as any)[pk.propertyKey] as bigint : 0n;
-      const entityUuid = (deleted as any)["uuid"] as string | undefined ?? "";
-      const newVersion = versionCol ? (deleted as any)[versionCol.propertyKey] as number : 1;
+      const entityId = pk ? (deleted[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityUuid = (deleted["uuid"] as string | undefined) ?? "";
+      const newVersion = versionCol ? (deleted[versionCol.sqlName] as number) : 1;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -901,7 +998,7 @@ export class Repository {
       if (updatedByCol) forcedFields.push(updatedByCol.sqlName);
       const delta = calculateDeltaWithForcedFields(
         oldRecord,
-        deleted as Record<string, unknown>,
+        { ...oldRecord, ...deleted },
         forcedFields,
       );
       options.audit.writeAudit({
@@ -917,26 +1014,26 @@ export class Repository {
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
-    return deleted;
+    return pickReturningRow<TResult>(deletedRaw, ret.visibleKeys);
   }
 
   /** Restore — auditable+deletable entity (actor required). */
-  async restore<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+  async restore<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
+  ): Promise<TResult>;
   /** Restore — deletable but non-auditable entity (actor rejected). */
-  async restore<TEntity extends object & IDeletableEntity>(
+  async restore<TEntity extends object & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async restore<TEntity extends object>(
+  ): Promise<TResult>;
+  async restore<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -999,7 +1096,8 @@ export class Repository {
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
     }
 
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} RETURNING *`;
+    const ret = buildReturningClause(entity, options.returning);
+    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
@@ -1009,14 +1107,15 @@ export class Repository {
       throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
     }
 
-    const restored = result.rows[0] as TEntity;
+    const restoredRaw = result.rows[0] as Record<string, unknown>;
+    const restored = remapReturningRow(restoredRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const pk = findPkColumn(meta);
-      const entityId = pk ? (restored as any)[pk.propertyKey] as bigint : 0n;
-      const entityUuid = (restored as any)["uuid"] as string | undefined ?? "";
-      const newVersion = versionCol ? (restored as any)[versionCol.propertyKey] as number : 1;
+      const entityId = pk ? (restored[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityUuid = (restored["uuid"] as string | undefined) ?? "";
+      const newVersion = versionCol ? (restored[versionCol.sqlName] as number) : 1;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -1024,7 +1123,7 @@ export class Repository {
       if (updatedByCol) forcedFields.push(updatedByCol.sqlName);
       const delta = calculateDeltaWithForcedFields(
         oldRecord,
-        restored as Record<string, unknown>,
+        { ...oldRecord, ...restored },
         forcedFields,
       );
       options.audit.writeAudit({
@@ -1040,26 +1139,26 @@ export class Repository {
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
-    return restored;
+    return pickReturningRow<TResult>(restoredRaw, ret.visibleKeys);
   }
 
   /** Hard-delete — auditable entity (actor required for audit log). */
-  async hardDelete<TEntity extends object & IAuditableEntity>(
+  async hardDelete<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
+  ): Promise<TResult>;
   /** Hard-delete — non-auditable entity (actor rejected). */
-  async hardDelete<TEntity extends object>(
+  async hardDelete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
-  async hardDelete<TEntity extends object>(
+  ): Promise<TResult>;
+  async hardDelete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<void> {
+  ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -1091,7 +1190,8 @@ export class Repository {
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${values.length}`;
     }
 
-    const sql = `DELETE FROM ${table} ${whereClause}`;
+    const ret = buildReturningClause(entity, options.returning);
+    const sql = `DELETE FROM ${table} ${whereClause} ${ret.clause}`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
@@ -1127,6 +1227,9 @@ export class Repository {
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
+
+    // RETURNING yields the row as it was before the physical delete.
+    return pickReturningRow<TResult>(result.rows[0] as Record<string, unknown>, ret.visibleKeys);
   }
 
   // ─── Clone ─────────────────────────────────────────────────────────────────
@@ -1223,14 +1326,15 @@ export class Repository {
     const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
     const columnNames = columns.map((c) => quoteIdent(c)).join(", ");
 
-    const insertSql = `INSERT INTO ${table} (${columnNames}) VALUES (${placeholders}) RETURNING *`;
+    const ret = buildReturningClause(entity, options.returning);
+    const insertSql = `INSERT INTO ${table} (${columnNames}) VALUES (${placeholders}) ${ret.clause}`;
     const insertResult = await this.db.query(insertSql, values);
 
     if (insertResult.rowCount === 0) {
       throw new Error(`Failed to clone record for ${meta.tableName}`);
     }
 
-    return insertResult.rows[0] as TEntity;
+    return pickReturningRow<TEntity>(insertResult.rows[0], ret.visibleKeys);
   }
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────
@@ -1247,19 +1351,19 @@ export class Repository {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   /** Bulk add — non-auditable entity (actor rejected). */
   async addMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions,
-  ): Promise<TEntity[]> {
-    if (rows.length === 0) return [];
+  ): Promise<void> {
+    if (rows.length === 0) return;
     const meta = getEntityPersistenceMeta(entity);
     const table = options.tableName
       ? `${quoteIdent(meta.tableSchema)}.${quoteIdent(options.tableName)}`
@@ -1300,7 +1404,7 @@ export class Repository {
 
     const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
-    const results: TEntity[] = [];
+    
 
     // When timeoutMs is provided, wrap batched INSERTs in a transaction with
     // SET LOCAL statement_timeout (transaction-scoped, no leakage).
@@ -1347,9 +1451,10 @@ export class Repository {
           tuples.push(`(${params.join(", ")})`);
         }
 
-        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} RETURNING *`;
-        const result = await db.query(sql, values);
-        results.push(...(result.rows as TEntity[]));
+        // No RETURNING — bulk ops return nothing (204 contract); rowCount is
+        // available on the command tag if needed.
+        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")}`;
+        await db.query(sql, values);
       }
 
       if (useTx && client) {
@@ -1365,8 +1470,6 @@ export class Repository {
         (client as any).release?.();
       }
     }
-
-    return results;
   }
 
   /**
@@ -1384,19 +1487,19 @@ export class Repository {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   /** Bulk upsert — non-auditable entity (actor rejected). */
   async upsertMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async upsertMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions
-  ): Promise<TEntity[]> {
-    if (rows.length === 0) return [];
+  ): Promise<void> {
+    if (rows.length === 0) return;
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const pk = findPkColumn(meta);
@@ -1465,7 +1568,7 @@ export class Repository {
 
     const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
-    const results: TEntity[] = [];
+    
 
     // When timeoutMs is provided, wrap batched upserts in a transaction with
     // SET LOCAL statement_timeout (transaction-scoped, no leakage).
@@ -1516,9 +1619,9 @@ export class Repository {
           tuples.push(`(${params.join(", ")})`);
         }
 
-        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")} RETURNING *`;
-        const result = await db.query(sql, values);
-        results.push(...(result.rows as TEntity[]));
+        // No RETURNING — bulk ops return nothing (204 contract).
+        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")}`;
+        await db.query(sql, values);
       }
 
       if (useTx && client) {
@@ -1534,8 +1637,6 @@ export class Repository {
         (client as any).release?.();
       }
     }
-
-    return results;
   }
 
   /** Bulk soft-delete — auditable+deletable entity (actor required). */
@@ -1543,19 +1644,19 @@ export class Repository {
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   /** Bulk soft-delete — deletable but non-auditable entity (actor rejected). */
   async deleteMany<TEntity extends object & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async deleteMany<TEntity extends object>(
     entity: EntityClass,
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]> {
-    if (matches.length === 0) return [];
+  ): Promise<void> {
+    if (matches.length === 0) return;
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -1577,8 +1678,6 @@ export class Repository {
     });
 
     const now = new Date();
-    const setClauses: string[] = [];
-    const values: unknown[] = [];
 
     const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
@@ -1586,31 +1685,113 @@ export class Repository {
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
     const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
-    if (deletedAtCol) {
-      setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
-    }
-    if (deletedByCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(actor);
-    }
-    if (updatedAtCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
-    }
-    if (updatedByCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
-      values.push(actor);
-    }
-    if (versionCol && auditable) {
-      setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
-    }
+    // TEMP TABLE strategy (same as updateMany): stream match keys into a temp
+    // table, then a single UPDATE ... FROM — a JOIN beats ANY($n::[]) and has
+    // no parameter-count ceiling (~65535 limit of ANY/IN does not apply).
+    //
+    // TODO: no optimistic concurrency control — like updateMany, deleteMany
+    // does NOT verify `version`. To add it: include `expected_version` in the
+    // temp table, add `AND ${table}.version = tmp.expected_version` to the
+    // UPDATE WHERE, then diagnose stale rows with a same-transaction SELECT
+    // against the temp table (`LEFT JOIN t ON match AND version` → rows with
+    // no match are stale/vanished) and roll back all-or-nothing.
+    const client = await this.getClient();
+    try {
+      await client.query("BEGIN");
 
-    const pgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
-    values.push(matchValues);
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} WHERE ${quoteIdent(matchCol.sqlName)} = ANY($${values.length}::${pgType}[]) RETURNING *`;
-    const result = await this.db.query(sql, values);
-    return result.rows as TEntity[];
+      // 1. Temp table: match column only
+      const matchPgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
+      const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}) ON COMMIT DROP`);
+
+      // 2. Batch INSERT match keys into temp table
+      const batchSz = autoBatchSize(1);
+      for (let i = 0; i < matchValues.length; i += batchSz) {
+        const batch = matchValues.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+        for (const v of batch) {
+          values.push(v);
+          tuples.push(`($${values.length})`);
+        }
+        await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}) VALUES ${tuples.join(", ")}`, values);
+      }
+
+      // 3. SET clause — fixed columns, values inline as params
+      const setClauses: string[] = [];
+      const setValues: unknown[] = [];
+      if (deletedAtCol) {
+        setValues.push(now);
+        setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${setValues.length}`);
+      }
+      if (deletedByCol && auditable && actor !== undefined) {
+        setValues.push(actor);
+        setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${setValues.length}`);
+      }
+      if (updatedAtCol && auditable && actor !== undefined) {
+        setValues.push(now);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+      }
+      if (updatedByCol && auditable && actor !== undefined) {
+        setValues.push(actor);
+        setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${setValues.length}`);
+      }
+      if (versionCol && auditable) {
+        setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
+      }
+
+      // Audit snapshot of rows about to be deleted (same transaction)
+      let tmpOldName: string | null = null;
+      const auditEnabled = !!(auditable && actor !== undefined && (options as AuditableWriteOptions).audit);
+      if (auditEnabled) {
+        tmpOldName = `tmp_old_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        await client.query(
+          `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
+          `SELECT t.* FROM ${table} t ` +
+          `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
+          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+        );
+      }
+
+      // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
+      // from the command tag.
+      const sql = `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`;
+      const result = await client.query(sql, setValues);
+
+      // 4. Audit records atomically — delta = all columns old→null semantics
+      //    is approximated by old→new on the stamped fields (matching the
+      //    single-record SOFT_DELETE delta behavior).
+      if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
+        const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
+        const pkCol = findPkColumn(meta);
+        const deltaColumns = Object.values(meta.columns).filter((c) =>
+          c.auditableType !== AuditableFieldType.CREATED_AT &&
+          c.auditableType !== AuditableFieldType.CREATED_BY,
+        );
+        const deltaExpr = deltaColumns
+          .map((c) => {
+            const col = quoteIdent(c.sqlName);
+            return `'${c.sqlName}', CASE WHEN o.${col} IS DISTINCT FROM u.${col} THEN jsonb_build_object('old', o.${col}, 'new', u.${col}) END`;
+          })
+          .join(",\n          ");
+        const auditSql =
+          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'SOFT_DELETE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `            jsonb_strip_nulls(jsonb_build_object(\n` +
+          `              ${deltaExpr}\n` +
+          `            ))\n` +
+          `          FROM ${table} u\n` +
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+        await client.query(auditSql, [now, actor]);
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      (client as any).release?.();
+    }
   }
 
   /**
@@ -1629,19 +1810,19 @@ export class Repository {
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   /** Bulk update — non-auditable entity (actor rejected). */
   async updateMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async updateMany<TEntity extends object>(
     entity: EntityClass,
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]> {
-    if (updates.length === 0) return [];
+  ): Promise<void> {
+    if (updates.length === 0) return;
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -1789,7 +1970,9 @@ export class Repository {
         );
       }
 
-      const updateSql = `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)} RETURNING *`;
+      // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
+      // from the command tag.
+      const updateSql = `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`;
       const result = await client.query(updateSql);
 
       // 4. Insert audit records atomically (same transaction as the UPDATE).
@@ -1832,7 +2015,6 @@ export class Repository {
       }
 
       await client.query("COMMIT");
-      return result.rows as TEntity[];
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;

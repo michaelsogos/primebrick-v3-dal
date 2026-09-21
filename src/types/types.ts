@@ -7,7 +7,7 @@
  * implement it.
  */
 
-import type { FilterExpr, SortingExpr, JoinExpr } from "../query/dsl.js";
+import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector } from "../query/dsl.js";
 
 /** Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders. */
 export type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
@@ -53,6 +53,27 @@ export type WriteOptions = {
   logger?: LoggerPort;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
+  /**
+   * Insert semantics for `add()`:
+   * - `true` (default): strict INSERT — a unique-constraint conflict fails.
+   * - `false`: statement-level idempotent INSERT — appends bare
+   *   `ON CONFLICT DO NOTHING` so a conflicting row is skipped without
+   *   aborting the surrounding transaction. `add()` may then return
+   *   `undefined` when the row was skipped (RETURNING yields zero rows).
+   */
+  createIfAbsent?: boolean;
+  /**
+   * Projection applied to the write's RETURNING clause.
+   * - `undefined` (default): every persisted column EXCEPT the identity PK
+   *   (`id` bigint — not JSON-safe), aliased to its TS property key.
+   * - `FieldProjector[]`: only these fields/expressions are returned —
+   *   honors `<TEntity, TResult>`: the result object carries exactly the
+   *   projected keys/aliases. Projections must target the base entity —
+   *   RETURNING cannot reference joined tables.
+   * Internal bookkeeping columns (`id`, `uuid`, `version`) are always
+   * emitted for the audit path, then stripped from the returned object.
+   */
+  returning?: FieldProjector[];
 };
 
 /** Write options for auditable entities — actor is required. */

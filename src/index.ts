@@ -89,6 +89,7 @@ export { createStream } from "./query/streaming.js";
 
 // Repository
 export { Repository } from "./repository/repository.js";
+export { runInTransaction } from "./repository/transaction.js";
 
 // Errors
 export {

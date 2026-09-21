@@ -138,6 +138,58 @@ function discoverInstancePropertyKeys(ctor: Function): string[] {
   return Object.keys(inst);
 }
 
+/**
+ * Walk the prototype chain of `ctor` and collect every ClassEntityMeta
+ * registered by decorators, parent-first (subclass last → wins on conflicts).
+ * Field decorators (@Column, @Key, @AuditableField, …) register on the
+ * DECLARING class (e.g. a shared entity base), while @Entity(schema) lives on
+ * the concrete subclass — inheritance must be resolved explicitly because
+ * META is keyed by constructor.
+ */
+function collectMetaChain(ctor: Function): ClassEntityMeta[] {
+  const chain: ClassEntityMeta[] = [];
+  for (
+    let p = ctor;
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    const m = META.get(p);
+    if (m) {
+      // Ensure implicit (non-decorated) columns on ancestors are synced too —
+      // the parent's own meta may never have been through getEntityPersistenceMeta.
+      syncImplicitEntityColumns(p);
+      chain.unshift(m);
+    }
+  }
+  return chain;
+}
+
+/** True when an ancestor class already has a registration for `key`. */
+function hasInheritedColumnRegistration(ctor: Function, key: PropertyKey): boolean {
+  for (
+    let p = Object.getPrototypeOf(ctor);
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    if (META.get(p)?.columns.has(key)) return true;
+  }
+  return false;
+}
+
+/**
+ * Merged column registrations for `ctor` across the prototype chain —
+ * parent-first, subclass wins on conflicts.
+ */
+function collectEntityColumnRegistrations(
+  ctor: Function,
+): Map<PropertyKey, ColumnRegistration> {
+  const merged = new Map<PropertyKey, ColumnRegistration>();
+  for (const m of collectMetaChain(ctor)) {
+    for (const [propKey, reg] of m.columns) merged.set(propKey, reg);
+  }
+  return merged;
+}
+
 /** Registers every implicit column + `design:type` / nullability when not already set by decorators. */
 export function syncImplicitEntityColumns(ctor: Function): void {
   const m = META.get(ctor);
@@ -150,6 +202,11 @@ export function syncImplicitEntityColumns(ctor: Function): void {
     const key = name as PropertyKey;
     const metaKey = name as string | symbol;
     if (m.notColumnKeys.has(key)) continue;
+    // Skip properties already decorated on an ancestor: their registration
+    // (with @Column/@Key/@AuditableField flags) is inherited via the
+    // prototype-chain merge in getEntityPersistenceMeta — creating a fresh
+    // bare registration here would shadow the decorated one on merge.
+    if (hasInheritedColumnRegistration(ctor, key)) continue;
     const col = touchColumn(ctor, key);
     const dt = Reflect.getMetadata("design:type", ctor.prototype, metaKey);
     if (col.tsDesignTypeCtorName === undefined && dt && typeof (dt as { name?: string }).name === "string") {
@@ -427,7 +484,7 @@ export function getColumnName(ctor: EntityClass, propertyKey: string | symbol): 
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
   }
   syncImplicitEntityColumns(ctor as Function);
-  const reg = META.get(ctor as Function)?.columns.get(propertyKey);
+  const reg = collectEntityColumnRegistrations(ctor as Function).get(propertyKey);
   return reg?.sqlName ?? String(propertyKey);
 }
 
@@ -436,9 +493,8 @@ export function getPrimaryKeyColumn(ctor: EntityClass): string {
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
   }
   syncImplicitEntityColumns(ctor as Function);
-  const cols = META.get(ctor as Function)!.columns;
   const keyCols: string[] = [];
-  for (const [, v] of cols) {
+  for (const [, v] of collectEntityColumnRegistrations(ctor as Function)) {
     if (v.isKey) keyCols.push(v.sqlName);
   }
   if (keyCols.length === 0) {
@@ -456,8 +512,7 @@ export function listEntityPersistencePropertyKeys(ctor: EntityClass): string[] {
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
   }
   syncImplicitEntityColumns(ctor as Function);
-  const cols = META.get(ctor as Function)!.columns;
-  return [...cols.keys()].map((k) => String(k));
+  return [...collectEntityColumnRegistrations(ctor as Function).keys()].map((k) => String(k));
 }
 
 /** Serializable persistence metadata (for JSON compare with DB introspection). */
@@ -519,7 +574,18 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
   const tableName = classMeta.tableName!;
   const entityClassName = fn.name;
   const columns: EntityPersistenceMeta["columns"] = {};
-  const colMap = META.get(fn)!.columns;
+  // Merge column registrations + class-level flags across the prototype
+  // chain — decorators register on the declaring class (e.g. a shared entity
+  // base) while @Entity(schema) lives on the concrete subclass.
+  const chain = collectMetaChain(fn);
+  const colMap = collectEntityColumnRegistrations(fn);
+  const inherited = <T>(pick: (m: ClassEntityMeta) => T | undefined): T | undefined => {
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const v = pick(chain[i]);
+      if (v !== undefined) return v;
+    }
+    return undefined;
+  };
   for (const [propKey, reg] of colMap) {
     const propertyKey = String(propKey);
     const sqlLower = reg.sqlName.toLowerCase();
@@ -575,9 +641,9 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema = "publi
     entityClassName,
     tableSchema: effectiveSchema,
     tableName,
-    isAuditable: classMeta.isAuditable,
-    isAuditTrailEntity: classMeta.isAuditTrailEntity,
-    auditTrailChangedByColumn: classMeta.auditTrailChangedByColumn,
+    isAuditable: inherited((m) => m.isAuditable),
+    isAuditTrailEntity: inherited((m) => m.isAuditTrailEntity),
+    auditTrailChangedByColumn: inherited((m) => m.auditTrailChangedByColumn),
     columns,
   };
 }

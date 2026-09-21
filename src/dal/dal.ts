@@ -262,113 +262,114 @@ export class Dal {
     return this.repo.count(entity);
   }
 
-  // ─── Single-row writes (all RETURNING *, all return TEntity) ───────────────
+  // ─── Single-row writes (RETURNING honors TResult via options.returning) ────
 
-  async add<TEntity extends object & IAuditableEntity>(
+  async add<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions,
-  ): Promise<TEntity>;
-  async add<TEntity extends object>(
+  ): Promise<TResult>;
+  async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions,
-  ): Promise<TEntity>;
-  async add<TEntity extends object>(
+  ): Promise<TResult>;
+  async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions | AuditableWriteOptions,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     return (this.repo as any).add(entity, row, options);
   }
 
-  async upsert<TEntity extends object & IAuditableEntity>(
-    entity: EntityClass & { new (): TEntity },
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: AuditableWriteOptions & UpsertOptions,
-  ): Promise<TEntity>;
-  async upsert<TEntity extends object>(
-    entity: EntityClass & { new (): TEntity },
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions & UpsertOptions,
-  ): Promise<TEntity>;
-  async upsert<TEntity extends object>(
-    entity: EntityClass,
-    row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: (WriteOptions | AuditableWriteOptions) & UpsertOptions,
-  ): Promise<TEntity> {
-    return (this.repo as any).upsert(entity, row, options);
-  }
+  // upsert (single-record) removed — see Repository for rationale. Use add()/update().
+  //   async upsert<TEntity extends object & IAuditableEntity>(
+  //     entity: EntityClass & { new (): TEntity },
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: AuditableWriteOptions & UpsertOptions,
+  //   ): Promise<TEntity>;
+  //   async upsert<TEntity extends object>(
+  //     entity: EntityClass & { new (): TEntity },
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: WriteOptions & UpsertOptions,
+  //   ): Promise<TEntity>;
+  //   async upsert<TEntity extends object>(
+  //     entity: EntityClass,
+  //     row: Partial<Record<keyof TEntity & string, unknown>>,
+  //     options: (WriteOptions | AuditableWriteOptions) & UpsertOptions,
+  //   ): Promise<TEntity> {
+  //     return (this.repo as any).upsert(entity, row, options);
+  //   }
 
-  async update<TEntity extends object & IAuditableEntity>(
+  async update<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async update<TEntity extends object>(
+  ): Promise<TResult>;
+  async update<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async update<TEntity extends object>(
+  ): Promise<TResult>;
+  async update<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     return (this.repo as any).update(entity, updates, options);
   }
 
-  async delete<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+  async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async delete<TEntity extends object & IDeletableEntity>(
+  ): Promise<TResult>;
+  async delete<TEntity extends object & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async delete<TEntity extends object>(
+  ): Promise<TResult>;
+  async delete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     return (this.repo as any).delete(entity, match, options);
   }
 
-  async restore<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+  async restore<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async restore<TEntity extends object & IDeletableEntity>(
+  ): Promise<TResult>;
+  async restore<TEntity extends object & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity>;
-  async restore<TEntity extends object>(
+  ): Promise<TResult>;
+  async restore<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity> {
+  ): Promise<TResult> {
     return (this.repo as any).restore(entity, match, options);
   }
 
-  async hardDelete<TEntity extends object & IAuditableEntity>(
+  async hardDelete<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
-  async hardDelete<TEntity extends object>(
+  ): Promise<TResult>;
+  async hardDelete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
-  async hardDelete<TEntity extends object>(
+  ): Promise<TResult>;
+  async hardDelete<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<void> {
+  ): Promise<TResult> {
     return (this.repo as any).hardDelete(entity, match, options);
   }
 
@@ -378,17 +379,17 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async addMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions,
-  ): Promise<TEntity[]> {
+  ): Promise<void> {
     return (this.repo as any).addMany(entity, rows, options);
   }
 
@@ -396,17 +397,17 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async upsertMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async upsertMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions,
-  ): Promise<TEntity[]> {
+  ): Promise<void> {
     return (this.repo as any).upsertMany(entity, rows, options);
   }
 
@@ -414,17 +415,17 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async updateMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async updateMany<TEntity extends object>(
     entity: EntityClass,
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<TEntity[]> {
+  ): Promise<void> {
     return (this.repo as any).updateMany(entity, updates, options);
   }
 
@@ -432,17 +433,17 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async deleteMany<TEntity extends object & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]>;
+  ): Promise<void>;
   async deleteMany<TEntity extends object>(
     entity: EntityClass,
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<TEntity[]> {
+  ): Promise<void> {
     return (this.repo as any).deleteMany(entity, matches, options);
   }
 
