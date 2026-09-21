@@ -86,6 +86,9 @@
   - `@AuditableField` — marks a field as included in audit events
   - `@DeletableField` — marks the soft-delete flag column
 - Decorators only attach metadata via `reflect-metadata`; they do not perform I/O.
+- **Type inference is name-heuristic only under `tsx`/esbuild** — `emitDecoratorMetadata` (`design:type`) is not emitted at dev runtime. Consequences:
+  - Implicit (undecorated) and `@Column` properties infer PG type from the column/property name (`uuid`, `id`, `version`, `*_at`, …), defaulting to `text`.
+  - **Any column whose PG type is not `text` MUST declare `@Column({ pgType: ... })` explicitly** (`numeric`, `integer`, `bigint`, `boolean`, `uuid`, `inet`, `jsonb`, …). Relying on the TS property type (`number`, `boolean`, `bigint`) is NOT sufficient — it produces `text` drift in `db:meta:compare`.
 
 ## Transaction Discipline
 
