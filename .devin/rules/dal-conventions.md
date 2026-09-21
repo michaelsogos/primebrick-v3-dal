@@ -21,9 +21,15 @@
 
 ## Write Operations
 
-- **`RETURNING *`** on all writes (`insert`, `update`, `delete`, and their bulk variants).
-- This ensures every write returns the full resulting row(s) so callers always have the authoritative post-write state.
-- Bulk operations return arrays of the affected rows.
+- **Explicit ops only**: `add` (insert), `update`, `delete` (soft), `restore`, `hardDelete`, `clone`.
+- **Single-record `upsert` is REMOVED** — do not reintroduce it. Callers must pick `add` or `update` explicitly.
+  `upsertMany` (bulk, temp-table) is unaffected.
+- **Optimistic concurrency**: auditable entities require the observed `version` on `update`, `delete`, and `restore`.
+  The version is verified in the WHERE clause; a stale or missing version fails the write (ERR01/ERR03 surfaced to callers).
+- **`RETURNING *`** on all writes — the DB returns the full resulting row(s), hydrated into entity shape.
+  Callers MUST consume the returned row instead of re-reading it (no "read after write" round-trips).
+- Bulk operations (`addMany`, `updateMany`, `upsertMany`, `deleteMany`) honor the caller contract
+  (e.g. 204/no-content for REST bulk endpoints); affected rows are available via RETURNING internally when needed.
 
 ## Default Options
 
@@ -36,7 +42,7 @@
 
 ## Bulk Operation Strategy
 
-- **TEMP TABLE strategy** for `updateMany` and `upsertMany`.
+- **TEMP TABLE strategy** for `updateMany`, `upsertMany`, and `deleteMany`.
   - A temporary table mirroring the target table structure is created.
   - Source rows are bulk-inserted (e.g. via `COPY` or multi-row `INSERT`) into the temp table.
   - The target table is updated/upserted from the temp table in a single set-based statement.

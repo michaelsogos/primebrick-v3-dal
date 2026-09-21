@@ -34,10 +34,12 @@
 ## Conventions
 
 - **snake_case everywhere** — DB columns, TS properties, JSON responses. No DTO transformation.
-- **RETURNING \*** on all writes — the DB returns the full row, hydrated into entity shape.
+- **Explicit write ops** — `add` / `update` / `delete` (soft) / `restore` / `hardDelete`. Single-record `upsert` is removed; never reintroduce it. `upsertMany` (bulk) remains.
+- **Optimistic concurrency** — auditable writes (`update`, `delete`, `restore`) require the observed `version`; stale version fails the write.
+- **RETURNING \*** on all writes — the DB returns the full row, hydrated into entity shape; callers consume it instead of re-reading.
 - **throwIfNotFound: true** by default on finders.
 - **deletedRecords: "EXCLUDED"** by default — soft-deleted rows excluded.
-- **TEMP TABLE strategy** for bulk update/upsert — atomic, SQL-injection safe.
+- **TEMP TABLE strategy** for bulk update/upsert/delete — atomic, SQL-injection safe.
 - **bigint via INT8_OID** — native `bigint`, not strings.
 - **Metadata-driven types** — `@Column({ dbType: ... })` controls PG<->JS type coercion.
 - **Naming convention** — PG table = snake_case **plural** (collection of rows, e.g. `customers`). Entity class = PascalCase **singular** (one row schema, e.g. `CustomerEntity`). This is enforced by the `@Entity` decorator — the table name is plural, the class name is singular.
