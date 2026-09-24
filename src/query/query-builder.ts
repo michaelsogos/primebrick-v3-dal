@@ -192,7 +192,7 @@ function renderFilterExpr(w: ParamWriter, f: FilterExpr, baseEntity?: EntityClas
     case "raw":
       return `${f.left} ${f.op} ${f.right}`;
     case "group": {
-      const inner = f.filters.map((x) => renderFilterExpr(w, x, baseEntity, tableNameOverride)).join(` ${f.operand} `);
+      const inner = f.filters.map((x) => renderFilterExpr(w, x, baseEntity, tableNameOverride)).join(` ${f.connector ?? f.operand} `);
       return `(${inner})`;
     }
   }

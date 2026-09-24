@@ -57,7 +57,10 @@ export type FilterExpr =
   | {
       kind: "group";
       filters: FilterExpr[];
+      /** Outer joiner — how this group combines with its siblings (default AND). */
       operand: SqlExpressionOperand;
+      /** Inner connector — how the group's children combine (default: operand). */
+      connector?: SqlExpressionOperand;
     };
 
 export const Filter = {
@@ -80,8 +83,14 @@ export const Filter = {
   raw(left: string, op: SqlOperator, right: string, operand: SqlExpressionOperand = "AND"): FilterExpr {
     return { kind: "raw", left, op, right, operand };
   },
-  group(filters: FilterExpr[], operand: SqlExpressionOperand = "AND"): FilterExpr {
-    return { kind: "group", filters, operand };
+  /**
+   * `connector` joins the children INSIDE the parens; `operand` joins the
+   * group to its SIBLINGS. `Filter.group(ors, "OR")` therefore renders
+   * `(a OR b)` and is AND-joined to siblings — the historically intended
+   * semantic (e.g. search clauses).
+   */
+  group(filters: FilterExpr[], connector: SqlExpressionOperand = "AND", operand: SqlExpressionOperand = "AND"): FilterExpr {
+    return { kind: "group", filters, operand, connector };
   },
 };
 
