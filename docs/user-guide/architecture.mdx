@@ -145,22 +145,27 @@ used when the TS design type is ambiguous (e.g. `Date` could be `date` or
 
 ## Bulk operation strategies
 
-Bulk operations (`addMany`, `upsertMany`, `updateMany`) handle large row counts
-without hitting PostgreSQL's 65535-parameter limit per statement.
+Bulk operations (`addMany`, `updateMany`, `deleteMany`, `restoreMany`) handle
+large row counts without hitting PostgreSQL's 65535-parameter limit per
+statement — and without per-row round-trips.
 
 | Operation | Strategy | Why |
 |-----------|----------|-----|
-| `addMany` | Batched multi-row `INSERT ... VALUES (...), (...), ...` with auto-calculated batch size | Simple, fast, reuses single statement plan |
-| `upsertMany` | `INSERT ... ON CONFLICT (...) DO UPDATE SET ...` batched | Atomic upsert in one statement per batch |
-| `updateMany` | **TEMP TABLE strategy**: `CREATE TEMP TABLE`, `COPY`/batched `INSERT` rows into it, then `UPDATE target SET ... FROM temp WHERE target.id = temp.id` | PostgreSQL has no native multi-row `UPDATE FROM VALUES`; the TEMP TABLE approach is atomic and SQL-injection safe (no dynamic SQL per row) |
+| ALL `*Many` | **TEMP TABLE strategy** on a dedicated transaction client: `CREATE TEMP TABLE` (match key + written cols + `expected_version`), batched INSERT into it, then ONE set-based statement against the target | Atomic all-or-nothing, SQL-injection safe, single round-trip per phase |
+| `addMany` | Temp table → conflict-reporting CTE → single `pg_raise` (ERR04/ERR05) or INSERT | Whole-batch conflict detail without per-row errors |
+| `updateMany` / `deleteMany` / `restoreMany` | Temp table join `target.<match> = tmp.<match> AND target.version = tmp.expected_version`; pre-write diagnosis → `pg_raise` ERR01/ERR03 | Per-row optimistic guard inside one statement |
+| `upsertMany` | **DISABLED** (commented out) — conflict branch lacked a version guard | Pending guarded-vs-sync-import decision |
 
 `autoBatchSize(columnCount)` returns `min(1000, floor(65535 / columnCount))` so
 each batch stays under the parameter limit. Callers can override with
 `options.batchSize`.
 
-For long-running bulk ops, pass `options.timeoutMs` — the Dal emits
-`SET LOCAL statement_timeout` inside the transaction (transaction-scoped, no
-leakage to other queries on the same connection).
+Every bulk op returns `BulkResult` — `{ received, affected }`. Timeouts:
+`options.timeoutMs` overrides `DalConfig.bulkTimeoutMs` (30min default) as the
+whole-operation wall-clock budget (`BulkTimeoutError` / ERR06 on expiry), and
+is also emitted as `SET LOCAL statement_timeout` inside the transaction
+(transaction-scoped, no leakage). A statement killed by PG `statement_timeout`
+surfaces as `57014` → logical ERR07 at the HTTP boundary.
 
 ## Audit integration
 
@@ -206,6 +211,10 @@ boundary response at their own layer.
 | `ERR01` | `OptimisticLockError` (PG-originated) | Version mismatch on guarded write | 409 |
 | `ERR02` | `MissingVersionError` | Auditable write missing `version` field | 400 |
 | `ERR03` | `RecordVanishedError` | Row hard-deleted between read and write | 404 |
+| `ERR04` | `pg_raise` (PG-originated) | Unique conflict vs live row (`add`/`addMany`) | 409 |
+| `ERR05` | `pg_raise` (PG-originated) | Unique conflict vs soft-deleted row(s) only — restore instead | 409 |
+| `ERR06` | `BulkTimeoutError` | Bulk op exceeded wall-clock budget — rolled back | 408 |
+| `ERR07` | PG `57014` (mapped at boundary) | `statement_timeout` killed a statement | 500 |
 
 The `ERR` + 2 digits convention places the optimistic-lock codes outside
 PostgreSQL's SQL-standard SQLSTATE classes (`00`–`99`), so PostgreSQL accepts
@@ -220,7 +229,7 @@ them as custom codes without colliding with built-in error classes. See
 | **`RETURNING *` on every write** | The DB returns the full row, hydrated into entity shape. No need for a separate read-after-write. |
 | **`throwIfNotFound: true` by default** | The common case is "I expect this row to exist"; opting out (`throwIfNotFound: false`) is explicit. |
 | **`deletedRecords: "EXCLUDED"` by default** | Soft-deleted rows are invisible by default; opting in (`"INCLUDED"` / `"ONLY"`) is explicit. |
-| **TEMP TABLE for `updateMany`** | PostgreSQL has no native multi-row `UPDATE FROM VALUES`; the TEMP TABLE approach is atomic and injection-safe. |
+| **TEMP TABLE for every `*Many`** | One dedicated tx + temp table + set-based write: atomic all-or-nothing, injection-safe, per-row version guard via `expected_version`, single `pg_raise` error report. |
 | **`bigint` via `INT8_OID`** | Native `bigint` preserves precision for PKs and counts; `number` would lose precision above 2^53. |
 | **Port-based audit (fire-and-forget)** | Microservices that don't need audit aren't forced to implement it; a slow audit writer never blocks the main write. |
 | **Framework-agnostic errors** | The DAL is a leaf dependency; it must not import HTTP or NATS types. Consumers map `code` to their boundary. |

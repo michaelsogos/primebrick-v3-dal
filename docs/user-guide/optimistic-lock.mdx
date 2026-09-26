@@ -90,14 +90,14 @@ advisory locks, no `SELECT ... FOR UPDATE`.
 | Operation | Version guard | On zero rows |
 |-----------|---------------|--------------|
 | `update()` | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
-| `upsert()` (ON CONFLICT path) | `SET version = version + 1` only when the existing row's `version = $expected` | disambiguate → ERR01 or ERR03 |
 | `delete()` (soft) | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
 | `restore()` | `WHERE match = $match AND version = $expected`, `SET version = version + 1` | disambiguate → ERR01 or ERR03 |
 | `hardDelete()` | `WHERE match = $match AND version = $expected` | disambiguate → ERR01 or ERR03 |
+| `updateMany()` / `deleteMany()` / `restoreMany()` | temp-table `expected_version` column joined as `target.version = tmp.expected_version` per row | one `pg_raise` listing ≤10 offenders → ERR01 (stale) / ERR03 (all vanished); missing version → ERR02; whole tx rolls back |
 
-For `upsert()`, the version guard only applies on the **ON CONFLICT (update)**
-branch. The pure-INSERT branch (no existing row) starts at `version = 1` and
-needs no guard — there is nothing to conflict with.
+The single-row `upsert()` was removed; `upsertMany()` is parked (commented
+out) pending a guarded-vs-sync semantics decision — its conflict branch used
+to overwrite rows unconditionally.
 
 ### Guard flow
 
@@ -140,16 +140,26 @@ extra round-trip is acceptable):
 
 ## Error codes
 
-The DAL defines three stable error codes for optimistic concurrency control.
-They are shared between PostgreSQL (as SQLSTATE values via `RAISE EXCEPTION`)
-and TypeScript (as `DalError.code` values), so consumers can branch on the
-string literal regardless of where the error originated.
+The DAL defines stable error codes for optimistic concurrency control and
+bulk write failures. They are shared between PostgreSQL (as SQLSTATE values
+via `RAISE EXCEPTION` / `pg_raise`) and TypeScript (as `DalError.code`
+values), so consumers can branch on the string literal regardless of where
+the error originated.
 
 | Code | Meaning | Origin | HTTP status |
 |------|---------|--------|-------------|
-| `ERR01` | Concurrency violation — the row exists but `version` does not match | PostgreSQL (`RAISE EXCEPTION ... USING ERRCODE = 'ERR01'`) | 409 Conflict |
+| `ERR01` | Concurrency violation — the row exists but `version` does not match | PostgreSQL (`RAISE EXCEPTION`/`pg_raise`) | 409 Conflict |
 | `ERR02` | Missing `version` field on an auditable-entity write | TypeScript (`MissingVersionError`) | 400 Bad Request |
-| `ERR03` | Record vanished — the row was hard-deleted between read and write | TypeScript (`RecordVanishedError`) | 404 Not Found |
+| `ERR03` | Record vanished — the row was hard-deleted between read and write | TypeScript (`RecordVanishedError`) / `pg_raise` in bulk | 404 Not Found |
+| `ERR04` | Unique-constraint conflict against a live row | PostgreSQL (`pg_raise`, `add`/`addMany` conflict CTE) | 409 Conflict |
+| `ERR05` | Unique conflict where every conflicting row is soft-deleted — restore instead | PostgreSQL (`pg_raise`) | 409 Conflict |
+| `ERR06` | Bulk operation exceeded its wall-clock budget (`BulkOptions.timeoutMs` / `DalConfig.bulkTimeoutMs`) — whole tx rolled back | TypeScript (`BulkTimeoutError`) | 408 Request Timeout |
+| `ERR07` | PG `57014` `query_canceled` — a statement was killed by `statement_timeout` | PostgreSQL `57014` → logical `ERR07` at the HTTP boundary | 500 (typed) |
+
+Bulk raises carry a jsonb `detail` — `{ entity, table, stale|missing|conflicts,
+rows[≤10] }` — which the HTTP boundary surfaces as `extra.issues` for the
+frontend error dialog. The `pg_raise` function must exist on every target
+database (init SQL / `setupTestSchema`).
 
 The `ERR` + 2 digits convention places the codes outside PostgreSQL's
 SQL-standard SQLSTATE classes (`00`–`99`), so PostgreSQL accepts them as

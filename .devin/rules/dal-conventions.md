@@ -23,13 +23,19 @@
 
 - **Explicit ops only**: `add` (insert), `update`, `delete` (soft), `restore`, `hardDelete`, `clone`.
 - **Single-record `upsert` is REMOVED** — do not reintroduce it. Callers must pick `add` or `update` explicitly.
-  `upsertMany` (bulk, temp-table) is unaffected.
-- **Optimistic concurrency**: auditable entities require the observed `version` on `update`, `delete`, and `restore`.
-  The version is verified in the WHERE clause; a stale or missing version fails the write (ERR01/ERR03 surfaced to callers).
-- **`RETURNING *`** on all writes — the DB returns the full resulting row(s), hydrated into entity shape.
+- **`upsertMany` is PARKED (commented out)** — its `ON CONFLICT DO UPDATE` branch overwrites without a
+  version guard. Do NOT re-enable it (or its tests/SDK wrapper refs) until the guarded-vs-sync-import
+  semantics is decided with the user.
+- **Optimistic concurrency**: auditable entities require the caller-observed `version` on `update`,
+  `delete`, `restore` — and on EVERY row of `updateMany`, `deleteMany`, `restoreMany` (`expected_version`
+  in the temp table). Missing → `ERR02`; stale → `ERR01`; vanished → `ERR03`.
+- **`RETURNING *`** on single writes — the DB returns the full resulting row(s), hydrated into entity shape.
   Callers MUST consume the returned row instead of re-reading it (no "read after write" round-trips).
-- Bulk operations (`addMany`, `updateMany`, `upsertMany`, `deleteMany`) honor the caller contract
-  (e.g. 204/no-content for REST bulk endpoints); affected rows are available via RETURNING internally when needed.
+- **Bulk operations return `BulkResult` = `{ received, affected }`** (never `void`, never entity rows).
+  `received` = rows submitted; `affected` = rows actually written. Any per-row failure rolls the whole
+  operation back — `affected < received` is impossible on success.
+- **`reserved`-style domain flags are NOT a DAL concern** — generic bulk methods stay agnostic. Callers
+  that need them (e.g. config entries) do a set-based pre-check and then call the `*Many` method.
 
 ## Default Options
 
@@ -42,12 +48,23 @@
 
 ## Bulk Operation Strategy
 
-- **TEMP TABLE strategy** for `updateMany`, `upsertMany`, and `deleteMany`.
-  - A temporary table mirroring the target table structure is created.
-  - Source rows are bulk-inserted (e.g. via `COPY` or multi-row `INSERT`) into the temp table.
-  - The target table is updated/upserted from the temp table in a single set-based statement.
-  - The temp table is dropped at the end (or implicitly on session end).
+- **TEMP TABLE strategy** for ALL `*Many` writes (`addMany`, `updateMany`, `deleteMany`, `restoreMany`).
+  - A temporary table mirroring the relevant columns (match key + written cols + `expected_version`)
+    is created inside a dedicated transaction client.
+  - Source rows are bulk-inserted into it, then the target table is written in a single set-based
+    statement joined on the match key AND `target.version = tmp.expected_version` (auditable entities).
+  - Failed rows are diagnosed INSIDE the same transaction (pre-write) and reported via one
+    `pg_raise` — `ERR01` (stale) / `ERR03` (vanished), DETAIL jsonb `{entity, table, stale, rows[≤10]}`.
+  - The whole operation is atomic: any offender rolls everything back. No partial persistence.
+- **Timeout semantics**: `BulkOptions.timeoutMs` → `SET LOCAL statement_timeout` (statement-level);
+  `DalConfig.bulkTimeoutMs` (30min default) is the whole-operation wall-clock budget — exceeding it
+  throws `BulkTimeoutError` (`ERR06`) and rolls back. PG `57014` (statement_timeout kill) maps to
+  logical `ERR07` at the HTTP boundary.
 - This avoids per-row round-trips and leverages PostgreSQL®'s set-based execution.
+- **`addMany` conflicts**: a single `pg_raise` carries `{entity, table, conflicts, rows[≤10]}` —
+  each row with `uuid`, `input_uuid`, `code` (`ERR04` live row / `ERR05` soft-deleted row),
+  `deleted`, `constraint`, `keys` (the attempted unique-key values). Top-level code is `ERR05`
+  only when EVERY conflict hits a soft-deleted row.
 
 ## Numeric Handling
 
@@ -69,11 +86,20 @@
 - Errors are **framework-agnostic**.
 - Each error exposes a **stable error code** (string identifier) that callers can branch on.
 - Errors **MUST NOT** carry HTTP status codes or be coupled to any web framework.
+  HTTP mapping lives in `@primebrick/sdk` `mapDalError` (pure, no `node:*`) — shared by BE and US.
 - Error categories include (non-exhaustive):
   - `NotFoundError` — expected row(s) not found
   - `MultipleRowsError` — more rows than expected
   - `UnknownColumnError` — column not declared in entity metadata
   - `ValidationError` — input validation failure
+  - `OptimisticLockError`/`ERR01` — stale version (PG-raised on guarded writes)
+  - `MissingVersionError`/`ERR02` — auditable write missing `version`
+  - `RecordVanishedError`/`ERR03` — row gone between read and write
+  - `ERR04`/`ERR05` — unique conflict vs live / soft-deleted row (PG `pg_raise`)
+  - `BulkTimeoutError`/`ERR06` — bulk op exceeded the wall-clock budget (rolled back)
+  - `ERR07` — logical code for PG `57014` `query_canceled` (statement_timeout)
+- **`pg_raise` is a REQUIRED database function** — it must exist on every target DB
+  (init SQL + `setupTestSchema`). Without it, guarded-write/conflict raises cannot fire.
 - Keep error codes stable across versions; changing a code is a breaking change.
 
 ## Entity Decorators
@@ -92,10 +118,12 @@
 
 ## Transaction Discipline
 
-- **The DAL NEVER commits automatically.**
-- Every write operation executes within the caller's transaction context.
-- The DAL waits for explicit user instruction (e.g. `commit()` / `rollback()`) to finalize a transaction.
-- Do not add auto-commit behavior, even for single-statement convenience methods.
+- **Single-row write ops never auto-commit** — they execute within the caller's transaction
+  context and wait for explicit `commit()` / `rollback()`. Do not add auto-commit behavior to
+  single-statement convenience methods.
+- **`*Many` bulk ops are the deliberate exception**: each runs on a dedicated client with its own
+  `BEGIN`/`COMMIT`/`ROLLBACK` — that self-contained transaction IS the atomicity guarantee
+  (all-or-nothing, `BulkResult` summary). Never split a bulk op into per-row commits.
 
 ## Documentation Language
 

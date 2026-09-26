@@ -266,65 +266,91 @@ await dal.hardDelete(CustomerEntity, 42n, { actor: "system" });
 
 ## Bulk operations
 
-Bulk ops handle large row counts without hitting PostgreSQL's 65535-parameter
-limit. See [Architecture: bulk strategies](./architecture#bulk-operation-strategies)
-for the TEMP TABLE strategy used by `updateMany`.
+All `*Many` ops share the same contract:
+
+- **Atomic** — one dedicated transaction; any failing row rolls back the
+  whole operation. There is no partial persistence.
+- **TEMP TABLE strategy** — rows are bulk-loaded into a temp table, then a
+  single set-based statement joins it to the target (no per-row round-trips,
+  no 65535-parameter limit).
+- **`BulkResult` return** — `{ received, affected }`. `received` is the row
+  count submitted; `affected` is the count actually written. On success they
+  are always equal (a mismatch would have rolled back).
+- **Per-row version guard** (auditable entities) — every item must carry the
+  caller-observed `version`; it lands in the temp table as `expected_version`
+  and is enforced in the write join (`target.version = tmp.expected_version`).
+  Offenders are reported in ONE `pg_raise` whose `detail` jsonb carries
+  `{ entity, table, stale|missing, rows[≤10] }` with per-row
+  `uuid`/`expected_version`/`actual_version`/`vanished`/`code`:
+
+| Failure | Code |
+|---------|------|
+| Row submitted without `version` | `ERR02` |
+| Row exists but `version` differs (modified meanwhile) | `ERR01` |
+| Row is gone (hard-deleted meanwhile) | `ERR03` |
 
 ### `addMany(entity, rows, options?)`
 
-Batched multi-row INSERT. Auto-calculated batch size stays under the parameter
-limit. Returns all inserted rows.
+Batched multi-row INSERT through the temp-table strategy. Unique-constraint
+violations are collected and raised as ONE `pg_raise` — `ERR04` when the
+conflicting row is live, `ERR05` when every conflict hits a soft-deleted row
+(restore it instead of duplicating). `err.detail` carries
+`{ entity, table, conflicts, rows[≤10] }` — each row with `uuid`, `input_uuid`,
+per-row `code` (`ERR04`/`ERR05`), `deleted`, `constraint`, and `keys` (the
+attempted unique-key values).
 
 ```typescript
-const inserted = await dal.addMany(CustomerEntity, [
+const res = await dal.addMany(CustomerEntity, [
   { name: "Alice", email: "alice@x.com" },
   { name: "Bob",   email: "bob@x.com" },
-  { name: "Carol", email: "carol@x.com" },
 ], { actor: "system" });
-// INSERT INTO customers (name, email, ...) VALUES ($1, $2, ...), ($n, $n+1, ...) RETURNING *
-```
-
-### `upsertMany(entity, rows, options?)`
-
-Batched INSERT ... ON CONFLICT DO UPDATE. Uses the TEMP TABLE strategy for
-large batches. Returns all upserted rows.
-
-```typescript
-const upserted = await dal.upsertMany(CustomerEntity, [
-  { uuid: "uuid-1", name: "Alice 2", email: "alice@x.com", version: 2 },
-  { uuid: "uuid-2", name: "Bob 2",   email: "bob@x.com",   version: 2 },
-], { actor: "system", conflictTarget: "uuid", timeoutMs: 60_000 });
-// timeoutMs emits SET LOCAL statement_timeout inside the tx (no leakage)
+// res = { received: 2, affected: 2 }
 ```
 
 ### `updateMany(entity, rows, options?)`
 
-Batched UPDATE using the TEMP TABLE strategy: `CREATE TEMP TABLE`, batched
-INSERT into it, then `UPDATE target SET ... FROM temp WHERE target.id = temp.id`.
-Atomic and SQL-injection safe. Returns all updated rows.
+Batched UPDATE: `UPDATE target SET ... FROM tmp WHERE target.<match> = tmp.<match>
+AND target.version = tmp.expected_version`. Atomic and SQL-injection safe.
 
 ```typescript
-const updated = await dal.updateMany(CustomerEntity, [
-  { id: 1n, name: "Alice 2", version: 2 },
-  { id: 2n, name: "Bob 2",   version: 2 },
-], { actor: "system", matchBy: "id", timeoutMs: 60_000 });
+const res = await dal.updateMany(CustomerEntity, [
+  { uuid: "uuid-1", name: "Alice 2", version: 2 },
+  { uuid: "uuid-2", name: "Bob 2",   version: 2 },
+], { actor: "system", matchBy: "uuid", timeoutMs: 60_000 });
+// Every row MUST include its caller-observed version.
 ```
 
-### `deleteMany(entity, matchValues, options?)`
+### `deleteMany(entity, matches, options?)`
 
-Bulk soft-delete. `matchValues` is an array of match values (PK by default).
-Returns `void`.
+Bulk soft-delete with the same version guard. `matches` is an array of match
+objects — `{ uuid, version }` for auditable entities.
 
 ```typescript
-await dal.deleteMany(CustomerEntity, [1n, 2n, 3n], { actor: "system" });
+const res = await dal.deleteMany(CustomerEntity, [
+  { uuid: "uuid-1", version: 3 },
+  { uuid: "uuid-2", version: 1 },
+], { actor: "system", matchBy: "uuid" });
 ```
+
+### `restoreMany(entity, matches, options?)`
+
+Bulk restore (clears soft-delete fields, bumps `version`, stamps audit
+fields). Same temp-table + version-guard semantics as `deleteMany`.
+
+### `upsertMany` — currently DISABLED
+
+`upsertMany` is commented out pending a design decision: its
+`ON CONFLICT DO UPDATE` branch historically overwrote conflicting rows
+without a version check. It will return either with a guarded
+`expected_version` on the conflict branch or as an explicit
+sync/import-semantics operation. Do not call it.
 
 ### `BulkOptions`
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `batchSize` | `number` | auto-calculated | Override the batch size (rarely needed) |
-| `timeoutMs` | `number` | session default | Per-statement timeout in ms (transaction-scoped) |
+| `batchSize` | `number` | auto-calculated | Override the temp-table batch size (rarely needed) |
+| `timeoutMs` | `number` | `DalConfig.bulkTimeoutMs` (30min) | Whole-operation wall-clock budget in ms — applied as `SET LOCAL statement_timeout` per statement plus a JS deadline across the op; expiry throws `BulkTimeoutError` (`ERR06`) and rolls back |
 
 ## Clone
 
@@ -389,6 +415,24 @@ try {
   }
 }
 ```
+
+### Error codes at a glance
+
+| Code | Raised when | HTTP (via `mapDalError`) |
+|------|-------------|--------------------------|
+| `ERR01` | Stale `version` on a guarded write (single or bulk row) | 409 |
+| `ERR02` | `version` missing on an auditable-entity write | 400 |
+| `ERR03` | Target row vanished (hard-deleted) before the write | 404 |
+| `ERR04` | Unique conflict against a **live** row | 409 |
+| `ERR05` | Unique conflict(s) against **soft-deleted** rows only | 409 |
+| `ERR06` | Bulk op exceeded its wall-clock `timeoutMs` budget (rolled back) | 408 |
+| `ERR07` | PG `57014` — a statement was killed by `statement_timeout` | 500 |
+| `NOT_FOUND` / `VALIDATION` / `UNKNOWN_COLUMN` / `MULTIPLE_ROWS` | Finder/validation failures | 404 / 400 |
+
+The DAL never emits HTTP status codes — the `@primebrick/sdk` `mapDalError`
+function performs the pure `err → { status, body }` RFC 7807 mapping shared by
+the BE and all microservices. Bulk raises carry structured `detail` (≤10
+offending rows) which the boundary surfaces as `extra.issues`.
 
 See [Architecture: error handling philosophy](./architecture#error-handling-philosophy)
 for the full code table, and [Optimistic locking](./optimistic-lock) for the

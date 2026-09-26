@@ -199,7 +199,9 @@ Graceful shutdown — drains the pool with a timeout deadline.
 | `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
 
-#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<TEntity[]>`
+#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<BulkResult>`
+
+Returns `{ received, affected }`. Unique conflicts raise ERR04/ERR05 with ≤10 offending rows in `detail`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -207,28 +209,41 @@ Graceful shutdown — drains the pool with a timeout deadline.
 | `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
 | `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions |  |
 
-#### `upsertMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions & UpsertOptions): Promise<TEntity[]>`
+#### `upsertMany` — DISABLED (commented out)
+
+Parked pending guarded-vs-sync-import semantics; its conflict branch overwrote
+rows without a version check. Do not call.
+
+#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<BulkResult>`
+
+Atomic temp-table update. Auditable entities require `version` in every row
+(ERR02 missing / ERR01 stale / ERR03 vanished — atomic rollback, ≤10 offenders in `detail`).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entity` | EntityClass & () =&gt; TEntity |  |
-| `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions & UpsertOptions |  |
-
-#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<TEntity[]>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
+| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | every row needs `version` on auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; & BulkOptions |  |
 
-#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity[]>`
+#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
+
+Atomic temp-table soft-delete. Match objects carry `{ <matchBy>, version }`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
+| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
+| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+
+#### `restoreMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
+
+Atomic temp-table restore — clears soft-delete fields, bumps `version`, stamps
+audit fields. Same version guard as `deleteMany`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entity` | EntityClass & () =&gt; TEntity |  |
+| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
 
 #### `rawSql(text: string, values: unknown[]): Promise<TResult[]>`
@@ -746,9 +761,9 @@ Fetches the source record (including soft-deleted), builds a new row with:
 | `sourceUuid` | string |  |
 | `options` | AuditableWriteOptions |  |
 
-#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<TEntity[]>`
+#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<BulkResult>`
 
-Bulk add — auditable entity (actor required).
+Bulk add — auditable entity (actor required). Returns `{ received, affected }`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -756,34 +771,41 @@ Bulk add — auditable entity (actor required).
 | `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
 | `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions |  |
 
-#### `upsertMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions & UpsertOptions): Promise<TEntity[]>`
+#### `upsertMany` — DISABLED (commented out)
 
-Bulk upsert — auditable entity (actor required).
+Bulk upsert parked pending guarded-vs-sync-import semantics. Do not call.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions & UpsertOptions |  |
+#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
 
-#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity[]>`
-
-Bulk soft-delete — auditable+deletable entity (actor required).
+Bulk soft-delete — auditable+deletable entity (actor required). Match objects
+carry `{ <matchBy>, version }`; atomic rollback with ERR01/02/03 per-row detail.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
+| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
 
-#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<TEntity[]>`
+#### `restoreMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
 
-Bulk update — auditable entity (actor required).
+Bulk restore — clears soft-delete fields, bumps `version`, stamps audit fields.
+Same atomic version-guard semantics as `deleteMany`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
+| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
+| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+
+#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<BulkResult>`
+
+Bulk update — auditable entity (actor required). Every row needs its
+caller-observed `version`; atomic rollback with ERR01/02/03 per-row detail.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entity` | EntityClass & () =&gt; TEntity |  |
+| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | every row needs `version` on auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; & BulkOptions |  |
 
 #### `rawSql(text: string, values: unknown[]): Promise<TResult[]>`
