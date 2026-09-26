@@ -128,7 +128,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     expect(auditPort.entries).toHaveLength(1);
     expect(auditPort.entries[0].action).toBe(AuditAction.INSERT);
-    expect(auditPort.entries[0].entityId).toBe(inserted.id);
+    expect(auditPort.entries[0].entityId).toBe((await repo.findByUUID(SimpleTestEntity, inserted.uuid))!.id);
     expect(auditPort.entries[0].entityUuid).toBe(inserted.uuid);
     expect(auditPort.entries[0].changedBy).toBe("creator");
     expect(auditPort.entries[0].version).toBe(1);
@@ -150,7 +150,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     expect(auditPort.entries).toHaveLength(1);
     expect(auditPort.entries[0].action).toBe(AuditAction.UPDATE);
-    expect(auditPort.entries[0].entityId).toBe(inserted.id);
+    expect(auditPort.entries[0].entityId).toBe((await repo.findByUUID(SimpleTestEntity, inserted.uuid))!.id);
     expect(auditPort.entries[0].changedBy).toBe("updater");
     expect(auditPort.entries[0].version).toBe(2);
     // Delta should include the name change
@@ -216,6 +216,7 @@ describe("Repository — audit-on-all-writes", () => {
       { name: "ToHardDelete" },
       { actor: "u", audit: auditPort },
     );
+    const insertedId = (await repo.findByUUID(SimpleTestEntity, inserted.uuid))!.id;
     auditPort.reset();
 
     await repo.hardDelete(
@@ -226,7 +227,7 @@ describe("Repository — audit-on-all-writes", () => {
 
     expect(auditPort.entries).toHaveLength(1);
     expect(auditPort.entries[0].action).toBe(AuditAction.HARD_DELETE);
-    expect(auditPort.entries[0].entityId).toBe(inserted.id);
+    expect(auditPort.entries[0].entityId).toBe(insertedId);
     expect(auditPort.entries[0].changedBy).toBe("hard-deleter");
     // Delta should have all fields with old=values, new=null
     expect(auditPort.entries[0].delta.name).toBeDefined();
@@ -234,6 +235,48 @@ describe("Repository — audit-on-all-writes", () => {
     expect(auditPort.entries[0].delta.name.new).toBeNull();
   });
 
+  it("add: conflict raise (ERR04) writes NO audit entry — nothing was inserted", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "Original" },
+      { actor: "u", audit: auditPort },
+    );
+    auditPort.reset();
+
+    await expect(
+      repo.add(
+        SimpleTestEntity,
+        { name: "Dup", uuid: inserted.uuid },
+        { actor: "duper", audit: auditPort },
+      ),
+    ).rejects.toMatchObject({ code: "ERR04" });
+
+    expect(auditPort.entries).toHaveLength(0);
+  });
+
+  it("add: onConflict 'ignore' skipped row writes NO audit entry", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "Original" },
+      { actor: "u", audit: auditPort },
+    );
+    auditPort.reset();
+
+    const skipped = await repo.add(
+      SimpleTestEntity,
+      { name: "Dup", uuid: inserted.uuid },
+      { actor: "duper", audit: auditPort, onConflict: "ignore" },
+    );
+
+    expect(skipped).toBeUndefined();
+    expect(auditPort.entries).toHaveLength(0);
+  });
+
+  // ─── upsert() — REMOVED API (tests preserved as comments) ────────────
+  // upsert() is no longer part of Repository — the audit semantics it
+  // covered are now exercised through add()/update() tests above and in
+  // repository-crud.test.ts. Kept for reference.
+  /*
   it("upsert: writes INSERT audit entry on new row", async () => {
     const upserted = await repo.upsert(
       SimpleTestEntity,
@@ -266,6 +309,7 @@ describe("Repository — audit-on-all-writes", () => {
     expect(auditPort.entries[0].delta.name.old).toBe("Original");
     expect(auditPort.entries[0].delta.name.new).toBe("Updated");
   });
+  */
 
   it("no audit when no audit port provided", async () => {
     const inserted = await repo.add(
@@ -300,11 +344,12 @@ describe("Repository — AuditLogEntity + tableName override", () => {
 
   it("add: writes to audit table via tableName override", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Source" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
 
     const auditRow = await repo.add(
       AuditLogEntity,
       {
-        entity_id: source.id,
+        entity_id: sourceId,
         entity_uuid: source.uuid,
         action: "INSERT",
         changed_at: new Date(),
@@ -316,8 +361,7 @@ describe("Repository — AuditLogEntity + tableName override", () => {
     );
 
     expect(auditRow).toBeDefined();
-    expect(auditRow.id).toBeGreaterThan(0n);
-    expect(auditRow.entity_id).toBe(source.id);
+    expect(auditRow.entity_id).toBe(sourceId);
     expect(auditRow.entity_uuid).toBe(source.uuid);
     expect(auditRow.action).toBe("INSERT");
     expect(auditRow.delta).toBeDefined();
@@ -325,14 +369,15 @@ describe("Repository — AuditLogEntity + tableName override", () => {
 
   it("find: queries audit table via tableName override with COUNT(*)", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
     await repo.add(
       AuditLogEntity,
-      { entity_id: source.id, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(), changed_by: "u", version: 1, delta: {} },
+      { entity_id: sourceId, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(), changed_by: "u", version: 1, delta: {} },
       { tableName: "dal_test_simple_audit" },
     );
     await repo.add(
       AuditLogEntity,
-      { entity_id: source.id, entity_uuid: source.uuid, action: "UPDATE", changed_at: new Date(), changed_by: "u", version: 2, delta: {} },
+      { entity_id: sourceId, entity_uuid: source.uuid, action: "UPDATE", changed_at: new Date(), changed_by: "u", version: 2, delta: {} },
       { tableName: "dal_test_simple_audit" },
     );
 
@@ -351,10 +396,11 @@ describe("Repository — AuditLogEntity + tableName override", () => {
 
   it("findByPage: queries audit table via tableName override with pagination", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
     for (let i = 0; i < 5; i++) {
       await repo.add(
         AuditLogEntity,
-        { entity_id: source.id, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(Date.now() + i * 1000), changed_by: "u", version: i + 1, delta: { i: { old: i, new: i + 1 } } },
+        { entity_id: sourceId, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(Date.now() + i * 1000), changed_by: "u", version: i + 1, delta: { i: { old: i, new: i + 1 } } },
         { tableName: "dal_test_simple_audit" },
       );
     }
@@ -388,9 +434,10 @@ describe("Repository — AuditLogEntity + tableName override", () => {
 
   it("count: counts audit table rows via tableName override", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
     await repo.add(
       AuditLogEntity,
-      { entity_id: source.id, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(), changed_by: "u", version: 1, delta: {} },
+      { entity_id: sourceId, entity_uuid: source.uuid, action: "INSERT", changed_at: new Date(), changed_by: "u", version: 1, delta: {} },
       { tableName: "dal_test_simple_audit" },
     );
 
@@ -441,12 +488,13 @@ describe("Repository — buildAuditTrailJoins", () => {
 
     // Create an entity
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
 
     // Write an audit row with changed_by = user's uuid
     await repo.add(
       AuditLogEntity,
       {
-        entity_id: source.id,
+        entity_id: sourceId,
         entity_uuid: source.uuid,
         action: "INSERT",
         changed_at: new Date(),
@@ -489,12 +537,13 @@ describe("Repository — buildAuditTrailJoins", () => {
 
   it("buildAuditTrailJoins: returns null display_name for non-UUID changed_by (system)", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
+    const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
 
     // Write an audit row with changed_by = "system" (not a UUID)
     await repo.add(
       AuditLogEntity,
       {
-        entity_id: source.id,
+        entity_id: sourceId,
         entity_uuid: source.uuid,
         action: "INSERT",
         changed_at: new Date(),

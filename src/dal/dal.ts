@@ -45,6 +45,7 @@ import type {
   MatchByOptions,
   BulkOptions,
   UpsertOptions,
+  BulkResult,
 } from "../types/types.js";
 import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
 import type { FieldProjector } from "../query/dsl.js";
@@ -67,6 +68,14 @@ export interface DalConfig {
    *  Default: 30000. Set to 0 to disable.
    *  This is the full wall-clock (command arrival → server completion → all rows transmitted). */
   statementTimeoutMs?: number;
+
+  /** Maximum wall-clock budget in ms for a single *Many operation
+   *  (addMany/upsertMany/updateMany/deleteMany). The whole transaction must
+   *  complete within this budget — on expiry the work is aborted and the
+   *  transaction rolled back (no partial writes).
+   *  Default: 1800000 (30 min). Per-call override: `BulkOptions.timeoutMs`.
+   *  Set to 0 to disable. */
+  bulkTimeoutMs?: number;
 
   /** Time to wait when acquiring a connection from the pool before erroring.
    *  Default: 5000. Fail fast when pool exhausted — don't let requests queue forever. */
@@ -93,6 +102,7 @@ export interface WithClientOptions {
 const DEFAULTS = {
   max: 10,
   statementTimeoutMs: 30000,
+  bulkTimeoutMs: 1800000,
   connectionTimeoutMillis: 5000,
   idleTimeoutMillis: 30000,
   applicationName: "primebrick-dal",
@@ -100,7 +110,7 @@ const DEFAULTS = {
 
 export class Dal {
   /** The resolved configuration (defaults merged with user-provided config). */
-  readonly config: Required<Pick<DalConfig, "connectionString" | "max" | "statementTimeoutMs" | "connectionTimeoutMillis" | "idleTimeoutMillis" | "applicationName">> & Pick<DalConfig, "schema" | "maxUses">;
+  readonly config: Required<Pick<DalConfig, "connectionString" | "max" | "statementTimeoutMs" | "bulkTimeoutMs" | "connectionTimeoutMillis" | "idleTimeoutMillis" | "applicationName">> & Pick<DalConfig, "schema" | "maxUses">;
 
   private readonly pool: Pool;
   private readonly repo: Repository;
@@ -118,6 +128,7 @@ export class Dal {
       schema: config.schema,
       max: config.max ?? DEFAULTS.max,
       statementTimeoutMs: config.statementTimeoutMs ?? DEFAULTS.statementTimeoutMs,
+      bulkTimeoutMs: config.bulkTimeoutMs ?? DEFAULTS.bulkTimeoutMs,
       connectionTimeoutMillis: config.connectionTimeoutMillis ?? DEFAULTS.connectionTimeoutMillis,
       idleTimeoutMillis: config.idleTimeoutMillis ?? DEFAULTS.idleTimeoutMillis,
       maxUses: config.maxUses,
@@ -166,7 +177,7 @@ export class Dal {
     this.pool = new pg.Pool(poolConfig);
 
     // 3. Construct the internal Repository backed by the pool
-    this.repo = new Repository(this.pool);
+    this.repo = new Repository(this.pool, this.config.bulkTimeoutMs);
   }
 
   // ─── Pool lifecycle ───────────────────────────────────────────────────────
@@ -267,17 +278,17 @@ export class Dal {
   async add<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: AuditableWriteOptions,
+    options: AuditableWriteOptions<TEntity>,
   ): Promise<TResult>;
   async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions,
+    options: WriteOptions<TEntity>,
   ): Promise<TResult>;
   async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions | AuditableWriteOptions,
+    options: WriteOptions<TEntity> | AuditableWriteOptions<TEntity>,
   ): Promise<TResult> {
     return (this.repo as any).add(entity, row, options);
   }
@@ -379,53 +390,74 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async addMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions,
-  ): Promise<void> {
+  ): Promise<BulkResult> {
     return (this.repo as any).addMany(entity, rows, options);
   }
 
-  async upsertMany<TEntity extends object & IAuditableEntity>(
+  // ─── upsertMany — COMMENTED OUT pending guarded/unguarded decision ────
+  // Upsert conflict path overwrites unconditionally (no version guard).
+  // Parked until we decide guarded vs sync-import semantics.
+  // async upsertMany<TEntity extends object & IAuditableEntity>(
+  //   entity: EntityClass & { new (): TEntity },
+  //   rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+  //   options: AuditableWriteOptions & BulkOptions & UpsertOptions,
+  // ): Promise<BulkResult>;
+  // async upsertMany<TEntity extends object>(
+  //   entity: EntityClass & { new (): TEntity },
+  //   rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+  //   options: WriteOptions & BulkOptions & UpsertOptions,
+  // ): Promise<BulkResult>;
+  // async upsertMany<TEntity extends object>(
+  //   entity: EntityClass,
+  //   rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+  //   options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions,
+  // ): Promise<BulkResult> {
+  //   return (this.repo as any).upsertMany(entity, rows, options);
+  // }
+
+  async restoreMany<TEntity extends object & IAuditableEntity & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: AuditableWriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<void>;
-  async upsertMany<TEntity extends object>(
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  async restoreMany<TEntity extends object & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<void>;
-  async upsertMany<TEntity extends object>(
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  async restoreMany<TEntity extends object>(
     entity: EntityClass,
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions,
-  ): Promise<void> {
-    return (this.repo as any).upsertMany(entity, rows, options);
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult> {
+    return (this.repo as any).restoreMany(entity, matches, options);
   }
 
   async updateMany<TEntity extends object & IAuditableEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async updateMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async updateMany<TEntity extends object>(
     entity: EntityClass,
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void> {
+  ): Promise<BulkResult> {
     return (this.repo as any).updateMany(entity, updates, options);
   }
 
@@ -433,17 +465,17 @@ export class Dal {
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async deleteMany<TEntity extends object & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async deleteMany<TEntity extends object>(
     entity: EntityClass,
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<void> {
+  ): Promise<BulkResult> {
     return (this.repo as any).deleteMany(entity, matches, options);
   }
 

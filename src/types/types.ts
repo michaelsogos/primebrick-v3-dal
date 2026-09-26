@@ -45,8 +45,29 @@ export type PaginatedEntity<TEntity> = {
   total_records: bigint;
 };
 
+/** Insert conflict semantics for `add()`. */
+export type OnConflictMode =
+  /**
+   * Default. A unique/exclusion conflict raises a typed PG error:
+   * `ERR04` when the conflicting row is live, `ERR05` when it is
+   * soft-deleted (`deleted_at` set → restore it, never duplicate).
+   * Generated as a CTE: `ins` (INSERT ... ON CONFLICT DO NOTHING
+   * RETURNING), `conflict` (matches the pre-existing row by unique-group
+   * values), `raised` (`pg_raise`). The conflicting row's `uuid` and the
+   * matched constraint name travel in the error `detail` (jsonb).
+   */
+  | "raise"
+  /**
+   * Bare `ON CONFLICT DO NOTHING` — the conflicting row is skipped without
+   * raising, so the surrounding transaction survives. `add()` returns
+   * `undefined` when the row was skipped (RETURNING yields zero rows).
+   * For statement-level idempotent inserts (e.g. piggybacked translations
+   * inside an entity-write transaction).
+   */
+  | "ignore";
+
 /** Base write options — no actor (for non-auditable entities). */
-export type WriteOptions = {
+export type WriteOptions<TEntity extends object = Record<string, unknown>> = {
   /** Optional audit port — if not injected, audit is silently skipped. */
   audit?: AuditPort;
   /** Optional logger port — if not injected, errors are swallowed. */
@@ -54,14 +75,25 @@ export type WriteOptions = {
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
   /**
-   * Insert semantics for `add()`:
-   * - `true` (default): strict INSERT — a unique-constraint conflict fails.
-   * - `false`: statement-level idempotent INSERT — appends bare
-   *   `ON CONFLICT DO NOTHING` so a conflicting row is skipped without
-   *   aborting the surrounding transaction. `add()` may then return
-   *   `undefined` when the row was skipped (RETURNING yields zero rows).
+   * Conflict semantics for `add()`. Default `"raise"` — see
+   * {@link OnConflictMode}. `"ignore"` is reserved for statement-level
+   * idempotent inserts that must not abort an open transaction.
    */
-  createIfAbsent?: boolean;
+  onConflict?: OnConflictMode;
+  /**
+   * `add()` + `onConflict: "raise"` only. Restricts conflict identification
+   * to the unique constraint defined by these entity property keys — they
+   * must exactly match one `@Unique` group (single column or named
+   * composite). Defaults to every unique group whose attempted values are
+   * all known — payload values (including a caller-provided `uuid`),
+   * constant `defaultSql` literals, or NULL when the column is omitted
+   * without a default. Groups containing columns with volatile DB-side
+   * defaults (`gen_random_uuid()`, `identity` PK, `now()`) are excluded
+   * automatically since their attempted value is unknowable.
+   * Unknown keys throw `UnknownColumnError`; a set matching no unique
+   * group throws `ValidationError`.
+   */
+  conflictKeys?: (keyof TEntity & string)[];
   /**
    * Projection applied to the write's RETURNING clause.
    * - `undefined` (default): every persisted column EXCEPT the identity PK
@@ -77,7 +109,7 @@ export type WriteOptions = {
 };
 
 /** Write options for auditable entities — actor is required. */
-export type AuditableWriteOptions = WriteOptions & {
+export type AuditableWriteOptions<TEntity extends object = Record<string, unknown>> = WriteOptions<TEntity> & {
   /** The actor performing the operation (stamped into created_by/updated_by/deleted_by). */
   actor: string;
 };
@@ -92,11 +124,29 @@ export type MatchByOptions<TEntity> = {
   matchBy?: keyof TEntity & string;
 };
 
+/** Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany). */
+export type BulkResult = {
+  /** Rows received in the payload. */
+  received: number;
+  /**
+   * Rows actually written, from PostgreSQL `rowCount` (inserted / upserted /
+   * updated / deleted). `affected < received` is not an error for
+   * upsert/update/delete — it reports unmatched or conflicted rows.
+   */
+  affected: number;
+};
+
 /** Bulk operation options (batch size, timeout). */
 export type BulkOptions = {
   /** Batch size for temp table loading (default: auto-calculated from column count). */
   batchSize?: number;
-  /** Per-statement timeout in ms. */
+  /**
+   * Whole-operation wall-clock budget in ms for this bulk call — overrides
+   * `DalConfig.bulkTimeoutMs`. Applied as `SET LOCAL statement_timeout`
+   * (bounds each statement) plus a JS deadline checked between statements
+   * (bounds the whole operation); on expiry the transaction rolls back and
+   * a `BulkTimeoutError` is thrown.
+   */
   timeoutMs?: number;
 };
 

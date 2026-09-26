@@ -18,6 +18,38 @@ export const DalErrorCodes = {
   ERR02: "ERR02",
   /** Record vanished — the row was hard-deleted by another writer between read and write. TS-originated `RecordVanishedError`. HTTP 404. */
   ERR03: "ERR03",
+  /**
+   * Unique-constraint conflict on a live row — raised by the `add()`
+   * conflict-reporting CTE via `pg_raise` (PG-originated) or thrown as
+   * `DuplicateRecordError` when the conflicting row is not identifiable.
+   * HTTP 409.
+   */
+  ERR04: "ERR04",
+  /**
+   * Unique-constraint conflict on a soft-deleted row (`deleted_at` set) —
+   * the row must be restored, never duplicated. PG-originated via
+   * `pg_raise`; the existing row's `uuid` travels in the error `detail`.
+   * HTTP 409.
+   */
+  ERR05: "ERR05",
+  /**
+   * Bulk operation timeout — a `*Many` operation exceeded its wall-clock
+   * budget (`DalConfig.bulkTimeoutMs` or `BulkOptions.timeoutMs`) and the
+   * transaction was rolled back. TS-originated `BulkTimeoutError` (JS
+   * deadline between statements) or PG `57014` (`SET LOCAL
+   * statement_timeout` killing a slow statement inside the bulk tx).
+   * HTTP 408.
+   */
+  ERR06: "ERR06",
+  /**
+   * Statement timeout — logical code for PostgreSQL `57014`
+   * (`query_canceled`, raised when a statement exceeds `statement_timeout`:
+   * the per-connection `DalConfig.statementTimeoutMs`, or `SET LOCAL` inside
+   * a bulk transaction). PG never emits `ERR07` itself — the boundary maps
+   * `57014` to this code. HTTP 500 (typed; 504 is reserved for
+   * DB-unreachable).
+   */
+  ERR07: "ERR07",
 } as const;
 
 export type DalErrorCode = (typeof DalErrorCodes)[keyof typeof DalErrorCodes];

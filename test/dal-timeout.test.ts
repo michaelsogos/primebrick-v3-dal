@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
 import { Dal } from "../src/index.js";
@@ -66,11 +67,12 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({
       name: `bulk-timeout-ok-${i}`,
     }));
-    const result = await dal.addMany(SimpleTestEntity, rows, {
+    // Bulk ops return void — verify via count
+    await dal.addMany(SimpleTestEntity, rows, {
       actor: "test",
       timeoutMs: 30000, // 30s — plenty for 10 rows
     });
-    expect(result.length).toBe(10);
+    expect(await dal.count(SimpleTestEntity)).toBe(10n);
   });
 
   it("addMany with timeoutMs: aborts when timeout is too short for a slow query", async () => {
@@ -90,42 +92,46 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     const rows = Array.from({ length: 5 }, (_, i) => ({
       name: `bulk-timeout-smoke-${i}`,
     }));
-    const result = await dal.addMany(SimpleTestEntity, rows, {
+    await dal.addMany(SimpleTestEntity, rows, {
       actor: "test",
       timeoutMs: 10000,
     });
-    expect(result.length).toBe(5);
+    expect(await dal.count(SimpleTestEntity)).toBe(5n);
   });
 
-  it("upsertMany with timeoutMs: completes with generous timeout", async () => {
-    const rows = Array.from({ length: 5 }, (_, i) => ({
-      name: `upsert-timeout-${i}`,
-    }));
-    const result = await dal.upsertMany(SimpleTestEntity, rows, {
-      actor: "test",
-      timeoutMs: 30000,
-    });
-    expect(result.length).toBe(5);
-  });
+  // upsertMany — COMMENTED OUT: method parked pending guarded/unguarded decision.
+  // it("upsertMany with timeoutMs: completes with generous timeout", async () => {
+  //   const rows = Array.from({ length: 5 }, (_, i) => ({
+  //     name: `upsert-timeout-${i}`,
+  //   }));
+  //   await dal.upsertMany(SimpleTestEntity, rows, {
+  //     actor: "test",
+  //     timeoutMs: 30000,
+  //   });
+  //   expect(await dal.count(SimpleTestEntity)).toBe(5n);
+  // });
 
   it("updateMany with timeoutMs: completes with generous timeout", async () => {
-    // First insert some rows
-    const inserted = await dal.addMany(
+    // First insert some rows — caller-provided uuids so we can update by uuid
+    const uuids = Array.from({ length: 5 }, () => randomUUID());
+    await dal.addMany(
       SimpleTestEntity,
-      Array.from({ length: 5 }, (_, i) => ({ name: `update-timeout-${i}` })),
+      uuids.map((uuid, i) => ({ uuid, name: `update-timeout-${i}` })),
       { actor: "test" },
     );
     // Now update them with a timeout
-    const updates = inserted.map((row) => ({
-      uuid: (row as SimpleTestEntity).uuid,
-      name: `updated-${(row as SimpleTestEntity).uuid.slice(0, 8)}`,
+    const updates = uuids.map((uuid) => ({
+      uuid,
+      name: `updated-${uuid.slice(0, 8)}`,
+      version: 1,
     }));
-    const result = await dal.updateMany(SimpleTestEntity, updates, {
+    await dal.updateMany(SimpleTestEntity, updates, {
       actor: "test",
       timeoutMs: 30000,
       matchBy: "uuid",
     });
-    expect(result.length).toBe(5);
+    const updated = await dal.findByUUID(SimpleTestEntity, uuids[0]);
+    expect(updated!.name).toBe(`updated-${uuids[0].slice(0, 8)}`);
   });
 
   // ─── withClient timeout override ─────────────────────────────────────

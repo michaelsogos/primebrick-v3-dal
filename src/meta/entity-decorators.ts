@@ -317,7 +317,10 @@ export function Unique(indexName?: string, orderPriority?: number): PropertyDeco
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
     col.isUnique = true;
-    col.nullable = false;
+    // Unique columns default to NOT NULL, but an explicit
+    // @Column({ nullable: true }) wins (e.g. composite uniques where a
+    // member is genuinely nullable, like ai_models.dtype).
+    if (col.nullable === undefined) col.nullable = false;
     if (indexName !== undefined) {
       col.uniqueIndexName = indexName;
       col.uniqueIndexOrder = orderPriority ?? 0;

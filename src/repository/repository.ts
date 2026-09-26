@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 
 import type { EntityClass } from "../meta/entity-meta.js";
+import type { EntityPersistenceMeta } from "../meta/entity-decorators.js";
 import {
   getColumnName,
   getEntityPersistenceMeta,
@@ -35,13 +36,20 @@ import type {
   UpsertOptions,
   AuditPort,
   LoggerPort,
+  BulkResult,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
-import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError } from "../errors/errors.js";
+import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError } from "../errors/errors.js";
+import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
+
+/** Escape a JS string as a single-quoted SQL literal. */
+function escapeLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 
 /** No-op logger — used when no LoggerPort is injected. */
 const noopLogger: LoggerPort = {
@@ -261,7 +269,47 @@ function autoBatchSize(columnCount: number): number {
 }
 
 export class Repository {
-  constructor(private readonly db: Queryable) {}
+  /**
+   * @param bulkTimeoutMs Whole-operation wall-clock budget (ms) for every
+   *   *Many method — the transaction must complete within this bound or it is
+   *   aborted and rolled back. `0`/`undefined` disables the budget.
+   *   Per-call override: `BulkOptions.timeoutMs`.
+   */
+  constructor(
+    private readonly db: Queryable,
+    private readonly bulkTimeoutMs: number = 1800000,
+  ) {}
+
+  /**
+   * Opens a dedicated-client transaction for a bulk operation and applies the
+   * operation time budget. Budget is enforced twice: `SET LOCAL
+   * statement_timeout` bounds each statement (PG-side kill → 57014), and the
+   * returned deadline is checked between statements so the whole op cannot
+   * outlive the budget even across many fast statements.
+   */
+  private async bulkBegin(options: { timeoutMs?: number } | undefined): Promise<{ client: PoolClient; deadline: number | null }> {
+    const client = await this.getClient();
+    await client.query("BEGIN");
+    const budget = options?.timeoutMs ?? this.bulkTimeoutMs;
+    let deadline: number | null = null;
+    if (budget !== undefined && budget !== null && budget > 0) {
+      await client.query(`SET LOCAL statement_timeout TO ${budget}`);
+      deadline = Date.now() + budget;
+    }
+    return { client, deadline };
+  }
+
+  /** Throws when the bulk operation has outlived its wall-clock budget. */
+  private assertBulkAlive(deadline: number | null, op: string): void {
+    if (deadline !== null && Date.now() >= deadline) {
+      throw new BulkTimeoutError(`${op}: exceeded bulk operation timeout — transaction rolled back`);
+    }
+  }
+
+  /** Rollback for bulk transactions — release stays in the caller's finally. */
+  private async bulkAbort(client: PoolClient): Promise<void> {
+    await client.query("ROLLBACK").catch(() => {});
+  }
 
   // ─── Finders ───────────────────────────────────────────────────────────────
 
@@ -432,18 +480,18 @@ export class Repository {
   async add<TEntity extends object & IAuditableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: AuditableWriteOptions,
+    options: AuditableWriteOptions<TEntity>,
   ): Promise<TResult>;
   /** Add — non-auditable entity (actor rejected). */
   async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions,
+    options: WriteOptions<TEntity>,
   ): Promise<TResult>;
   async add<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     row: Partial<Record<keyof TEntity & string, unknown>>,
-    options: WriteOptions | AuditableWriteOptions,
+    options: WriteOptions<TEntity> | AuditableWriteOptions<TEntity>,
   ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = options.tableName
@@ -479,6 +527,11 @@ export class Repository {
     const colsSql: string[] = [];
     const params: string[] = [];
 
+    // Attempted insert values by property key → "$n" — reused by the
+    // conflict-reporting predicates (the attempted value is what identifies
+    // a pre-existing conflicting row).
+    const attemptedParam = new Map<string, string>();
+
     for (const k of keys) {
       const sqlName = getColumnName(entity, k);
       const colMeta = meta.columns[sqlName];
@@ -487,6 +540,7 @@ export class Repository {
       const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
       values.push(pgVal);
       params.push(`$${values.length}`);
+      attemptedParam.set(k, `$${values.length}`);
     }
 
     // Add audit stamping
@@ -500,32 +554,100 @@ export class Repository {
         colsSql.push(quoteIdent(createdAtCol.sqlName));
         values.push(now);
         params.push(`$${values.length}`);
+        attemptedParam.set(createdAtCol.propertyKey, `$${values.length}`);
       }
       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
         colsSql.push(quoteIdent(createdByCol.sqlName));
         values.push(actor);
         params.push(`$${values.length}`);
+        attemptedParam.set(createdByCol.propertyKey, `$${values.length}`);
       }
       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedAtCol.sqlName));
         values.push(now);
         params.push(`$${values.length}`);
+        attemptedParam.set(updatedAtCol.propertyKey, `$${values.length}`);
       }
       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedByCol.sqlName));
         values.push(actor);
         params.push(`$${values.length}`);
+        attemptedParam.set(updatedByCol.propertyKey, `$${values.length}`);
       }
     }
 
-    // createIfAbsent === false → statement-level idempotent insert:
-    // bare ON CONFLICT DO NOTHING skips a conflicting row without aborting
-    // the surrounding transaction (RETURNING yields zero rows → inserted undefined).
-    const conflictClause = options.createIfAbsent === false ? " ON CONFLICT DO NOTHING" : "";
+    const onConflict = options.onConflict ?? "raise";
     const ret = buildReturningClause(entity, options.returning);
-    const sql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")})${conflictClause} ${ret.clause}`;
+    const insertSql = `INSERT INTO ${table} (${colsSql.join(", ")}) VALUES (${params.join(", ")})`;
+
+    let sql: string;
+    let reporting = false;
+    if (onConflict === "ignore") {
+      // Statement-level idempotent insert: bare ON CONFLICT DO NOTHING skips a
+      // conflicting row without aborting the surrounding transaction
+      // (RETURNING yields zero rows → inserted undefined).
+      sql = `${insertSql} ON CONFLICT DO NOTHING ${ret.clause}`;
+    } else {
+      // "raise" — conflict-reporting CTE. The attempted values are matched
+      // against the entity's unique groups to find the pre-existing row; the
+      // `raised` CTE calls pg_raise so PG itself emits ERR04 (live row) or
+      // ERR05 (soft-deleted row) with uuid + constraint in DETAIL.
+      const predicates = this.uniqueConflictPredicates(entity, meta, attemptedParam, options.conflictKeys);
+      if (predicates.length === 0) {
+        // No identifiable unique group (e.g. only DB-generated uniques) —
+        // fall back to a plain strict INSERT; a raw 23505 still surfaces.
+        sql = `${insertSql} ${ret.clause}`;
+      } else {
+        reporting = true;
+        const uuidSel = meta.columns["uuid"] ? `t.${quoteIdent("uuid")}` : "NULL";
+        const deletedAtCol = Object.values(meta.columns).find(
+          (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+        );
+        const deletedSel = deletedAtCol ? `t.${quoteIdent(deletedAtCol.sqlName)}` : "NULL";
+        const whereOr = predicates.map((p) => `(${p.sql})`).join("\n        OR ");
+        const constraintCase = predicates
+          .map((p) => `WHEN (${p.sql}) THEN ${escapeLiteral(p.name)}`)
+          .join(" ");
+        sql = `WITH ins AS (
+  ${insertSql}
+  ON CONFLICT DO NOTHING
+  ${ret.clause}
+),
+conflict AS (
+  SELECT ${uuidSel} AS c_uuid, ${deletedSel} AS c_deleted_at,
+         CASE ${constraintCase} END AS c_constraint
+  FROM ${table} t
+  WHERE ${whereOr}
+  LIMIT 1
+),
+raised AS (
+  SELECT public.pg_raise(
+    CASE WHEN c.c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END,
+    ${escapeLiteral(`add: unique constraint violation on ${meta.entityClassName}`)},
+    jsonb_build_object(
+      'entity', ${escapeLiteral(meta.entityClassName)},
+      'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
+      'uuid', c.c_uuid::text,
+      'constraint', c.c_constraint
+    )::text
+  ) AS _raised
+  FROM conflict c
+)
+SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
+      }
+    }
+
     const result = await this.db.query(sql, values);
     const inserted = result.rows?.[0] as Record<string, unknown> | undefined;
+
+    // raise-mode CTE returned zero rows: a unique conflict happened on a group
+    // whose attempted values were not all identifiable (e.g. a DB-generated
+    // uuid) — no row to report, so raise the generic typed error.
+    if (!inserted && reporting) {
+      throw new DuplicateRecordError(
+        `add: unique constraint violation on ${meta.entityClassName} — conflicting row not identifiable`,
+      );
+    }
 
     // Write audit if port is injected (skipped when the row was a no-op conflict)
     if (inserted && auditable && options.audit && pk && actor !== undefined) {
@@ -548,8 +670,257 @@ export class Repository {
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
-    // May be undefined when createIfAbsent === false and the row was skipped.
+    // May be undefined when onConflict === "ignore" and the row was skipped.
     return inserted === undefined ? (undefined as TResult) : pickReturningRow<TResult>(inserted, ret.visibleKeys);
+  }
+
+  /**
+   * Unique groups of the entity, derived purely from metadata:
+   * - `@Unique()` single-column → group keyed by the column's sqlName.
+   * - `@Unique(name, order)` → all columns sharing `name`, ordered by `order`.
+   */
+  private uniqueConflictGroups(
+    meta: EntityPersistenceMeta,
+  ): { name: string; cols: EntityPersistenceMeta["columns"][string][] }[] {
+    type Col = EntityPersistenceMeta["columns"][string];
+    const groups: { name: string; cols: Col[] }[] = [];
+    const named = new Map<string, Col[]>();
+    for (const c of Object.values(meta.columns)) {
+      if (!c.isUnique) continue;
+      if (c.uniqueIndexName) {
+        const arr = named.get(c.uniqueIndexName) ?? [];
+        arr.push(c);
+        named.set(c.uniqueIndexName, arr);
+      } else {
+        groups.push({ name: c.sqlName, cols: [c] });
+      }
+    }
+    for (const [name, cols] of named) {
+      cols.sort((a, b) => (a.uniqueIndexOrder ?? 0) - (b.uniqueIndexOrder ?? 0));
+      groups.push({ name, cols });
+    }
+    return groups;
+  }
+
+  /**
+   * `defaultSql` values that are safe to embed as literal SQL in a predicate:
+   * quoted string literals, numeric literals, booleans, NULL. Anything else
+   * (function calls like `gen_random_uuid()`, `now()`) is volatile or
+   * DB-generated — the attempted value is unknowable → the group is skipped.
+   */
+  private constantDefaultSql(defaultSql: string | undefined): string | undefined {
+    if (!defaultSql) return undefined;
+    const s = defaultSql.trim();
+    return /^'(?:[^']|'')*'$|^-?\d+(\.\d+)?$|^(true|false|null)$/i.test(s) ? s : undefined;
+  }
+
+  /**
+   * Builds the `conflict` CTE predicates for `add()` raise-mode: one term per
+   * unique group whose attempted values are all known (payload param or
+   * constant defaultSql). `IS NOT DISTINCT FROM` makes the match null-safe
+   * (a NULL unique column still conflicts against a stored NULL row's group
+   * only when the index treats NULLs as equal — callers ensure the group is
+   * meaningful). Groups containing DB-generated columns are skipped: their
+   * attempted value is generated inside PG and cannot be bound.
+   */
+  private uniqueConflictPredicates(
+    entity: EntityClass,
+    meta: EntityPersistenceMeta,
+    attemptedParam: Map<string, string>,
+    conflictKeys: string[] | undefined,
+  ): { name: string; sql: string }[] {
+    let groups = this.uniqueConflictGroups(meta);
+
+    if (conflictKeys !== undefined) {
+      const wanted = new Set<string>();
+      for (const pk of conflictKeys) {
+        const sqlName = getColumnName(entity, pk);
+        if (!meta.columns[sqlName]) {
+          throw new UnknownColumnError(`add: conflictKeys — unknown column/property ${pk}`);
+        }
+        wanted.add(sqlName);
+      }
+      groups = groups.filter(
+        (g) => g.cols.length === wanted.size && g.cols.every((c) => wanted.has(c.sqlName)),
+      );
+      if (groups.length === 0) {
+        throw new ValidationError(
+          `add: conflictKeys [${conflictKeys.join(", ")}] match no unique constraint on ${meta.entityClassName}`,
+        );
+      }
+    }
+
+    const predicates: { name: string; sql: string }[] = [];
+    for (const g of groups) {
+      const refs: string[] = [];
+      let bindable = true;
+      for (const c of g.cols) {
+        // Attempted value: payload param → constant defaultSql literal → NULL
+        // (column omitted, no default → PG stores NULL). A volatile/DB-side
+        // default (gen_random_uuid(), now(), identity) makes the value
+        // unknowable → the whole group is unidentifiable and skipped.
+        const ref =
+          attemptedParam.get(c.propertyKey) ??
+          this.constantDefaultSql(c.defaultSql) ??
+          (c.defaultSql ? undefined : "NULL");
+        if (!ref) {
+          bindable = false;
+          break;
+        }
+        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref}`);
+      }
+      if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND ") });
+    }
+    return predicates;
+  }
+
+  /**
+   * Conflict predicates for `addMany`: same unique-group derivation as
+   * `uniqueConflictPredicates`, but the attempted value lives in the temp
+   * table — `tmp.<col>` when the column is in the payload, a constant
+   * `defaultSql` literal, or NULL when the column was omitted with no
+   * default. Groups containing volatile/DB-generated columns are skipped.
+   */
+  private bulkConflictPredicates(
+    entity: EntityClass,
+    meta: EntityPersistenceMeta,
+    payloadProps: string[],
+    tmpName: string,
+    conflictKeys: string[] | undefined,
+  ): { name: string; sql: string; keys: string[] }[] {
+    let groups = this.uniqueConflictGroups(meta);
+
+    if (conflictKeys !== undefined) {
+      const wanted = new Set<string>();
+      for (const pk of conflictKeys) {
+        const sqlName = getColumnName(entity, pk);
+        if (!meta.columns[sqlName]) {
+          throw new UnknownColumnError(`addMany: conflictKeys — unknown column/property ${pk}`);
+        }
+        wanted.add(sqlName);
+      }
+      groups = groups.filter(
+        (g) => g.cols.length === wanted.size && g.cols.every((c) => wanted.has(c.sqlName)),
+      );
+      if (groups.length === 0) {
+        throw new ValidationError(
+          `addMany: conflictKeys [${conflictKeys.join(", ")}] match no unique constraint on ${meta.entityClassName}`,
+        );
+      }
+    }
+
+    const inPayload = new Set(payloadProps);
+    const predicates: { name: string; sql: string; keys: string[] }[] = [];
+    for (const g of groups) {
+      const refs: string[] = [];
+      let bindable = true;
+      for (const c of g.cols) {
+        const ref = inPayload.has(c.propertyKey)
+          ? `tmp.${quoteIdent(c.sqlName)}`
+          : (this.constantDefaultSql(c.defaultSql) ?? (c.defaultSql ? undefined : "NULL"));
+        if (!ref) {
+          bindable = false;
+          break;
+        }
+        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref}`);
+      }
+      if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND "), keys: g.cols.map((c) => c.sqlName) });
+    }
+    return predicates;
+  }
+
+  /**
+   * Strict per-row version extraction for bulk ops on auditable entities.
+   * Every payload row must carry the caller-observed `version` — same contract
+   * as the single-row writes. Any row missing it aborts the whole operation
+   * with ONE MissingVersionError (ERR02) whose `detail` carries
+   * `{entity, table, missing, rows:[≤10]}` for the FE error dialog.
+   * Non-auditable entities (no VERSION column) skip the guard entirely.
+   */
+  private extractExpectedVersions(
+    meta: EntityPersistenceMeta,
+    rows: Array<Record<string, unknown>>,
+    matchProp: string,
+    op: string,
+  ): { guard: boolean; versionColSqlName: string; versions: number[] } {
+    const versionCol = findVersionColumn(meta);
+    if (!versionCol) return { guard: false, versionColSqlName: "", versions: [] };
+    const versions: number[] = new Array(rows.length);
+    const missing: { index: number; input: unknown }[] = [];
+    rows.forEach((rec, i) => {
+      const v = rec[versionCol.propertyKey];
+      if (v === undefined || v === null) {
+        missing.push({ index: i, input: rec[matchProp] });
+      } else {
+        versions[i] = Number(v);
+      }
+    });
+    if (missing.length > 0) {
+      throw new MissingVersionError(
+        `${op}: ${missing.length} of ${rows.length} rows are missing 'version' — bulk ${op} on auditable ${meta.entityClassName} is all-or-nothing and requires the caller-observed version per row.`,
+        {
+          entity: meta.entityClassName,
+          table: `${meta.tableSchema}.${meta.tableName}`,
+          missing: missing.length,
+          rows: missing.slice(0, 10).map((m) => ({
+            index: m.index,
+            [`input_${matchProp}`]: m.input,
+            code: DalErrorCodes.ERR02,
+          })),
+        },
+      );
+    }
+    return { guard: true, versionColSqlName: versionCol.sqlName, versions };
+  }
+
+  /**
+   * Diagnose-and-raise SQL for the bulk version guard. Runs BEFORE the write
+   * (pre-check in the same transaction): left-joins tmp against the target
+   * and `pg_raise`s once when any row is stale or vanished — ERR03 when every
+   * offender vanished, ERR01 otherwise; DETAIL lists up to 10 offending rows
+   * with per-row code, expected/actual version and uuid.
+   */
+  private bulkStaleDiagnoseSql(
+    meta: EntityPersistenceMeta,
+    table: string,
+    matchCol: { sqlName: string },
+    tmpName: string,
+    versionColSqlName: string,
+    op: string,
+  ): string {
+    const m = quoteIdent(matchCol.sqlName);
+    const v = quoteIdent(versionColSqlName);
+    return `WITH st AS (
+  SELECT tmp.${m} AS s_match, t.${quoteIdent("uuid")} AS s_uuid,
+         t.${v} AS s_actual, tmp.expected_version AS s_expected,
+         (t.${m} IS NULL) AS s_vanished
+  FROM ${quoteIdent(tmpName)} tmp
+  LEFT JOIN ${table} t ON t.${m} = tmp.${m}
+  WHERE t.${m} IS NULL OR t.${v} IS DISTINCT FROM tmp.expected_version
+),
+agg AS (SELECT count(*) AS n, bool_and(s_vanished) AS all_vanished FROM st),
+det AS (
+  SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) AS rows
+  FROM (
+    SELECT s_uuid AS uuid, s_match AS ${quoteIdent(`input_${matchCol.sqlName}`)},
+           s_expected AS expected_version, s_actual AS actual_version,
+           s_vanished AS vanished,
+           CASE WHEN s_vanished THEN 'ERR03' ELSE 'ERR01' END AS code
+    FROM st LIMIT 10
+  ) x
+)
+SELECT public.pg_raise(
+  CASE WHEN agg.all_vanished THEN 'ERR03' ELSE 'ERR01' END,
+  ${escapeLiteral(`${op}: stale or missing rows on ${meta.entityClassName}`)},
+  jsonb_build_object(
+    'entity', ${escapeLiteral(meta.entityClassName)},
+    'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
+    'stale', agg.n,
+    'rows', det.rows
+  )::text
+)
+FROM agg, det
+WHERE agg.n > 0`;
   }
 
   // ─── upsert (single-record) REMOVED ─────────────────────────────────────────
@@ -1351,19 +1722,19 @@ export class Repository {
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   /** Bulk add — non-auditable entity (actor rejected). */
   async addMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async addMany<TEntity extends object>(
     entity: EntityClass,
     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & BulkOptions,
-  ): Promise<void> {
-    if (rows.length === 0) return;
+  ): Promise<BulkResult> {
+    if (rows.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = options.tableName
       ? `${quoteIdent(meta.tableSchema)}.${quoteIdent(options.tableName)}`
@@ -1404,19 +1775,26 @@ export class Repository {
 
     const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
-    
 
-    // When timeoutMs is provided, wrap batched INSERTs in a transaction with
-    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
-    const useTx = options.timeoutMs !== undefined;
-    const client = useTx ? await this.getClient() : null;
+    // TEMP TABLE strategy: stream payload into a temp table, detect unique
+    // conflicts in one set-based query (single raised ERR04/ERR05 with up to
+    // 10 offending rows), then one INSERT ... SELECT. Always transactional —
+    // the whole operation is atomic and bounded by the bulk time budget.
+    const { client, deadline } = await this.bulkBegin(options);
     try {
-      if (useTx && client) {
-        await client.query("BEGIN");
-        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
-      }
-      const db = useTx && client ? client : this.db;
+      // 1. Temp table mirroring the insert columns
+      const tmpName = `tmp_add_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const tmpColDefs = allKeys
+        .map((k) => {
+          const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
+          const pgType = colMeta ? effectivePgStorageType(columnHintsFromMetaColumn(colMeta)) : "text";
+          return `${quoteIdent(getColumnName(entity, k))} ${pgType}`;
+        })
+        .join(", ");
+      await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${tmpColDefs}) ON COMMIT DROP`);
 
+      // 2. Batch INSERT payload into the temp table
+      const tmpColsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
       for (let i = 0; i < rows.length; i += batchSz) {
         const batch = rows.slice(i, i + batchSz);
         const values: unknown[] = [];
@@ -1451,212 +1829,287 @@ export class Repository {
           tuples.push(`(${params.join(", ")})`);
         }
 
-        // No RETURNING — bulk ops return nothing (204 contract); rowCount is
-        // available on the command tag if needed.
-        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")}`;
-        await db.query(sql, values);
+        await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${tmpColsSql}) VALUES ${tuples.join(", ")}`, values);
+        this.assertBulkAlive(deadline, "addMany");
       }
 
-      if (useTx && client) {
-        await client.query("COMMIT");
+      // 3. Conflict detection — one join over bindable unique groups; if any
+      //    row conflicts, a single pg_raise aborts the transaction carrying
+      //    the total count plus up to 10 offending rows in DETAIL.
+      //    ERR04 = at least one conflict is on a live row; ERR05 only when
+      //    every conflict hits a soft-deleted row.
+      const predicates = this.bulkConflictPredicates(entity, meta, allKeys, tmpName, options.conflictKeys);
+      if (predicates.length > 0) {
+        const uuidSel = meta.columns["uuid"] ? `t.${quoteIdent("uuid")}` : "NULL";
+        const tmpUuidSel = allKeys.includes("uuid") ? `tmp.${quoteIdent("uuid")}` : "NULL";
+        const deletedAtCol = Object.values(meta.columns).find(
+          (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+        );
+        const deletedSel = deletedAtCol ? `t.${quoteIdent(deletedAtCol.sqlName)}` : "NULL";
+        const joinOr = predicates.map((p) => `(${p.sql})`).join("\n        OR ");
+        const constraintCase = predicates
+          .map((p) => `WHEN (${p.sql}) THEN ${escapeLiteral(p.name)}`)
+          .join(" ");
+        const keysCase = predicates
+          .map(
+            (p) =>
+              `WHEN (${p.sql}) THEN jsonb_build_object(${p.keys
+                .map((k) => `${escapeLiteral(k)}, tmp.${quoteIdent(k)}`)
+                .join(", ")})`,
+          )
+          .join(" ");
+        const conflictSql = `WITH conf AS (
+  SELECT ${uuidSel} AS c_uuid, ${tmpUuidSel} AS c_input_uuid,
+         ${deletedSel} AS c_deleted_at,
+         CASE ${constraintCase} END AS c_constraint,
+         CASE ${keysCase} END AS c_keys
+  FROM ${quoteIdent(tmpName)} tmp
+  JOIN ${table} t ON ${joinOr}
+),
+agg AS (SELECT count(*) AS n, bool_and(c_deleted_at IS NOT NULL) AS all_del FROM conf),
+det AS (
+  SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) AS rows
+  FROM (
+    SELECT c_uuid AS uuid, c_input_uuid AS input_uuid,
+           CASE WHEN c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END AS code,
+           (c_deleted_at IS NOT NULL) AS deleted, c_constraint AS "constraint",
+           c_keys AS keys
+    FROM conf LIMIT 10
+  ) x
+)
+SELECT public.pg_raise(
+  CASE WHEN agg.all_del THEN 'ERR05' ELSE 'ERR04' END,
+  ${escapeLiteral(`addMany: unique constraint violation on ${meta.entityClassName}`)},
+  jsonb_build_object(
+    'entity', ${escapeLiteral(meta.entityClassName)},
+    'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
+    'conflicts', agg.n,
+    'rows', det.rows
+  )::text
+)
+FROM agg, det
+WHERE agg.n > 0`;
+        await client.query(conflictSql);
+        this.assertBulkAlive(deadline, "addMany");
       }
+
+      // 4. Final write — single INSERT from the temp table
+      const insertRes = await client.query(
+        `INSERT INTO ${table} (${colsSql}) SELECT ${tmpColsSql} FROM ${quoteIdent(tmpName)}`,
+      );
+      const affected = insertRes.rowCount ?? 0;
+
+      await client.query("COMMIT");
+      return { received: rows.length, affected };
     } catch (err) {
-      if (useTx && client) {
-        await client.query("ROLLBACK").catch(() => {});
-      }
+      await this.bulkAbort(client);
       throw err;
     } finally {
-      if (useTx && client) {
-        (client as any).release?.();
-      }
+      (client as any).release?.();
     }
   }
 
-  /**
-   * Bulk upsert — auditable entity (actor required).
-   *
-   * @remarks No optimistic concurrency control — unlike the single `upsert`
-   * method, `upsertMany` does NOT extract or verify `version` against the
-   * existing record. The ON CONFLICT DO UPDATE path increments version
-   * unconditionally without checking the expected version. This means
-   * concurrent upserts can silently overwrite stale data.
-   * TODO: add per-row version guard in the ON CONFLICT WHERE clause so that
-   * a row is only updated when `${table}.version = EXCLUDED.expected_version`.
-   */
-  async upsertMany<TEntity extends object & IAuditableEntity>(
-    entity: EntityClass & { new (): TEntity },
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: AuditableWriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<void>;
-  /** Bulk upsert — non-auditable entity (actor rejected). */
-  async upsertMany<TEntity extends object>(
-    entity: EntityClass & { new (): TEntity },
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: WriteOptions & BulkOptions & UpsertOptions,
-  ): Promise<void>;
-  async upsertMany<TEntity extends object>(
-    entity: EntityClass,
-    rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
-    options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions
-  ): Promise<void> {
-    if (rows.length === 0) return;
-    const meta = getEntityPersistenceMeta(entity);
-    const table = getQualifiedTableName(entity);
-    const pk = findPkColumn(meta);
-    const auditable = isAuditableEntity(meta);
-    const actor = (options as AuditableWriteOptions).actor;
-    const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
+  // ─── upsertMany — COMMENTED OUT pending guarded/unguarded decision ────
+  // upsertMany conflict path overwrites unconditionally (no version guard).
+  // Parked until we decide guarded vs sync-import semantics.
+//
+//    * Bulk upsert — auditable entity (actor required).
+//    *
+//    * @remarks No optimistic concurrency control — unlike the single `upsert`
+//    * method, `upsertMany` does NOT extract or verify `version` against the
+//    * existing record. The ON CONFLICT DO UPDATE path increments version
+//    * unconditionally without checking the expected version. This means
+//    * concurrent upserts can silently overwrite stale data.
+//    * TODO: add per-row version guard in the ON CONFLICT WHERE clause so that
+//    * a row is only updated when `${table}.version = EXCLUDED.expected_version`.
+//    */
+//   async upsertMany<TEntity extends object & IAuditableEntity>(
+//     entity: EntityClass & { new (): TEntity },
+//     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+//     options: AuditableWriteOptions & BulkOptions & UpsertOptions,
+//   ): Promise<BulkResult>;
+//   /** Bulk upsert — non-auditable entity (actor rejected). */
+//   async upsertMany<TEntity extends object>(
+//     entity: EntityClass & { new (): TEntity },
+//     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+//     options: WriteOptions & BulkOptions & UpsertOptions,
+//   ): Promise<BulkResult>;
+//   async upsertMany<TEntity extends object>(
+//     entity: EntityClass,
+//     rows: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+//     options: (WriteOptions | AuditableWriteOptions) & BulkOptions & UpsertOptions
+//   ): Promise<BulkResult> {
+//     if (rows.length === 0) return { received: 0, affected: 0 };
+//     const meta = getEntityPersistenceMeta(entity);
+//     const table = getQualifiedTableName(entity);
+//     const pk = findPkColumn(meta);
+//     const auditable = isAuditableEntity(meta);
+//     const actor = (options as AuditableWriteOptions).actor;
+//     const conflictTarget = options.conflictTarget ?? pk?.sqlName ?? "uuid";
 
-    // Find the conflict target's property key and check if it's a uuid column
-    const conflictColMeta = Object.values(meta.columns).find((c) => c.sqlName === conflictTarget);
-    const conflictPropKey = conflictColMeta?.propertyKey ?? conflictTarget;
-    const conflictIsUuid = conflictColMeta
-      ? effectivePgStorageType(columnHintsFromMetaColumn(conflictColMeta)) === "uuid"
-      : conflictTarget === "uuid";
+//     // Find the conflict target's property key and check if it's a uuid column
+//     const conflictColMeta = Object.values(meta.columns).find((c) => c.sqlName === conflictTarget);
+//     const conflictPropKey = conflictColMeta?.propertyKey ?? conflictTarget;
+//     const conflictIsUuid = conflictColMeta
+//       ? effectivePgStorageType(columnHintsFromMetaColumn(conflictColMeta)) === "uuid"
+//       : conflictTarget === "uuid";
 
-    const first = rows[0] as Record<string, unknown>;
-    let keys = Object.keys(first).filter((k) => first[k] !== undefined);
+//     const first = rows[0] as Record<string, unknown>;
+//     let keys = Object.keys(first).filter((k) => first[k] !== undefined);
 
-    if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
-      keys = keys.filter((k) => k !== pk!.propertyKey);
-    }
+//     if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
+//       keys = keys.filter((k) => k !== pk!.propertyKey);
+//     }
 
-    if (keys.length === 0) {
-      throw new ValidationError("upsertMany: no columns to insert (all undefined?)");
-    }
+//     if (keys.length === 0) {
+//       throw new ValidationError("upsertMany: no columns to insert (all undefined?)");
+//     }
 
-    for (const k of keys) {
-      const sqlName = getColumnName(entity, k);
-      if (!meta.columns[sqlName]) {
-        throw new UnknownColumnError(`upsertMany: unknown column/property ${k}`);
-      }
-    }
+//     for (const k of keys) {
+//       const sqlName = getColumnName(entity, k);
+//       if (!meta.columns[sqlName]) {
+//         throw new UnknownColumnError(`upsertMany: unknown column/property ${k}`);
+//       }
+//     }
 
-    // Add audit columns for INSERT path
-    const auditCols: string[] = [];
-    if (auditable && actor !== undefined) {
-      for (const c of Object.values(meta.columns)) {
-        if (c.isAuditable && !keys.includes(c.propertyKey)) {
-          auditCols.push(c.propertyKey);
-        }
-      }
-    }
-    const allKeys = [...keys, ...auditCols];
-    const colsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
+//     // Add audit columns for INSERT path
+//     const auditCols: string[] = [];
+//     if (auditable && actor !== undefined) {
+//       for (const c of Object.values(meta.columns)) {
+//         if (c.isAuditable && !keys.includes(c.propertyKey)) {
+//           auditCols.push(c.propertyKey);
+//         }
+//       }
+//     }
+//     const allKeys = [...keys, ...auditCols];
+//     const colsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
 
-    // Build ON CONFLICT DO UPDATE SET — audit-aware
-    const updateCols: string[] = [];
-    for (const k of keys) {
-      const sqlName = getColumnName(entity, k);
-      const col = meta.columns[sqlName];
-      if (sqlName === conflictTarget) continue;
-      if (col?.auditableType === AuditableFieldType.CREATED_AT) continue;
-      if (col?.auditableType === AuditableFieldType.CREATED_BY) continue;
-      updateCols.push(`${quoteIdent(sqlName)} = EXCLUDED.${quoteIdent(sqlName)}`);
-    }
+//     // Build ON CONFLICT DO UPDATE SET — audit-aware
+//     const updateCols: string[] = [];
+//     for (const k of keys) {
+//       const sqlName = getColumnName(entity, k);
+//       const col = meta.columns[sqlName];
+//       if (sqlName === conflictTarget) continue;
+//       if (col?.auditableType === AuditableFieldType.CREATED_AT) continue;
+//       if (col?.auditableType === AuditableFieldType.CREATED_BY) continue;
+//       updateCols.push(`${quoteIdent(sqlName)} = EXCLUDED.${quoteIdent(sqlName)}`);
+//     }
 
-    // Add audit stamping for UPDATE path
-    if (auditable && actor !== undefined) {
-      const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
-      const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-      const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+//     // Add audit stamping for UPDATE path
+//     if (auditable && actor !== undefined) {
+//       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+//       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
+//       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
-      if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = EXCLUDED.${quoteIdent(updatedAtCol.sqlName)}`);
-      if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = EXCLUDED.${quoteIdent(updatedByCol.sqlName)}`);
-      if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
-    }
+//       if (updatedAtCol) updateCols.push(`${quoteIdent(updatedAtCol.sqlName)} = EXCLUDED.${quoteIdent(updatedAtCol.sqlName)}`);
+//       if (updatedByCol) updateCols.push(`${quoteIdent(updatedByCol.sqlName)} = EXCLUDED.${quoteIdent(updatedByCol.sqlName)}`);
+//       if (versionCol) updateCols.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
+//     }
 
-    const now = new Date();
-    const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
+//     const now = new Date();
+//     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
     
 
-    // When timeoutMs is provided, wrap batched upserts in a transaction with
-    // SET LOCAL statement_timeout (transaction-scoped, no leakage).
-    const useTx = options.timeoutMs !== undefined;
-    const client = useTx ? await this.getClient() : null;
-    try {
-      if (useTx && client) {
-        await client.query("BEGIN");
-        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
-      }
-      const db = useTx && client ? client : this.db;
+//     // TEMP TABLE strategy: stream payload into a temp table, then a single
+//     // INSERT ... SELECT ... ON CONFLICT DO UPDATE. Always transactional —
+//     // atomic and bounded by the bulk time budget.
+//     const { client, deadline } = await this.bulkBegin(options);
+//     try {
+//       // 1. Temp table mirroring the insert columns
+//       const tmpName = `tmp_upsert_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+//       const tmpColDefs = allKeys
+//         .map((k) => {
+//           const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
+//           const pgType = colMeta ? effectivePgStorageType(columnHintsFromMetaColumn(colMeta)) : "text";
+//           return `${quoteIdent(getColumnName(entity, k))} ${pgType}`;
+//         })
+//         .join(", ");
+//       await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${tmpColDefs}) ON COMMIT DROP`);
 
-      for (let i = 0; i < rows.length; i += batchSz) {
-        const batch = rows.slice(i, i + batchSz);
-        const values: unknown[] = [];
-        const tuples: string[] = [];
+//       // 2. Batch INSERT payload into the temp table
+//       const tmpColsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
+//       for (let i = 0; i < rows.length; i += batchSz) {
+//         const batch = rows.slice(i, i + batchSz);
+//         const values: unknown[] = [];
+//         const tuples: string[] = [];
 
-        for (const row of batch) {
-          const rec = row as Record<string, unknown>;
-          const params: string[] = [];
-          for (const k of keys) {
-            const sqlName = getColumnName(entity, k);
-            const colMeta = meta.columns[sqlName];
-            const rawVal = rec[k] ?? null;
-            const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-            values.push(pgVal);
-            // For uuid conflict target, use COALESCE so missing uuids get generated
-            if (k === conflictPropKey && conflictIsUuid) {
-              params.push(`COALESCE($${values.length}, gen_random_uuid())`);
-            } else {
-              params.push(`$${values.length}`);
-            }
-          }
-          for (const ak of auditCols) {
-            const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
-            if (!col) continue;
-            if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-              values.push(now);
-            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
-              values.push(actor);
-            } else if (col.auditableType === AuditableFieldType.VERSION) {
-              values.push(1);
-            } else {
-              values.push(null);
-            }
-            params.push(`$${values.length}`);
-          }
-          tuples.push(`(${params.join(", ")})`);
-        }
+//         for (const row of batch) {
+//           const rec = row as Record<string, unknown>;
+//           const params: string[] = [];
+//           for (const k of keys) {
+//             const sqlName = getColumnName(entity, k);
+//             const colMeta = meta.columns[sqlName];
+//             const rawVal = rec[k] ?? null;
+//             const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+//             values.push(pgVal);
+//             params.push(`$${values.length}`);
+//           }
+//           for (const ak of auditCols) {
+//             const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
+//             if (!col) continue;
+//             if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
+//               values.push(now);
+//             } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+//               values.push(actor);
+//             } else if (col.auditableType === AuditableFieldType.VERSION) {
+//               values.push(1);
+//             } else {
+//               values.push(null);
+//             }
+//             params.push(`$${values.length}`);
+//           }
+//           tuples.push(`(${params.join(", ")})`);
+//         }
 
-        // No RETURNING — bulk ops return nothing (204 contract).
-        const sql = `INSERT INTO ${table} (${colsSql}) VALUES ${tuples.join(", ")} ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")}`;
-        await db.query(sql, values);
-      }
+//         await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${tmpColsSql}) VALUES ${tuples.join(", ")}`, values);
+//         this.assertBulkAlive(deadline, "upsertMany");
+//       }
 
-      if (useTx && client) {
-        await client.query("COMMIT");
-      }
-    } catch (err) {
-      if (useTx && client) {
-        await client.query("ROLLBACK").catch(() => {});
-      }
-      throw err;
-    } finally {
-      if (useTx && client) {
-        (client as any).release?.();
-      }
-    }
-  }
+//       // 3. Single INSERT ... SELECT ... ON CONFLICT DO UPDATE from the temp
+//       //    table. For a uuid conflict target, missing uuids are generated
+//       //    at SELECT time (COALESCE → gen_random_uuid()).
+//       const selectCols = allKeys
+//         .map((k) => {
+//           const sqlName = getColumnName(entity, k);
+//           return k === conflictPropKey && conflictIsUuid
+//             ? `COALESCE(tmp.${quoteIdent(sqlName)}, gen_random_uuid())`
+//             : `tmp.${quoteIdent(sqlName)}`;
+//         })
+//         .join(", ");
+//       const upsertSql =
+//         `INSERT INTO ${table} (${colsSql}) SELECT ${selectCols} FROM ${quoteIdent(tmpName)} tmp ` +
+//         `ON CONFLICT (${quoteIdent(conflictTarget)}) DO UPDATE SET ${updateCols.join(", ")}`;
+//       const upsertRes = await client.query(upsertSql);
+//       const affected = upsertRes.rowCount ?? 0;
+
+//       await client.query("COMMIT");
+//       return { received: rows.length, affected };
+//     } catch (err) {
+//       await this.bulkAbort(client);
+//       throw err;
+//     } finally {
+//       (client as any).release?.();
+//     }
+//   }
 
   /** Bulk soft-delete — auditable+deletable entity (actor required). */
   async deleteMany<TEntity extends object & IAuditableEntity & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   /** Bulk soft-delete — deletable but non-auditable entity (actor rejected). */
   async deleteMany<TEntity extends object & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity>,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async deleteMany<TEntity extends object>(
     entity: EntityClass,
     matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
-  ): Promise<void> {
-    if (matches.length === 0) return;
+  ): Promise<BulkResult> {
+    if (matches.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
@@ -1685,6 +2138,16 @@ export class Repository {
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
     const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
+    // Per-row optimistic concurrency: every match object must carry the
+    // caller-observed `version` on auditable entities (strict — same contract
+    // as delete()).
+    const versionGuard = this.extractExpectedVersions(
+      meta,
+      matches as Array<Record<string, unknown>>,
+      matchCol.propertyKey,
+      "deleteMany",
+    );
+
     // TEMP TABLE strategy (same as updateMany): stream match keys into a temp
     // table, then a single UPDATE ... FROM — a JOIN beats ANY($n::[]) and has
     // no parameter-count ceiling (~65535 limit of ANY/IN does not apply).
@@ -1695,26 +2158,37 @@ export class Repository {
     // UPDATE WHERE, then diagnose stale rows with a same-transaction SELECT
     // against the temp table (`LEFT JOIN t ON match AND version` → rows with
     // no match are stale/vanished) and roll back all-or-nothing.
-    const client = await this.getClient();
+    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
     try {
-      await client.query("BEGIN");
-
       // 1. Temp table: match column only
       const matchPgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
       const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}) ON COMMIT DROP`);
+      await client.query(
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}` +
+        `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
+      );
 
-      // 2. Batch INSERT match keys into temp table
-      const batchSz = autoBatchSize(1);
+      // 2. Batch INSERT match keys (+ expected_version) into temp table
+      const batchSz = autoBatchSize(versionGuard.guard ? 2 : 1);
       for (let i = 0; i < matchValues.length; i += batchSz) {
         const batch = matchValues.slice(i, i + batchSz);
         const values: unknown[] = [];
         const tuples: string[] = [];
-        for (const v of batch) {
+        for (const [bi, v] of batch.entries()) {
           values.push(v);
-          tuples.push(`($${values.length})`);
+          const ph = [`$${values.length}`];
+          if (versionGuard.guard) {
+            values.push(versionGuard.versions[i + bi]);
+            ph.push(`$${values.length}`);
+          }
+          tuples.push(`(${ph.join(", ")})`);
         }
-        await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}) VALUES ${tuples.join(", ")}`, values);
+        await client.query(
+          `INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}` +
+          `${versionGuard.guard ? ", expected_version" : ""}) VALUES ${tuples.join(", ")}`,
+          values,
+        );
+        this.assertBulkAlive(deadline, "deleteMany");
       }
 
       // 3. SET clause — fixed columns, values inline as params
@@ -1755,8 +2229,32 @@ export class Repository {
 
       // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
       // from the command tag.
-      const sql = `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`;
+      // Version guard pre-check: stale/vanished rows → one pg_raise
+      // (ERR01, or ERR03 when all vanished), aborting the whole transaction
+      // before any write.
+      if (versionGuard.guard) {
+        await client.query(
+          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "deleteMany"),
+        );
+        this.assertBulkAlive(deadline, "deleteMany");
+      }
+
+      const sql =
+        `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
+        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        (versionGuard.guard && versionCol
+          ? ` AND ${table}.${quoteIdent(versionCol.sqlName)} = tmp.expected_version`
+          : "");
       const result = await client.query(sql, setValues);
+
+      // Race guard: the pre-check was clean but a concurrent commit slipped in
+      // between it and this UPDATE → guarded rows were skipped. All-or-nothing:
+      // roll back with ERR01 rather than persist a partial write.
+      if (versionGuard.guard && (result.rowCount ?? 0) < matches.length) {
+        throw new OptimisticLockError(
+          `deleteMany: ${matches.length - (result.rowCount ?? 0)} row(s) changed concurrently during the bulk operation on ${meta.entityClassName} — rolled back.`,
+        );
+      }
 
       // 4. Audit records atomically — delta = all columns old→null semantics
       //    is approximated by old→new on the stamped fields (matching the
@@ -1786,8 +2284,178 @@ export class Repository {
       }
 
       await client.query("COMMIT");
+      return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
+      await this.bulkAbort(client);
+      throw err;
+    } finally {
+      (client as any).release?.();
+    }
+  }
+
+  /** Bulk restore — auditable+deletable entity (actor required). */
+  async restoreMany<TEntity extends object & IAuditableEntity & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  /** Bulk restore — deletable but non-auditable entity (actor rejected). */
+  async restoreMany<TEntity extends object & IDeletableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  async restoreMany<TEntity extends object>(
+    entity: EntityClass,
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult> {
+    if (matches.length === 0) return { received: 0, affected: 0 };
+    const meta = getEntityPersistenceMeta(entity);
+    const table = getQualifiedTableName(entity);
+    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const matchColMeta = meta.columns[matchCol.sqlName];
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
+    const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
+    if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
+
+    const matchValues: unknown[] = matches.map((m) => {
+      const v = (m as Record<string, unknown>)[matchCol.propertyKey];
+      if (v === undefined) {
+        throw new ValidationError(
+          `restoreMany: missing match value — property '${matchCol.propertyKey}' must be present in every match object`,
+        );
+      }
+      return jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta));
+    });
+
+    const versionGuard = this.extractExpectedVersions(
+      meta,
+      matches as Array<Record<string, unknown>>,
+      matchCol.propertyKey,
+      "restoreMany",
+    );
+
+    const now = new Date();
+    const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
+    const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
+    const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+    const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
+    const versionCol = findVersionColumn(meta);
+
+    const { client, deadline } = await this.bulkBegin(options);
+    try {
+      const matchPgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
+      const tmpName = `tmp_restore_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      await client.query(
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}` +
+        `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
+      );
+
+      const batchSz = autoBatchSize(versionGuard.guard ? 2 : 1);
+      for (let i = 0; i < matchValues.length; i += batchSz) {
+        const batch = matchValues.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+        for (const [bi, v] of batch.entries()) {
+          values.push(v);
+          const ph = [`$${values.length}`];
+          if (versionGuard.guard) {
+            values.push(versionGuard.versions[i + bi]);
+            ph.push(`$${values.length}`);
+          }
+          tuples.push(`(${ph.join(", ")})`);
+        }
+        await client.query(
+          `INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}` +
+          `${versionGuard.guard ? ", expected_version" : ""}) VALUES ${tuples.join(", ")}`,
+          values,
+        );
+        this.assertBulkAlive(deadline, "restoreMany");
+      }
+
+      // SET — same semantics as single restore(): clear tombstones, stamp
+      // updated_*, bump version.
+      const setClauses: string[] = [];
+      const setValues: unknown[] = [];
+      if (deletedAtCol) setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = NULL`);
+      if (deletedByCol) setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
+      if (updatedAtCol && auditable && actor !== undefined) {
+        setValues.push(now);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+      }
+      if (updatedByCol && auditable && actor !== undefined) {
+        setValues.push(actor);
+        setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${setValues.length}`);
+      }
+      if (versionCol && auditable) {
+        setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${table}.${quoteIdent(versionCol.sqlName)} + 1`);
+      }
+
+      let tmpOldName: string | null = null;
+      const auditEnabled = !!(auditable && actor !== undefined && (options as AuditableWriteOptions).audit);
+      if (auditEnabled) {
+        tmpOldName = `tmp_old_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        await client.query(
+          `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
+          `SELECT t.* FROM ${table} t ` +
+          `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
+          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+        );
+      }
+
+      // Version guard pre-check (same-tx) — stale/vanished → one pg_raise.
+      if (versionGuard.guard) {
+        await client.query(
+          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "restoreMany"),
+        );
+        this.assertBulkAlive(deadline, "restoreMany");
+      }
+
+      const sql =
+        `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
+        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        (versionGuard.guard && versionCol
+          ? ` AND ${table}.${quoteIdent(versionCol.sqlName)} = tmp.expected_version`
+          : "");
+      const result = await client.query(sql, setValues);
+
+      // Race guard — concurrent commit between pre-check and UPDATE.
+      if (versionGuard.guard && (result.rowCount ?? 0) < matches.length) {
+        throw new OptimisticLockError(
+          `restoreMany: ${matches.length - (result.rowCount ?? 0)} row(s) changed concurrently during the bulk operation on ${meta.entityClassName} — rolled back.`,
+        );
+      }
+
+      if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
+        const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
+        const pkCol = findPkColumn(meta);
+        const deltaColumns = Object.values(meta.columns).filter((c) =>
+          c.auditableType !== AuditableFieldType.CREATED_AT &&
+          c.auditableType !== AuditableFieldType.CREATED_BY,
+        );
+        const deltaExpr = deltaColumns
+          .map((c) => {
+            const col = quoteIdent(c.sqlName);
+            return `'${c.sqlName}', CASE WHEN o.${col} IS DISTINCT FROM u.${col} THEN jsonb_build_object('old', o.${col}, 'new', u.${col}) END`;
+          })
+          .join(",\n          ");
+        const auditSql =
+          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'RESTORE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `            jsonb_strip_nulls(jsonb_build_object(\n` +
+          `              ${deltaExpr}\n` +
+          `            ))\n` +
+          `          FROM ${table} u\n` +
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+        await client.query(auditSql, [now, actor]);
+      }
+
+      await client.query("COMMIT");
+      return { received: matches.length, affected: result.rowCount ?? 0 };
+    } catch (err) {
+      await this.bulkAbort(client);
       throw err;
     } finally {
       (client as any).release?.();
@@ -1797,41 +2465,50 @@ export class Repository {
   /**
    * Bulk update — auditable entity (actor required).
    *
-   * @remarks No optimistic concurrency control — unlike the single `update`
-   * method, `updateMany` does NOT extract or verify `version` against the
-   * existing record. The UPDATE FROM temp table does not include a version
-   * guard in the WHERE clause, so concurrent updates can silently overwrite
-   * stale data.
-   * TODO: add per-row version guard by including `expected_version` in the
-   * temp table and adding `AND ${table}.version = tmp.expected_version` to
-   * the UPDATE WHERE clause, then verify rowCount === expected count.
+   * @remarks Per-row optimistic concurrency: on auditable entities every row
+   * must carry the caller-observed `version`; missing → ERR02 (all-or-nothing),
+   * stale/vanished rows → single pg_raise ERR01/ERR03 with ≤10 offenders in
+   * DETAIL, rolling back the whole operation.
    */
   async updateMany<TEntity extends object & IAuditableEntity>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   /** Bulk update — non-auditable entity (actor rejected). */
   async updateMany<TEntity extends object>(
     entity: EntityClass & { new (): TEntity },
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void>;
+  ): Promise<BulkResult>;
   async updateMany<TEntity extends object>(
     entity: EntityClass,
     updates: Array<Partial<Record<keyof TEntity & string, unknown>>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
-  ): Promise<void> {
-    if (updates.length === 0) return;
+  ): Promise<BulkResult> {
+    if (updates.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
     const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
 
-    // Determine the update columns from the first row (excluding the match key)
+    // Per-row optimistic concurrency: every row must carry the caller-observed
+    // `version` on auditable entities (strict — same contract as update()).
+    const versionGuard = this.extractExpectedVersions(
+      meta,
+      updates as Array<Record<string, unknown>>,
+      matchCol.propertyKey,
+      "updateMany",
+    );
+
+    // Determine the update columns from the first row (excluding the match key
+    // and `version`, which is the concurrency guard — never a SET column).
     const first = updates[0] as Record<string, unknown>;
-    const updateKeys = Object.keys(first).filter((k) => k !== matchCol.propertyKey && first[k] !== undefined);
+    const versionProp = versionGuard.guard ? findVersionColumn(meta)!.propertyKey : "\0";
+    const updateKeys = Object.keys(first).filter(
+      (k) => k !== matchCol.propertyKey && k !== versionProp && first[k] !== undefined,
+    );
 
     if (updateKeys.length === 0) {
       throw new ValidationError(`updateMany: no columns to update (only match key '${matchCol.propertyKey}' provided?)`);
@@ -1856,12 +2533,8 @@ export class Repository {
     }
 
     // TEMP TABLE strategy: CREATE TEMP TABLE → batch INSERT → UPDATE FROM → COMMIT
-    const client = await this.getClient();
+    const { client, deadline } = await this.bulkBegin(options);
     try {
-      await client.query("BEGIN");
-      if (options.timeoutMs !== undefined) {
-        await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
-      }
 
       // 1. Create temp table — columns must include PG types
       const tmpColDefs: string[] = [];
@@ -1887,6 +2560,7 @@ export class Repository {
           tmpColDefs.push(`${quoteIdent(updatedByCol.sqlName)} ${pgType}`);
         }
       }
+      if (versionGuard.guard) tmpColDefs.push("expected_version integer");
 
       const tmpName = `tmp_update_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${tmpColDefs.join(", ")}) ON COMMIT DROP`);
@@ -1901,13 +2575,13 @@ export class Repository {
         if (updatedByCol) allTmpKeys.push(updatedByCol.propertyKey);
       }
 
-      const batchSz = options.batchSize ?? autoBatchSize(allTmpKeys.length);
+      const batchSz = options.batchSize ?? autoBatchSize(allTmpKeys.length + (versionGuard.guard ? 1 : 0));
       for (let i = 0; i < updates.length; i += batchSz) {
         const batch = updates.slice(i, i + batchSz);
         const values: unknown[] = [];
         const tuples: string[] = [];
 
-        for (const row of batch) {
+        for (const [bi, row] of batch.entries()) {
           const rec = row as Record<string, unknown>;
           const params: string[] = [];
           for (const k of allTmpKeys) {
@@ -1939,11 +2613,17 @@ export class Repository {
             }
             params.push(`$${values.length}`);
           }
+          if (versionGuard.guard) {
+            values.push(versionGuard.versions[i + bi]);
+            params.push(`$${values.length}`);
+          }
           tuples.push(`(${params.join(", ")})`);
         }
 
-        const tmpColsSql = allTmpKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
+        const tmpColsSql = allTmpKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ")
+          + (versionGuard.guard ? `, ${quoteIdent("expected_version")}` : "");
         await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${tmpColsSql}) VALUES ${tuples.join(", ")}`, values);
+        this.assertBulkAlive(deadline, "updateMany");
       }
 
       // 3. Single UPDATE FROM temp table
@@ -1972,8 +2652,27 @@ export class Repository {
 
       // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
       // from the command tag.
-      const updateSql = `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`;
+      // Version guard pre-check (same-tx): stale/vanished rows → one pg_raise
+      // (ERR01, or ERR03 when all vanished) before any write happens.
+      if (versionGuard.guard) {
+        await client.query(
+          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "updateMany"),
+        );
+        this.assertBulkAlive(deadline, "updateMany");
+      }
+
+      const updateSql =
+        `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
+        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        (versionGuard.guard ? ` AND ${table}.${quoteIdent(versionGuard.versionColSqlName)} = tmp.expected_version` : "");
       const result = await client.query(updateSql);
+
+      // Race guard — concurrent commit between pre-check and UPDATE.
+      if (versionGuard.guard && (result.rowCount ?? 0) < updates.length) {
+        throw new OptimisticLockError(
+          `updateMany: ${updates.length - (result.rowCount ?? 0)} row(s) changed concurrently during the bulk operation on ${meta.entityClassName} — rolled back.`,
+        );
+      }
 
       // 4. Insert audit records atomically (same transaction as the UPDATE).
       // Delta is computed entirely in SQL using jsonb_build_object + jsonb_strip_nulls.
@@ -2015,8 +2714,9 @@ export class Repository {
       }
 
       await client.query("COMMIT");
+      return { received: updates.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
+      await this.bulkAbort(client);
       throw err;
     } finally {
       (client as any).release?.();

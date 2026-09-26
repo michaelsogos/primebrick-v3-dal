@@ -174,8 +174,10 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
       { name: "bigint test" },
       { actor: "test" },
     );
-    expect(typeof inserted.id).toBe("bigint");
-    expect(inserted.id).toBeGreaterThan(0n);
+    // id is excluded from add()'s projection — verify the INT8 parser via findByUUID
+    const stored = await dal.findByUUID(SimpleTestEntity, inserted.uuid);
+    expect(typeof stored!.id).toBe("bigint");
+    expect(stored!.id).toBeGreaterThan(0n);
   });
 
   // ─── CRUD delegation ─────────────────────────────────────────────────
@@ -186,7 +188,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
       { name: "Via Dal", description: "gateway test" },
       { actor: "dal-user" },
     );
-    expect(inserted.id).toBeGreaterThan(0n);
+    // id (bigint PK) is intentionally excluded from the RETURNING projection
     expect(inserted.uuid).toBeDefined();
     expect(inserted.name).toBe("Via Dal");
     expect(inserted.created_by).toBe("dal-user");
@@ -210,7 +212,8 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
       { name: "FindById" },
       { actor: "test" },
     );
-    const found = await dal.findById(SimpleTestEntity, inserted.id as unknown as bigint);
+    const stored = await dal.findByUUID(SimpleTestEntity, inserted.uuid);
+    const found = await dal.findById(SimpleTestEntity, stored!.id);
     expect(found).toBeDefined();
     expect((found as SimpleTestEntity).name).toBe("FindById");
   });

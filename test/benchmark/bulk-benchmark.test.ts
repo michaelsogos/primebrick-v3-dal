@@ -125,6 +125,7 @@ describe("updateMany benchmark — simple table", () => {
   }
 });
 
+/* upsertMany parked — COMMENTED OUT pending guarded/unguarded decision.
 // ─── Benchmarks: upsertMany — simple table ────────────────────────────────────
 
 describe("upsertMany benchmark — simple table", () => {
@@ -159,6 +160,7 @@ describe("upsertMany benchmark — simple table", () => {
     });
   }
 });
+*/
 
 // ─── Benchmarks: updateMany — primitives table ────────────────────────────────
 
@@ -188,6 +190,7 @@ describe("updateMany benchmark — primitives table", () => {
 
 // ─── Benchmarks: upsertMany — primitives table ────────────────────────────────
 
+/* upsertMany parked — COMMENTED OUT pending guarded/unguarded decision.
 describe("upsertMany benchmark — primitives table", () => {
   for (const count of counts) {
     it(`upsertMany ${count.toLocaleString()} rows — primitives table (mixed insert+update)`, async () => {
@@ -210,3 +213,4 @@ describe("upsertMany benchmark — primitives table", () => {
     });
   }
 });
+*/

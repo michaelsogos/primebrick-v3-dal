@@ -53,9 +53,15 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
     const d = new Date(value);
     if (!Number.isNaN(d.getTime())) return jsValueToPgParam(d, h);
   }
-  // JSONB / JSON columns: serialize objects and arrays to JSON strings
-  if ((stor === "jsonb" || stor === "json") && typeof value === "object") {
-    return JSON.stringify(value);
+  // JSONB / JSON columns: serialize objects and arrays to JSON strings.
+  // BigInt values reach here via ext-json body parsing (every JSON integer
+  // decodes as bigint) inside free-form jsonb payloads — convert to Number:
+  // jsonb numerics are doubles anyway, and BigInt breaks JSON.stringify.
+  if (stor === "jsonb" || stor === "json") {
+    if (typeof value === "object") {
+      return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
+    }
+    if (typeof value === "bigint") return Number(value);
   }
   return value;
 }

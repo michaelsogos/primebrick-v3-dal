@@ -101,6 +101,9 @@ export {
   MissingVersionError,
   RecordVanishedError,
   OptimisticLockError,
+  DuplicateRecordError,
+  DeletedRecordConflictError,
+  BulkTimeoutError,
 } from "./errors/errors.js";
 
 // Error codes (optimistic concurrency control)
@@ -115,6 +118,8 @@ export {
   type PaginatedEntity,
   type WriteOptions,
   type AuditableWriteOptions,
+  type OnConflictMode,
+  type BulkResult,
   type MatchByOptions,
   type BulkOptions,
   type UpsertOptions,

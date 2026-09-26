@@ -57,8 +57,11 @@ export class ValidationError extends DalError {
  */
 export class MissingVersionError extends DalError {
   readonly code = DalErrorCodes.ERR02;
-  constructor(message: string) {
+  /** Structured per-row detail for bulk ops (entity, table, missing count, rows[]). */
+  readonly detail?: unknown;
+  constructor(message: string, detail?: unknown) {
     super(message);
+    this.detail = detail;
   }
 }
 
@@ -91,6 +94,59 @@ export class RecordVanishedError extends DalError {
  */
 export class OptimisticLockError extends DalError {
   readonly code = DalErrorCodes.ERR01;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Unique-constraint conflict on a live row.
+ *
+ * Normally PG-originated: the `add()` conflict-reporting CTE calls
+ * `pg_raise('ERR04', ...)`, and node-postgres propagates it as a
+ * `DatabaseError` with `err.code === 'ERR04'` and a jsonb `err.detail`
+ * (`{ entity, table, uuid, constraint }`). The DAL throws this class only
+ * when the conflict cannot be attributed to any identifiable row (unique
+ * group whose attempted values are all DB-generated, e.g. a payload-less
+ * `uuid`). Provided in both cases for ergonomic `instanceof` checks.
+ *
+ * Code: `ERR04`. HTTP 409.
+ */
+export class DuplicateRecordError extends DalError {
+  readonly code = DalErrorCodes.ERR04;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Unique-constraint conflict on a soft-deleted row — the row exists with
+ * `deleted_at` set and must be restored, never duplicated.
+ *
+ * PG-originated via `pg_raise('ERR05', ...)`; the existing row's `uuid`
+ * travels in the error `detail` so consumers can offer a direct restore.
+ * This class is provided for ergonomic `instanceof` checks.
+ *
+ * Code: `ERR05`. HTTP 409.
+ */
+export class DeletedRecordConflictError extends DalError {
+  readonly code = DalErrorCodes.ERR05;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Thrown when a bulk write exceeds its wall-clock budget
+ * (`DalConfig.bulkTimeoutMs` or `BulkOptions.timeoutMs`). The surrounding
+ * transaction is rolled back — no partial writes survive.
+ *
+ * Code: `ERR06`. TS-originated (the JS deadline fires between
+ * statements; a slow single statement is bounded by `SET LOCAL
+ * statement_timeout` → PG `57014` query_canceled). HTTP 408.
+ */
+export class BulkTimeoutError extends DalError {
+  readonly code = DalErrorCodes.ERR06;
   constructor(message: string) {
     super(message);
   }

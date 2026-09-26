@@ -99,6 +99,10 @@ describe("Repository — Project.expr projection", () => {
     const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
     const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
     const c = await repo.add(SimpleTestEntity, { name: "C" }, { actor: "u" });
+    // add() strips the bigint PK — resolve ids via findByUUID
+    const aId = (await repo.findByUUID(SimpleTestEntity, a.uuid))!.id;
+    const bId = (await repo.findByUUID(SimpleTestEntity, b.uuid))!.id;
+    const cId = (await repo.findByUUID(SimpleTestEntity, c.uuid))!.id;
 
     const result = await repo.find<SimpleTestEntity, { max_id: bigint }>(
       SimpleTestEntity,
@@ -106,9 +110,9 @@ describe("Repository — Project.expr projection", () => {
       { throwIfNotFound: false },
     );
 
-    expect(result!.max_id).toBe(c.id);
-    expect(result!.max_id).toBeGreaterThan(a.id);
-    expect(result!.max_id).toBeGreaterThan(b.id);
+    expect(result!.max_id).toBe(cId);
+    expect(result!.max_id).toBeGreaterThan(aId);
+    expect(result!.max_id).toBeGreaterThan(bId);
   });
 
   it("expr: COALESCE returns first non-null value", async () => {
