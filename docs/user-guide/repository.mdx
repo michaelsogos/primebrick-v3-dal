@@ -186,30 +186,48 @@ const upserted = await dal.upsert(CustomerEntity, {
 // INSERT ... ON CONFLICT (uuid) DO UPDATE SET ... WHERE customers.version = $expected
 ```
 
-### `update(entity, matchValue, updates, options?)`
+### `update(entity, updates, options?)`
 
-Update a single row. `matchValue` is the value of the `matchBy` column
-(defaults to `@Key()`). For auditable entities, `updates` must include the
+Update a single row — **exactly one row, guaranteed**. The row is identified
+by identity fields carried in `updates` itself; `matchBy` is only needed for
+non-standard selectors. For auditable entities, `updates` must include the
 `version` you read — the version guard runs atomically in the same UPDATE
 statement. See [Optimistic locking](./optimistic-lock).
 
+**Identity resolution (automatic):**
+
+- `id` and `uuid` present in `updates` **always** become `AND` match
+  conditions — supplying both acts as a consistency check: if they point at
+  different rows the write fails with `ERR10` (412).
+- `matchBy` may add alternate `@Unique` selectors: a prop belonging to a
+  composite `@Unique` group pulls in the **whole** group — every group prop
+  must be present in `updates` (e.g. `matchBy: ["dtype", "model_id"]`).
+- A `matchBy` prop that is not `@Unique`/`@Key`, an unknown prop, an
+  incomplete composite group, or a payload with no identity field at all →
+  `ERR09` (422) **before any SQL is emitted**.
+- Identity fields are never SET columns — `uuid`/`id` cannot be rewritten by
+  `update()`. A `matched`/`guard` CTE counts the rows the identity would
+  touch; if it resolves to >1 row the statement aborts with `ERR10` and
+  nothing is written (atomic).
+
 ```typescript
-// Match by PK (default):
+// Match by uuid (auto — uuid is in the payload):
 const updated = await dal.update(
   CustomerEntity,
-  42n,                            // matchValue — the PK value
-  { name: "Alice 2", version: 3 },
+  { uuid: "550e8400-…", name: "Alice 2", version: 3 },
   { actor: "system" },
 );
-// UPDATE customers SET name = $1, updated_at = now(), updated_by = $2, version = version + 1
-// WHERE id = $3 AND version = $4 RETURNING *
+// UPDATE customers SET name = $1, updated_at = …, version = version + 1
+// WHERE uuid = $N AND version = $M RETURNING *
 
-// Match by uuid instead of PK:
-const updated2 = await dal.update(
-  CustomerEntity,
-  "550e8400-e29b-41d4-a716-446655440000",
-  { name: "Alice 3", version: 4 },
-  { actor: "system", matchBy: "uuid" },
+// Match by PK + uuid (AND cross-check — mismatch → ERR10):
+await dal.update(CustomerEntity, { id: 42n, uuid: "550e8400-…", name: "A", version: 3 }, { actor: "s" });
+
+// Match by a composite @Unique group:
+await dal.update(
+  AiModelEntity,
+  { dtype: "chat", model_id: "qwen3", status: "ready", version: 7 },
+  { actor: "s", matchBy: ["dtype", "model_id"] },
 );
 ```
 
@@ -224,40 +242,46 @@ unique conflict. NULL attempted values never conflict (unique indexes are
 NULLS DISTINCT). The check only runs when the payload touches `@Unique`
 columns — a plain `name`-only UPDATE emits the same SQL as before.
 
-### `delete(entity, matchValue, options?)` — soft delete
+### `delete(entity, match, options?)` — soft delete
 
 Soft-delete a row: sets `deleted_at` and `deleted_by`, increments `version`.
 The row stays in the table and is excluded from default finders. Returns the
-deleted row.
+deleted row. `match` carries the identity fields — same resolution rules as
+`update()` (auto `id`/`uuid`, optional `matchBy` @Unique selectors, `ERR09`/
+`ERR10`).
 
 ```typescript
-const deleted = await dal.delete(CustomerEntity, 42n, { actor: "system" });
-// UPDATE customers SET deleted_at = now(), deleted_by = $1, updated_at = now(), updated_by = $1, version = version + 1
-// WHERE id = $2 AND version = $3 RETURNING *
+const deleted = await dal.delete(
+  CustomerEntity,
+  { uuid: "550e8400-…", version: 3 },
+  { actor: "system" },
+);
 console.log(deleted.deleted_at); // Date
 ```
 
-### `restore(entity, matchValue, options?)`
+### `restore(entity, match, options?)`
 
 Restore a soft-deleted row: clears `deleted_at` and `deleted_by`, increments
 `version`. Returns the restored row.
 
 ```typescript
-const restored = await dal.restore(CustomerEntity, 42n, { actor: "system" });
-// UPDATE customers SET deleted_at = NULL, deleted_by = NULL, updated_at = now(), updated_by = $1, version = version + 1
-// WHERE id = $2 AND version = $3 RETURNING *
+const restored = await dal.restore(
+  CustomerEntity,
+  { uuid: "550e8400-…", version: 3 },
+  { actor: "system" },
+);
 console.log(restored.deleted_at); // null
 ```
 
-### `hardDelete(entity, matchValue, options?)`
+### `hardDelete(entity, match, options?)`
 
 Permanently delete a row (`DELETE FROM ...`). The row is gone — no soft-delete
-flag, no restore. The version guard still applies (so a concurrent writer can't
-hard-delete a row you're about to update). Returns `void`.
+flag, no restore. The version guard and the same identity-resolution rules as
+`update()` apply (auto `id`/`uuid`, `ERR09`/`ERR10`). Returns `void`.
 
 ```typescript
-await dal.hardDelete(CustomerEntity, 42n, { actor: "system" });
-// DELETE FROM customers WHERE id = $1 AND version = $2
+await dal.hardDelete(CustomerEntity, { uuid: "550e8400-…", version: 3 }, { actor: "system" });
+// DELETE FROM customers WHERE uuid = $1 AND version = $2
 ```
 
 ### `WriteOptions` and `AuditableWriteOptions`
@@ -273,7 +297,7 @@ await dal.hardDelete(CustomerEntity, 42n, { actor: "system" });
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `matchBy` | `keyof TEntity & string` | the `@Key()` column | Which property to use as the WHERE left operand |
+| `matchBy` | `keyof TEntity & string` or `ReadonlyArray<keyof TEntity & string>` | auto `id`/`uuid` from payload | Alternate `@Unique` selector — every prop must be unique; composite groups require all group props in the payload. Single-row ops only; `*Many` still take a single column. |
 
 ## Bulk operations
 
@@ -439,6 +463,8 @@ try {
 | `ERR06` | Bulk op exceeded its wall-clock `timeoutMs` budget (rolled back) | 408 |
 | `ERR07` | PG `57014` — a statement was killed by `statement_timeout` | 500 |
 | `ERR08` | Raw `23505` on a constraint not declared as `@Unique` (manual/deferred/partial index) — signals a missing `@Unique` in metadata | 409 |
+| `ERR09` | Illegal match selector: `matchBy` prop not `@Unique`/`@Key`, incomplete composite group, or no identity field in the payload — thrown **pre-SQL** | 422 |
+| `ERR10` | Identity incoherence (`id`+`uuid` pointing at different rows) or the match resolved to >1 row (guard CTE abort, nothing written) | 412 |
 | `NOT_FOUND` / `VALIDATION` / `UNKNOWN_COLUMN` / `MULTIPLE_ROWS` | Finder/validation failures | 404 / 400 |
 
 The DAL never emits HTTP status codes — the `@primebrick/sdk` `mapDalError`

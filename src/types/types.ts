@@ -114,14 +114,18 @@ export type AuditableWriteOptions<TEntity extends object = Record<string, unknow
   actor: string;
 };
 
-/** Options for match-by operations (update, delete, restore, hardDelete). */
+/** Options for match-by operations (update, delete, restore, hardDelete, *Many). */
 export type MatchByOptions<TEntity> = {
   /**
-   * Which entity property to use as the WHERE left operand.
-   * Defaults to the @Key() column.
-   * TypeScript guardrail: only accepts actual properties of TEntity.
+   * Non-standard identity selectors — an array of `@Unique`/`@Key` entity
+   * properties used as AND-match conditions on top of any `id`/`uuid`
+   * present in the payload. A prop belonging to a composite `@Unique`
+   * group pulls in the WHOLE group (all group props required in payload).
+   * Omitted → auto-match on `id`/`uuid` from the payload. Bulk `*Many`
+   * accept only a single-column selector for now (pass a 1-element array
+   * or a bare string).
    */
-  matchBy?: keyof TEntity & string;
+  matchBy?: (keyof TEntity & string) | ReadonlyArray<keyof TEntity & string>;
 };
 
 /** Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany). */

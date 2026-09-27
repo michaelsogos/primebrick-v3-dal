@@ -59,6 +59,20 @@ export const DalErrorCodes = {
    * HTTP 409.
    */
   ERR08: "ERR08",
+  /**
+   * Illegal match selector on a single-row write — `matchBy` references a
+   * property that is not `@Unique`/`@Key`, a composite `@Unique` group is
+   * supplied partially, or the payload carries no identity field at all.
+   * TS-originated `MatchSelectorError`, thrown pre-SQL. HTTP 422.
+   */
+  ERR09: "ERR09",
+  /**
+   * Incoherent or ambiguous identity — the supplied identity fields do not
+   * converge on a single row: e.g. `id`+`uuid` point at different rows, or
+   * the match hit more than one row (in-statement `pg_raise` guard aborts
+   * the write atomically). HTTP 412.
+   */
+  ERR10: "ERR10",
 } as const;
 
 export type DalErrorCode = (typeof DalErrorCodes)[keyof typeof DalErrorCodes];

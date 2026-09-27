@@ -99,6 +99,8 @@
   - `BulkTimeoutError`/`ERR06` — bulk op exceeded the wall-clock budget (rolled back)
   - `ERR07` — logical code for PG `57014` `query_canceled` (statement_timeout)
   - `ERR08` — logical code for raw PG `23505` on a constraint not declared as `@Unique`
+  - `MatchSelectorError`/`ERR09` — illegal/incomplete match selector or missing identity, thrown pre-SQL (HTTP 422)
+  - `IdentityConflictError`/`ERR10` — incoherent identity (e.g. `id`+`uuid` mismatch) or multi-row match guard abort (HTTP 412)
     (manual/deferred/partial index) — 409 with poor detail; its appearance signals a
     missing `@Unique` in the entity metadata
 - **Unique-conflict CTEs** on `add()`/`addMany()`/`update()`: when the payload can
@@ -109,6 +111,14 @@
   conflict (standard unique indexes are NULLS DISTINCT). On `update()` the conflict
   check is gated on the target row passing the version guard, so `ERR01`/`ERR03`
   always win over `ERR04`/`ERR05`.
+- **Single-row writes identify exactly one row** — `update()`/`delete()`/`restore()`/
+  `hardDelete()` resolve identity from the payload: `id` (`@Key`) and `uuid` present
+  in the payload are ALWAYS AND-ed match conditions (incoherent pairs → `ERR10`);
+  `matchBy` (string or `keyof TEntity[]`) may add `@Unique` selectors — a prop in a
+  composite `@Unique` group requires every group prop in the payload. Non-unique/
+  unknown/incomplete selectors → `ERR09` pre-SQL. Identity props are never SET
+  columns. A `matched`/`guard` CTE aborts the statement with `ERR10` if the match
+  resolves to >1 row (atomic — nothing is written).
 - **`pg_raise` is a REQUIRED database function** — it must exist on every target DB
   (init SQL + `setupTestSchema`). Without it, guarded-write/conflict raises cannot fire.
 - Keep error codes stable across versions; changing a code is a breaking change.

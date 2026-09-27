@@ -344,16 +344,53 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     expect(updated.name).toBe("A2");
   });
 
-  it("matchBy omitted + payload carrying ONLY uuid → fails (id is the default match column)", async () => {
+  it("matchBy omitted + payload carrying ONLY uuid → auto-match on uuid works", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
-    const err = await capture(
-      repo.update(SimpleTestEntity, { uuid: a.uuid, name: "B", version: a.version }, { actor: "u" }),
+    const updated = await repo.update(
+      SimpleTestEntity, { uuid: a.uuid, name: "B", version: a.version }, { actor: "u" },
     );
-    console.log("[matchBy-omitted-uuid-only] code:", err.code, "| msg:", err.message);
-    expect(err).toBeInstanceOf(Error);
+    expect(updated.name).toBe("B");
   });
 
-  it("matchBy unknown property → UnknownColumnError before SQL", async () => {
+  it("matchBy omitted + NO identity field in payload → ERR09 before SQL", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const err = await capture(
+      repo.update(SimpleTestEntity, { name: "B", version: a.version }, { actor: "u" }),
+    );
+    console.log("[matchBy-omitted-no-identity] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR09");
+  });
+
+  it("payload carrying BOTH id and uuid (coherent) → AND-match on both", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const stored = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const updated = await repo.update(
+      SimpleTestEntity,
+      { id: stored!.id, uuid: a.uuid, name: "A2", version: a.version },
+      { actor: "u" },
+    );
+    expect(updated.name).toBe("A2");
+  });
+
+  it("payload carrying id of row A + uuid of row B (incoherent) → ERR10", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    const storedA = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const err = await capture(
+      repo.update(
+        SimpleTestEntity,
+        { id: storedA!.id, uuid: b.uuid, name: "X", version: a.version },
+        { actor: "u" },
+      ),
+    );
+    console.log("[id-uuid-mismatch] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR10");
+    // nothing written
+    const rows = await repo.findAll(SimpleTestEntity);
+    expect(rows.find((r) => r.name === "X")).toBeUndefined();
+  });
+
+  it("matchBy unknown property → ERR09 before SQL", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
     const err = await capture(
       repo.update(
@@ -363,7 +400,7 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
       ),
     );
     console.log("[matchBy-unknown] code:", err.code, "| msg:", err.message);
-    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe("ERR09");
   });
 
   it("matchBy:'email' — updating ANOTHER field while matching on the unique col itself", async () => {
@@ -376,25 +413,23 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     expect(updated.name).toBe("A2");
   });
 
-  it("matchBy:'email' — SET a DIFFERENT unique col (uuid) to a duplicate → ERR04, self-exclusion by email correct", async () => {
+  it("matchBy:'email' + payload carrying ANOTHER row's uuid → ERR10 (uuid is identity, not SET)", async () => {
     const a = await repo.add(SimpleTestEntity, { name: "A", email: "a@x.com" }, { actor: "u" });
     const b = await repo.add(SimpleTestEntity, { name: "B", email: "b@x.com" }, { actor: "u" });
-    // match B by email, try to steal A's uuid — the unique group checked is
-    // `uuid`, the self-exclusion runs on `email` (the match column)
+    // match B by email but carry A's uuid — under the new model uuid is an
+    // identity field: AND(email=b, uuid=a) converges on no row → ERR10
     const err = await capture(
       repo.update(
         SimpleTestEntity,
-        { email: "b@x.com", uuid: a.uuid, version: b.version },
+        { email: "b@x.com", uuid: a.uuid, name: "X", version: b.version },
         { actor: "u", matchBy: "email" as never },
       ),
     );
-    expect(err.code).toBe("ERR04");
-    const d = detailOf(err);
-    expect(d.constraint).toBe("uuid");
-    expect(d.uuid).toBe(a.uuid);
+    console.log("[matchBy-email+uuid-mismatch] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR10");
   });
 
-  it("matchBy on a NON-unique column (name) matching 2 rows → does it update both?", async () => {
+  it("matchBy on a NON-unique column (name) → ERR09 pre-SQL, zero rows touched", async () => {
     await repo.add(SimpleTestEntity, { name: "shared", email: "one@x.com" }, { actor: "u" });
     await repo.add(SimpleTestEntity, { name: "shared", email: "two@x.com" }, { actor: "u" });
     const res = await repo.update(
@@ -405,7 +440,8 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     const rows = await repo.findAll(SimpleTestEntity);
     const touched = rows.filter((r) => r.description === "hit-both?");
     console.log("[matchBy-nonunique] result:", JSON.stringify(res), "| touched rows:", touched.length);
-    expect(touched.length).toBeGreaterThan(0);
+    expect((res as { err?: PgErr }).err?.code).toBe("ERR09");
+    expect(touched.length).toBe(0);
   });
 
   it("update() version is taken from PAYLOAD, not from a live read — wrong-but-existing version still guards", async () => {
@@ -415,6 +451,73 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
       repo.update(SimpleTestEntity, { uuid: a.uuid, name: "X", version: 999 }, { actor: "u", matchBy: "uuid" as never }),
     );
     expect(err.code).toBe("ERR01");
+  });
+
+  // ─── composite @Unique matchBy group ────────────────────────────────
+
+  it("matchBy:['grp_a','grp_b'] complete composite group → matches exactly one row", async () => {
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    await repo.add(CompositeUniqueEntity, { name: "y", grp_a: "A2", grp_b: "B1" }, {});
+    const updated = await repo.update(
+      CompositeUniqueEntity,
+      { grp_a: "A2", grp_b: "B1", name: "y2" },
+      { matchBy: ["grp_a", "grp_b"] as never },
+    );
+    expect(updated.name).toBe("y2");
+    const all = await repo.findAll(CompositeUniqueEntity);
+    expect(all.filter((r) => r.name === "y2").length).toBe(1);
+    expect(all.find((r) => r.name === "x")).toBeTruthy(); // other row untouched
+  });
+
+  it("matchBy:['grp_a'] alone (composite group incomplete, grp_b missing) → ERR09 pre-SQL", async () => {
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    const err = await capture(
+      repo.update(
+        CompositeUniqueEntity,
+        { grp_a: "A1", name: "nope" },
+        { matchBy: ["grp_a"] as never },
+      ),
+    );
+    console.log("[matchBy-composite-incomplete] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR09");
+  });
+
+  it("matchBy:['grp_a','grp_b'] but payload carries only grp_a → ERR09 (group must be complete in payload)", async () => {
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    const err = await capture(
+      repo.update(
+        CompositeUniqueEntity,
+        { grp_a: "A1", name: "nope" },
+        { matchBy: ["grp_a", "grp_b"] as never },
+      ),
+    );
+    expect(err.code).toBe("ERR09");
+  });
+
+  // ─── delete/restore/hardDelete parity ───────────────────────────────
+
+  it("delete: uuid-only auto-match works; id+uuid mismatch → ERR10", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    const storedA = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const err = await capture(
+      repo.delete(SimpleTestEntity, { id: storedA!.id, uuid: b.uuid, version: a.version }, { actor: "u" }),
+    );
+    expect(err.code).toBe("ERR10");
+    // uuid-only still works
+    const del = await repo.delete(SimpleTestEntity, { uuid: b.uuid, version: b.version }, { actor: "u" });
+    expect(del.uuid).toBe(b.uuid);
+  });
+
+  it("hardDelete: matchBy on non-unique column → ERR09; id-only match works", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const stored = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const err = await capture(
+      repo.hardDelete(SimpleTestEntity, { name: "A", version: a.version }, { actor: "u", matchBy: ["name"] as never }),
+    );
+    expect(err.code).toBe("ERR09");
+    await repo.hardDelete(SimpleTestEntity, { id: stored!.id, version: a.version }, { actor: "u" });
+    expect(await repo.findByUUID(SimpleTestEntity, a.uuid, { throwIfNotFound: false })).toBeNull();
   });
 
   // ─── intra-statement race — REAL two-connection concurrency ────────

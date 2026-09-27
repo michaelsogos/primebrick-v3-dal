@@ -130,10 +130,13 @@ count alone whether:
   write (the record is simply gone → `ERR03`).
 
 To distinguish the two, the DAL runs a single disambiguation `SELECT 1 FROM t
-WHERE match = $match LIMIT 1` on the error path only (the rare case, so the
-extra round-trip is acceptable):
+WHERE <all identity conditions> LIMIT 1` on the error path only (the rare
+case, so the extra round-trip is acceptable):
 
-- **0 rows** → the row is gone → throw `RecordVanishedError` (`ERR03`).
+- **0 rows** → the full identity matches nothing. If a row exists under ANY
+  SINGLE supplied identity field (e.g. correct `uuid` + wrong `id`), the
+  identity is incoherent → `IdentityConflictError` (`ERR10`); otherwise the
+  row is gone → `RecordVanishedError` (`ERR03`).
 - **1 row** → the row exists but the version didn't match → execute
   `RAISE EXCEPTION ... USING ERRCODE = 'ERR01'` so the error surfaces with the
   stable SQLSTATE code.
@@ -156,6 +159,8 @@ the error originated.
 | `ERR06` | Bulk operation exceeded its wall-clock budget (`BulkOptions.timeoutMs` / `DalConfig.bulkTimeoutMs`) — whole tx rolled back | TypeScript (`BulkTimeoutError`) | 408 Request Timeout |
 | `ERR07` | PG `57014` `query_canceled` — a statement was killed by `statement_timeout` | PostgreSQL `57014` → logical `ERR07` at the HTTP boundary | 500 (typed) |
 | `ERR08` | Unique violation NOT identifiable via `@Unique` metadata — a raw `23505` from a manual, deferred, or partial constraint. Signals a missing `@Unique` declaration | PostgreSQL `23505` → logical `ERR08` at the HTTP boundary | 409 Conflict |
+| `ERR09` | Illegal match selector — `matchBy` prop not `@Unique`/`@Key`, composite group incomplete, or no identity field in the payload | TypeScript (`MatchSelectorError`, pre-SQL) | 422 Unprocessable Content |
+| `ERR10` | Identity incoherence — supplied identity fields (e.g. `id`+`uuid`) do not converge on one row, or the match resolved to >1 rows (guard abort, nothing written) | TypeScript (`IdentityConflictError`) / `pg_raise` guard CTE | 412 Precondition Failed |
 
 Bulk raises carry a jsonb `detail` — `{ entity, table, stale|missing|conflicts,
 rows[≤10] }` — which the HTTP boundary surfaces as `extra.issues` for the

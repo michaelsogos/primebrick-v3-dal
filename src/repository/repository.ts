@@ -16,6 +16,7 @@ import {
 } from "../meta/entity-decorators.js";
 import {
   columnHintsFromMetaColumn,
+  type ColumnPgPersistenceHints,
   effectivePgStorageType,
   jsValueToPgParam,
 } from "../meta/column-pg-io.js";
@@ -39,7 +40,7 @@ import type {
   BulkResult,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
-import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError } from "../errors/errors.js";
+import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError } from "../errors/errors.js";
 import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
@@ -69,14 +70,25 @@ function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
 }
 
 /**
- * Resolve which column to use as the WHERE left operand for write ops.
- * Priority: options.matchBy (property key) → @Key() column → throw.
+ * Resolve which column to use as the WHERE left operand for BULK write ops
+ * (single-column selector — the multi-identity design is single-row only).
+ * matchBy may arrive as a string or 1-element array (shared option type);
+ * arrays with >1 props are rejected — bulk composite match is not
+ * implemented (ERR09).
  */
 function resolveMatchColumn(
   entity: EntityClass,
   meta: ReturnType<typeof getEntityPersistenceMeta>,
-  matchBy: string | undefined,
+  matchBy: string | readonly string[] | undefined,
 ): { sqlName: string; propertyKey: string } {
+  if (Array.isArray(matchBy)) {
+    if (matchBy.length !== 1) {
+      throw new MatchSelectorError(
+        `matchBy on ${meta.entityClassName}: bulk ops accept a single selector column — composite match is single-row only`,
+      );
+    }
+    matchBy = matchBy[0];
+  }
   if (matchBy) {
     const col = Object.values(meta.columns).find((c) => c.propertyKey === matchBy);
     if (!col) {
@@ -105,13 +117,36 @@ function extractMatchValue(
 ): { matchValue: unknown; remainingUpdates: Record<string, unknown> } {
   const matchValue = updates[matchPropertyKey];
   if (matchValue === undefined) {
-    throw new ValidationError(
+    throw new MatchSelectorError(
       `write: missing match value — property '${matchPropertyKey}' must be present in the updates/match object`,
     );
   }
   const remainingUpdates = { ...updates };
   delete remainingUpdates[matchPropertyKey];
   return { matchValue, remainingUpdates };
+}
+
+/** A single identity condition: `WHERE <sqlName> = <param>` on the payload value. */
+interface MatchCondition {
+  propertyKey: string;
+  sqlName: string;
+  value: unknown;
+  hints: ColumnPgPersistenceHints;
+}
+
+/** Render `a = $i AND b = $j ...` for the identity conditions (shared by all CTEs + the write). */
+function identityWhere(conditions: MatchCondition[], paramStart: number, alias?: string): string {
+  const p = alias ? `${alias}.` : "";
+  return conditions
+    .map((c, i) => `${p}${quoteIdent(c.sqlName)} = $${paramStart + i}`)
+    .join(" AND ");
+}
+
+/** NOT(ALL identity equal) — used to exclude the target row from the conflict scan. */
+function identitySelfExclusion(conditions: MatchCondition[], paramStart: number, alias: string): string {
+  return conditions
+    .map((c, i) => `${alias}.${quoteIdent(c.sqlName)} IS DISTINCT FROM $${paramStart + i}`)
+    .join(" OR ");
 }
 
 /** Find the @AuditableField(VERSION) column from entity metadata, if any. */
@@ -162,15 +197,29 @@ function extractVersion(
 async function disambiguateZeroRows(
   db: Queryable,
   table: string,
-  matchColSqlName: string,
-  matchParam: unknown,
+  conditions: MatchCondition[],
   entityClassName: string,
   expectedVersion: number,
   versionColSqlName: string,
 ): Promise<never> {
-  const checkSql = `SELECT 1 FROM ${table} WHERE ${quoteIdent(matchColSqlName)} = $1 LIMIT 1`;
-  const checkResult = await db.query(checkSql, [matchParam]);
+  const condSql = conditions.map((c, i) => `${quoteIdent(c.sqlName)} = $${i + 1}`).join(" AND ");
+  const condParams = conditions.map((c) => jsValueToPgParam(c.value, c.hints));
+  const checkSql = `SELECT 1 FROM ${table} WHERE ${condSql} LIMIT 1`;
+  const checkResult = await db.query(checkSql, condParams);
   if (checkResult.rowCount === 0) {
+    // Identity incoherence probe: does a row exist under ANY SINGLE
+    // identity field? (e.g. uuid matches but id differs → ERR10, not ERR03)
+    for (const c of conditions) {
+      const partial = await db.query(
+        `SELECT 1 FROM ${table} WHERE ${quoteIdent(c.sqlName)} = $1 LIMIT 1`,
+        [jsValueToPgParam(c.value, c.hints)],
+      );
+      if ((partial.rowCount ?? 0) > 0) {
+        throw new IdentityConflictError(
+          `Entity ${entityClassName}: identity mismatch — a row exists for ${c.sqlName} but the supplied identity fields do not converge on it.`,
+        );
+      }
+    }
     throw new RecordVanishedError(
       `Entity ${entityClassName}: record vanished — the row was deleted by another writer between read and write.`,
     );
@@ -713,6 +762,143 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
   }
 
   /**
+   * Resolve the full identity condition set for a single-row write.
+   *
+   * Rules (ERR09 = MatchSelectorError, thrown pre-SQL):
+   * - `id` (@Key) and `uuid` present in the payload always become AND
+   *   conditions (implicit cross-check — incoherent pairs surface as
+   *   ERR10 downstream).
+   * - Each `matchBy` prop must be a `@Key`/`@Unique` column; a prop in a
+   *   composite `@Unique` group pulls in the WHOLE group — every group
+   *   prop must be present in the payload.
+   * - At least one condition is required (no identity → ERR09).
+   *
+   * All condition props are stripped from the returned payload (a match
+   * column is never a SET column in the same call).
+   */
+  private resolveMatchConditions(
+    meta: EntityPersistenceMeta,
+    payload: Record<string, unknown>,
+    matchBy: string | readonly string[] | undefined,
+  ): { conditions: MatchCondition[]; remaining: Record<string, unknown> } {
+    const entityName = meta.entityClassName;
+    const colByProp = new Map(Object.values(meta.columns).map((c) => [c.propertyKey, c]));
+    const pk = findPkColumn(meta);
+    const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
+
+    const groups = this.uniqueConflictGroups(meta);
+    const groupOf = new Map<string, { name: string; cols: typeof meta.columns[string][] }>();
+    for (const g of groups) for (const c of g.cols) groupOf.set(c.propertyKey, g);
+
+    const requested = matchBy == null ? [] : typeof matchBy === "string" ? [matchBy] : [...matchBy];
+    const required = new Set<string>();
+    for (const prop of requested) {
+      const col = colByProp.get(prop);
+      if (!col) {
+        throw new MatchSelectorError(
+          `matchBy: '${prop}' is not a column of ${entityName}`,
+        );
+      }
+      const g = groupOf.get(prop);
+      if (prop !== pk?.propertyKey && !g) {
+        throw new MatchSelectorError(
+          `matchBy: '${prop}' on ${entityName} is not a @Unique/@Key column — ` +
+            `single-row writes must uniquely identify exactly one row`,
+        );
+      }
+      if (g) for (const c of g.cols) required.add(c.propertyKey);
+      else required.add(prop);
+    }
+    for (const prop of required) {
+      if (payload[prop] === undefined) {
+        throw new MatchSelectorError(
+          `matchBy on ${entityName}: '${prop}' is required in the payload (composite @Unique group must be complete)`,
+        );
+      }
+    }
+
+    // Auto-identity: id/uuid present in the payload always AND into the match
+    for (const prop of [pk?.propertyKey, uuidCol?.propertyKey]) {
+      if (prop && payload[prop] !== undefined) required.add(prop);
+    }
+
+    const conditions: MatchCondition[] = [];
+    const remaining = { ...payload };
+    for (const prop of required) {
+      const col = colByProp.get(prop)!;
+      conditions.push({
+        propertyKey: prop,
+        sqlName: col.sqlName,
+        value: payload[prop],
+        hints: columnHintsFromMetaColumn(col),
+      });
+      delete remaining[prop];
+    }
+    if (conditions.length === 0) {
+      throw new MatchSelectorError(
+        `write on ${entityName}: payload carries no identity field — provide id, uuid, or a complete matchBy @Unique selector`,
+      );
+    }
+    return { conditions, remaining };
+  }
+
+  /**
+   * Zero-row probe for identity incoherence: if the full AND match found no
+   * row but a row exists under ANY SINGLE identity field, the caller supplied
+   * an incoherent identity (e.g. correct id + wrong uuid) → ERR10.
+   * Called only on the error path — the extra probes are acceptable.
+   */
+  /**
+   * Multi-row safety net shared by all single-row writes: `matched` counts
+   * every row the identity WHERE would touch; `guard` raises ERR10 if >1 —
+   * the raise aborts the whole statement, so nothing is written (atomic).
+   */
+  private buildGuardCte(
+    table: string,
+    matchConds: MatchCondition[],
+    condParamStart: number,
+    matchWhere: string,
+    op: string,
+  ): string {
+    const matchObj = matchConds
+      .map((c, i) => `${escapeLiteral(c.sqlName)}, $${condParamStart + i}`)
+      .join(", ");
+    return `matched AS (
+  SELECT * FROM ${table} WHERE ${matchWhere}
+),
+guard AS (
+  SELECT public.pg_raise(
+    'ERR10',
+    ${escapeLiteral(`${op}: identity match resolved to multiple rows`)},
+    jsonb_build_object(
+      'table', ${escapeLiteral(table)},
+      'match', jsonb_build_object(${matchObj})
+    )::text
+  ) AS _raised
+  WHERE (SELECT count(*) FROM matched) > 1
+)`;
+  }
+
+  private async assertNoPartialIdentity(
+    table: string,
+    conditions: MatchCondition[],
+    entityClassName: string,
+  ): Promise<void> {
+    if (conditions.length < 2) return;
+    for (const c of conditions) {
+      const r = await this.db.query(
+        `SELECT 1 FROM ${table} WHERE ${quoteIdent(c.sqlName)} = $1 LIMIT 1`,
+        [jsValueToPgParam(c.value, c.hints)],
+      );
+      if ((r.rowCount ?? 0) > 0) {
+        throw new IdentityConflictError(
+          `Entity ${entityClassName}: identity mismatch — a row exists for ${c.sqlName}=${String(c.value)} but the supplied identity fields do not converge on it.`,
+        );
+      }
+    }
+  }
+
+  /**
    * `defaultSql` values that are safe to embed as literal SQL in a predicate:
    * quoted string literals, numeric literals, booleans, NULL. Anything else
    * (function calls like `gen_random_uuid()`, `now()`) is volatile or
@@ -1160,10 +1346,10 @@ WHERE agg.n > 0`;
   ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue, remainingUpdates } = extractMatchValue(
+    const { conditions: matchConds, remaining: remainingUpdates } = this.resolveMatchConditions(
+      meta,
       updates as Record<string, unknown>,
-      matchCol.propertyKey,
+      options.matchBy as string | readonly string[] | undefined,
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
@@ -1217,21 +1403,28 @@ WHERE agg.n > 0`;
       throw new ValidationError("update: no fields to update");
     }
 
-    const matchColMeta = meta.columns[matchCol.sqlName];
-    const matchParamIndex = values.length + 1;
-    const matchParam = jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta));
+    // Identity conditions — pushed as one contiguous param block AFTER the
+    // SET params. The same param indexes are shared by matched/t0/guard/
+    // conflict/upd (single statement).
+    const condParamStart = values.length + 1;
+    for (const c of matchConds) {
+      values.push(jsValueToPgParam(c.value, c.hints));
+    }
+    const matchWhere = identityWhere(matchConds, condParamStart);
 
     // Fetch old record for audit delta (only if audit port is provided)
     let oldRecord: Record<string, unknown> | null = null;
     if (auditable && options.audit && actor !== undefined) {
-      const oldSql = `SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
-      const oldResult = await this.db.query(oldSql, [matchParam]);
+      const oldSql = `SELECT * FROM ${table} WHERE ${identityWhere(matchConds, 1)}`;
+      const oldResult = await this.db.query(
+        oldSql,
+        matchConds.map((c) => jsValueToPgParam(c.value, c.hints)),
+      );
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
     // Build WHERE clause with optional version guard for optimistic concurrency
-    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
-    values.push(matchParam);
+    let whereClause = `WHERE ${matchWhere}`;
     if (expectedVersion !== null && versionCol) {
       const versionParamIndex = values.length + 1;
       values.push(expectedVersion);
@@ -1266,8 +1459,21 @@ WHERE agg.n > 0`;
 
     const ret = buildReturningClause(entity, options.returning);
     let sql: string;
+
+    // Multi-row safety net: `matched` counts every row the identity WHERE
+    // would touch. If a selector somehow resolves to >1 row (metamodel bug,
+    // race, enforcement bypassed upstream) `guard` raises ERR10 — the raise
+    // aborts the whole statement so nothing is written (atomic).
+    const guardCte = this.buildGuardCte(table, matchConds, condParamStart, matchWhere, "update");
+
     if (uniquePredicates.length === 0) {
-      sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
+      sql = `WITH ${guardCte},
+upd AS (
+  UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause}
+    AND NOT EXISTS (SELECT 1 FROM guard)
+  ${ret.clause}
+)
+SELECT * FROM upd`;
     } else {
       const uuidSel = meta.columns["uuid"] ? `t.${quoteIdent("uuid")}` : "NULL";
       const deletedAtCol = Object.values(meta.columns).find(
@@ -1289,20 +1495,21 @@ WHERE agg.n > 0`;
       // `t0` is the target row ONLY when it passes the version guard —
       // `conflict` derives FROM t0, so a stale/vanished target yields an
       // empty conflict set: no raise fires, rowCount=0 falls into the
-      // existing ERR01/ERR03 disambiguation (ERR01 wins over ERR04/ERR05).
+      // existing ERR01/ERR03/ERR10 disambiguation (ERR01 wins over ERR04/ERR05).
       const t0Guard =
         expectedVersion !== null && versionCol
           ? ` AND ${quoteIdent(versionCol.sqlName)} = $${values.length}`
           : "";
-      sql = `WITH t0 AS (
-  SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}${t0Guard}
+      sql = `WITH ${guardCte},
+t0 AS (
+  SELECT * FROM matched WHERE 1=1${t0Guard}
 ),
 conflict AS (
   SELECT ${uuidSel} AS c_uuid, ${deletedSel} AS c_deleted_at,
          CASE ${constraintCase} END AS c_constraint,
          CASE ${keysCase} END AS c_keys
   FROM t0, ${table} t
-  WHERE t.${quoteIdent(matchCol.sqlName)} IS DISTINCT FROM $${matchParamIndex}
+  WHERE ${identitySelfExclusion(matchConds, condParamStart, "t")}
     AND (${whereOr})
   LIMIT 1
 ),
@@ -1331,10 +1538,14 @@ SELECT * FROM upd`;
 
     if (result.rowCount === 0) {
       if (expectedVersion !== null && versionCol) {
-        // Auditable entity with version guard — disambiguate ERR01 (version mismatch) vs ERR03 (row vanished)
-        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+        // Auditable entity with version guard — disambiguate ERR01 (version mismatch) vs ERR03 (row vanished) vs ERR10 (identity incoherence)
+        await disambiguateZeroRows(this.db, table, matchConds, meta.entityClassName, expectedVersion, versionCol.sqlName);
       }
-      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
+      // Non-auditable: still probe partial identity before declaring 404
+      await this.assertNoPartialIdentity(table, matchConds, meta.entityClassName);
+      throw new NotFoundError(
+        `No ${table} found with ${matchConds.map((c) => `${c.sqlName} = ${String(c.value)}`).join(" AND ")}`,
+      );
     }
 
     const updatedRaw = result.rows[0] as Record<string, unknown>;
@@ -1390,8 +1601,11 @@ SELECT * FROM upd`;
   ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { conditions: matchConds } = this.resolveMatchConditions(
+      meta,
+      match as Record<string, unknown>,
+      options.matchBy as string | readonly string[] | undefined,
+    );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
@@ -1399,7 +1613,7 @@ SELECT * FROM upd`;
 
     // Optimistic concurrency: extract version from match payload for auditable entities
     const versionCol = findVersionColumn(meta);
-    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
     const now = new Date();
@@ -1431,21 +1645,25 @@ SELECT * FROM upd`;
       setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
-    const matchColMeta = meta.columns[matchCol.sqlName];
-    const matchParamIndex = values.length + 1;
-    const matchParam = jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta));
+    const condParamStart = values.length + 1;
+    for (const c of matchConds) {
+      values.push(jsValueToPgParam(c.value, c.hints));
+    }
+    const matchWhere = identityWhere(matchConds, condParamStart);
 
     // Fetch old record for audit delta
     let oldRecord: Record<string, unknown> | null = null;
     if (auditable && options.audit && actor !== undefined) {
-      const oldSql = `SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
-      const oldResult = await this.db.query(oldSql, [matchParam]);
+      const oldSql = `SELECT * FROM ${table} WHERE ${identityWhere(matchConds, 1)}`;
+      const oldResult = await this.db.query(
+        oldSql,
+        matchConds.map((c) => jsValueToPgParam(c.value, c.hints)),
+      );
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
     // Build WHERE clause with optional version guard for optimistic concurrency
-    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
-    values.push(matchParam);
+    let whereClause = `WHERE ${matchWhere}`;
     if (expectedVersion !== null && versionCol) {
       const versionParamIndex = values.length + 1;
       values.push(expectedVersion);
@@ -1453,14 +1671,23 @@ SELECT * FROM upd`;
     }
 
     const ret = buildReturningClause(entity, options.returning);
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
+    const sql = `WITH ${this.buildGuardCte(table, matchConds, condParamStart, matchWhere, "delete")},
+w AS (
+  UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause}
+    AND NOT EXISTS (SELECT 1 FROM guard)
+  ${ret.clause}
+)
+SELECT * FROM w`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
       if (expectedVersion !== null && versionCol) {
-        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+        await disambiguateZeroRows(this.db, table, matchConds, meta.entityClassName, expectedVersion, versionCol.sqlName);
       }
-      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
+      await this.assertNoPartialIdentity(table, matchConds, meta.entityClassName);
+      throw new NotFoundError(
+        `No ${table} found with ${matchConds.map((c) => `${c.sqlName} = ${String(c.value)}`).join(" AND ")}`,
+      );
     }
 
     const deletedRaw = result.rows[0] as Record<string, unknown>;
@@ -1517,8 +1744,11 @@ SELECT * FROM upd`;
   ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { conditions: matchConds } = this.resolveMatchConditions(
+      meta,
+      match as Record<string, unknown>,
+      options.matchBy as string | readonly string[] | undefined,
+    );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
@@ -1526,7 +1756,7 @@ SELECT * FROM upd`;
 
     // Optimistic concurrency: extract version from match payload for auditable entities
     const versionCol = findVersionColumn(meta);
-    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
     const now = new Date();
@@ -1556,21 +1786,25 @@ SELECT * FROM upd`;
       setClauses.push(`${quoteIdent(versionCol.sqlName)} = ${quoteIdent(versionCol.sqlName)} + 1`);
     }
 
-    const matchColMeta = meta.columns[matchCol.sqlName];
-    const matchParamIndex = values.length + 1;
-    const matchParam = jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta));
+    const condParamStart = values.length + 1;
+    for (const c of matchConds) {
+      values.push(jsValueToPgParam(c.value, c.hints));
+    }
+    const matchWhere = identityWhere(matchConds, condParamStart);
 
     // Fetch old record for audit delta
     let oldRecord: Record<string, unknown> | null = null;
     if (auditable && options.audit && actor !== undefined) {
-      const oldSql = `SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
-      const oldResult = await this.db.query(oldSql, [matchParam]);
+      const oldSql = `SELECT * FROM ${table} WHERE ${identityWhere(matchConds, 1)}`;
+      const oldResult = await this.db.query(
+        oldSql,
+        matchConds.map((c) => jsValueToPgParam(c.value, c.hints)),
+      );
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
     // Build WHERE clause with optional version guard for optimistic concurrency
-    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}`;
-    values.push(matchParam);
+    let whereClause = `WHERE ${matchWhere}`;
     if (expectedVersion !== null && versionCol) {
       const versionParamIndex = values.length + 1;
       values.push(expectedVersion);
@@ -1578,14 +1812,23 @@ SELECT * FROM upd`;
     }
 
     const ret = buildReturningClause(entity, options.returning);
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
+    const sql = `WITH ${this.buildGuardCte(table, matchConds, condParamStart, matchWhere, "restore")},
+w AS (
+  UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause}
+    AND NOT EXISTS (SELECT 1 FROM guard)
+  ${ret.clause}
+)
+SELECT * FROM w`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
       if (expectedVersion !== null && versionCol) {
-        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+        await disambiguateZeroRows(this.db, table, matchConds, meta.entityClassName, expectedVersion, versionCol.sqlName);
       }
-      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
+      await this.assertNoPartialIdentity(table, matchConds, meta.entityClassName);
+      throw new NotFoundError(
+        `No ${table} found with ${matchConds.map((c) => `${c.sqlName} = ${String(c.value)}`).join(" AND ")}`,
+      );
     }
 
     const restoredRaw = result.rows[0] as Record<string, unknown>;
@@ -1642,44 +1885,57 @@ SELECT * FROM upd`;
   ): Promise<TResult> {
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const { matchValue, remainingUpdates: remainingMatch } = extractMatchValue(match as Record<string, unknown>, matchCol.propertyKey);
+    const { conditions: matchConds } = this.resolveMatchConditions(
+      meta,
+      match as Record<string, unknown>,
+      options.matchBy as string | readonly string[] | undefined,
+    );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
 
     // Optimistic concurrency: extract version from match payload for auditable entities
     const versionCol = findVersionColumn(meta);
-    const versionExtract = extractVersion(remainingMatch, versionCol, meta.entityClassName);
+    const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
-    const matchColMeta = meta.columns[matchCol.sqlName];
-    const matchParam = jsValueToPgParam(matchValue, columnHintsFromMetaColumn(matchColMeta));
+    const values: unknown[] = matchConds.map((c) =>
+      jsValueToPgParam(c.value, c.hints),
+    );
+    const matchWhere = identityWhere(matchConds, 1);
 
     // Fetch old record for audit delta before deleting
     let oldRecord: Record<string, unknown> | null = null;
     if (auditable && options.audit && actor !== undefined) {
-      const oldSql = `SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
-      const oldResult = await this.db.query(oldSql, [matchParam]);
+      const oldSql = `SELECT * FROM ${table} WHERE ${matchWhere}`;
+      const oldResult = await this.db.query(oldSql, values);
       oldRecord = (oldResult.rows[0] as Record<string, unknown>) ?? null;
     }
 
     // Build WHERE clause with optional version guard for optimistic concurrency
-    const values: unknown[] = [matchParam];
-    let whereClause = `WHERE ${quoteIdent(matchCol.sqlName)} = $1`;
+    let whereClause = `WHERE ${matchWhere}`;
     if (expectedVersion !== null && versionCol) {
       values.push(expectedVersion);
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${values.length}`;
     }
 
     const ret = buildReturningClause(entity, options.returning);
-    const sql = `DELETE FROM ${table} ${whereClause} ${ret.clause}`;
+    const sql = `WITH ${this.buildGuardCte(table, matchConds, 1, matchWhere, "hardDelete")},
+w AS (
+  DELETE FROM ${table} ${whereClause}
+    AND NOT EXISTS (SELECT 1 FROM guard)
+  ${ret.clause}
+)
+SELECT * FROM w`;
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {
       if (expectedVersion !== null && versionCol) {
-        await disambiguateZeroRows(this.db, table, matchCol.sqlName, matchParam, meta.entityClassName, expectedVersion, versionCol.sqlName);
+        await disambiguateZeroRows(this.db, table, matchConds, meta.entityClassName, expectedVersion, versionCol.sqlName);
       }
-      throw new NotFoundError(`No ${table} found with ${matchCol.sqlName} = ${String(matchValue)}`);
+      await this.assertNoPartialIdentity(table, matchConds, meta.entityClassName);
+      throw new NotFoundError(
+        `No ${table} found with ${matchConds.map((c) => `${c.sqlName} = ${String(c.value)}`).join(" AND ")}`,
+      );
     }
 
     // Write audit log (fire-and-forget) — delta is old=full record, new=empty

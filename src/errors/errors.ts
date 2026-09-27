@@ -151,3 +151,34 @@ export class BulkTimeoutError extends DalError {
     super(message);
   }
 }
+
+/**
+ * Illegal match selector on a single-row write — thrown pre-SQL when
+ * `matchBy` references a property that is not `@Unique`/`@Key`, a composite
+ * `@Unique` group is given partially, or the payload carries no identity
+ * field (`id`/`uuid`/matchBy props). The update/delete writes exactly one
+ * row by construction — an ambiguous selector is never sent to SQL.
+ *
+ * Code: `ERR09`. HTTP 422.
+ */
+export class MatchSelectorError extends DalError {
+  readonly code = DalErrorCodes.ERR09;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Incoherent or ambiguous identity — the supplied identity fields do not
+ * converge on a single row (e.g. `id`+`uuid` point at different rows), or a
+ * match would hit more than one row (in-statement `pg_raise` guard aborts
+ * the write atomically; also PG-originated in that path).
+ *
+ * Code: `ERR10`. HTTP 412.
+ */
+export class IdentityConflictError extends DalError {
+  readonly code = DalErrorCodes.ERR10;
+  constructor(message: string) {
+    super(message);
+  }
+}
