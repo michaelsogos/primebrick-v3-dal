@@ -76,56 +76,6 @@ function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
  * arrays with >1 props are rejected — bulk composite match is not
  * implemented (ERR09).
  */
-function resolveMatchColumn(
-  entity: EntityClass,
-  meta: ReturnType<typeof getEntityPersistenceMeta>,
-  matchBy: string | readonly string[] | undefined,
-): { sqlName: string; propertyKey: string } {
-  if (Array.isArray(matchBy)) {
-    if (matchBy.length !== 1) {
-      throw new MatchSelectorError(
-        `matchBy on ${meta.entityClassName}: bulk ops accept a single selector column — composite match is single-row only`,
-      );
-    }
-    matchBy = matchBy[0];
-  }
-  if (matchBy) {
-    const col = Object.values(meta.columns).find((c) => c.propertyKey === matchBy);
-    if (!col) {
-      throw new UnknownColumnError(
-        `matchBy: property '${matchBy}' is not a column of ${meta.entityClassName}`,
-      );
-    }
-    return { sqlName: col.sqlName, propertyKey: col.propertyKey };
-  }
-  const pk = findPkColumn(meta);
-  if (!pk) {
-    throw new Error(
-      `Entity ${meta.entityClassName} has no @Key() column — specify matchBy to choose the WHERE column`,
-    );
-  }
-  return pk;
-}
-
-/**
- * Extract the WHERE value from the updates object and remove it from the SET clause.
- * Used by `update` — the matchBy property serves double duty (WHERE key + not a SET column).
- */
-function extractMatchValue(
-  updates: Record<string, unknown>,
-  matchPropertyKey: string,
-): { matchValue: unknown; remainingUpdates: Record<string, unknown> } {
-  const matchValue = updates[matchPropertyKey];
-  if (matchValue === undefined) {
-    throw new MatchSelectorError(
-      `write: missing match value — property '${matchPropertyKey}' must be present in the updates/match object`,
-    );
-  }
-  const remainingUpdates = { ...updates };
-  delete remainingUpdates[matchPropertyKey];
-  return { matchValue, remainingUpdates };
-}
-
 /** A single identity condition: `WHERE <sqlName> = <param>` on the payload value. */
 interface MatchCondition {
   propertyKey: string;
@@ -776,15 +726,19 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
    * All condition props are stripped from the returned payload (a match
    * column is never a SET column in the same call).
    */
-  private resolveMatchConditions(
+  /**
+   * Pure shape resolution shared by single-row and bulk writes: validates the
+   * `matchBy` selector (each prop must be a persisted `@Unique`/`@Key` column)
+   * and expands composite `@Unique` groups to the complete prop set.
+   * Illegal selector → ERR09 (MatchSelectorError), thrown before any SQL.
+   */
+  private resolveSelectorProps(
     meta: EntityPersistenceMeta,
-    payload: Record<string, unknown>,
     matchBy: string | readonly string[] | undefined,
-  ): { conditions: MatchCondition[]; remaining: Record<string, unknown> } {
+  ): Set<string> {
     const entityName = meta.entityClassName;
     const colByProp = new Map(Object.values(meta.columns).map((c) => [c.propertyKey, c]));
     const pk = findPkColumn(meta);
-    const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
 
     const groups = this.uniqueConflictGroups(meta);
     const groupOf = new Map<string, { name: string; cols: typeof meta.columns[string][] }>();
@@ -803,12 +757,26 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       if (prop !== pk?.propertyKey && !g) {
         throw new MatchSelectorError(
           `matchBy: '${prop}' on ${entityName} is not a @Unique/@Key column — ` +
-            `single-row writes must uniquely identify exactly one row`,
+            `writes must uniquely identify the target row(s)`,
         );
       }
       if (g) for (const c of g.cols) required.add(c.propertyKey);
       else required.add(prop);
     }
+    return required;
+  }
+
+  private resolveMatchConditions(
+    meta: EntityPersistenceMeta,
+    payload: Record<string, unknown>,
+    matchBy: string | readonly string[] | undefined,
+  ): { conditions: MatchCondition[]; remaining: Record<string, unknown> } {
+    const entityName = meta.entityClassName;
+    const colByProp = new Map(Object.values(meta.columns).map((c) => [c.propertyKey, c]));
+    const pk = findPkColumn(meta);
+    const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
+
+    const required = this.resolveSelectorProps(meta, matchBy);
     for (const prop of required) {
       if (payload[prop] === undefined) {
         throw new MatchSelectorError(
@@ -840,6 +808,102 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       );
     }
     return { conditions, remaining };
+  }
+
+  /**
+   * Bulk identity resolution — same contract as `resolveMatchConditions` but
+   * applied to a homogeneous item array. Runs ONCE per operation: selector
+   * legality and group expansion come from `resolveSelectorProps`, then every
+   * required prop is verified present in EVERY item and auto-identity
+   * (`id`/`uuid`) is added only when uniformly present — a temp table is
+   * rectangular, so a heterogeneous identity shape is ERR09.
+   */
+  private resolveBulkMatchColumns(
+    meta: EntityPersistenceMeta,
+    items: Array<Record<string, unknown>>,
+    matchBy: string | readonly string[] | undefined,
+    op: string,
+  ): { sqlName: string; propertyKey: string; hints: ColumnPgPersistenceHints }[] {
+    const entityName = meta.entityClassName;
+    const colByProp = new Map(Object.values(meta.columns).map((c) => [c.propertyKey, c]));
+    const pk = findPkColumn(meta);
+    const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
+
+    const required = this.resolveSelectorProps(meta, matchBy);
+    for (const prop of required) {
+      const ix = items.findIndex((m) => m[prop] === undefined);
+      if (ix !== -1) {
+        throw new MatchSelectorError(
+          `${op} on ${entityName}: '${prop}' is required in every item (composite @Unique selector must be complete) — missing at index ${ix}`,
+        );
+      }
+    }
+    for (const prop of [pk?.propertyKey, uuidCol?.propertyKey]) {
+      if (!prop || required.has(prop)) continue;
+      const present = items.map((m) => m[prop] !== undefined);
+      if (!present.some(Boolean)) continue;
+      if (!present.every(Boolean)) {
+        const ix = present.findIndex((p) => !p);
+        throw new MatchSelectorError(
+          `${op} on ${entityName}: '${prop}' is present in some items but missing at index ${ix} — bulk identity must be uniform across the batch`,
+        );
+      }
+      required.add(prop);
+    }
+    if (required.size === 0) {
+      throw new MatchSelectorError(
+        `${op} on ${entityName}: items carry no identity field — provide id, uuid, or a complete matchBy @Unique selector`,
+      );
+    }
+    return [...required].map((prop) => {
+      const c = colByProp.get(prop)!;
+      return { sqlName: c.sqlName, propertyKey: prop, hints: columnHintsFromMetaColumn(c) };
+    });
+  }
+
+  /** `l.a = r.a AND l.b = r.b` join predicate between two aliased relations over the identity columns. */
+  private bulkJoinPredicate(left: string, right: string, matchCols: { sqlName: string }[]): string {
+    return matchCols
+      .map((c) => `${left}.${quoteIdent(c.sqlName)} = ${right}.${quoteIdent(c.sqlName)}`)
+      .join(" AND ");
+  }
+
+  /**
+   * Ambiguity guard for bulk writes: any single tmp item matching more than
+   * one target row means the identity is not unique in practice → one
+   * pg_raise ERR10 with the offending `row_ix` list, aborting the whole
+   * transaction before any write. Set-based — single aggregate join.
+   */
+  private bulkAmbiguousSql(
+    meta: EntityPersistenceMeta,
+    table: string,
+    matchCols: { sqlName: string }[],
+    tmpName: string,
+    op: string,
+  ): string {
+    const join = this.bulkJoinPredicate("t", "tmp", matchCols);
+    return `WITH dup AS (
+  SELECT tmp.row_ix, count(*) AS hits
+  FROM ${quoteIdent(tmpName)} tmp
+  JOIN ${table} t ON ${join}
+  GROUP BY tmp.row_ix
+  HAVING count(*) > 1
+),
+det AS (
+  SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) AS rows
+  FROM (SELECT row_ix, hits FROM dup ORDER BY row_ix LIMIT 10) x
+)
+SELECT public.pg_raise(
+  'ERR10',
+  ${escapeLiteral(`${op}: ambiguous identity — item(s) matched multiple rows on ${meta.entityClassName}`)},
+  jsonb_build_object(
+    'entity', ${escapeLiteral(meta.entityClassName)},
+    'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
+    'rows', det.rows
+  )::text
+)
+FROM det
+WHERE EXISTS (SELECT 1 FROM dup)`;
   }
 
   /**
@@ -1089,34 +1153,57 @@ guard AS (
   private bulkStaleDiagnoseSql(
     meta: EntityPersistenceMeta,
     table: string,
-    matchCol: { sqlName: string },
+    matchCols: { sqlName: string }[],
     tmpName: string,
     versionColSqlName: string,
     op: string,
   ): string {
-    const m = quoteIdent(matchCol.sqlName);
+    const pk = findPkColumn(meta);
+    const joinPred = this.bulkJoinPredicate("t", "tmp", matchCols);
     const v = quoteIdent(versionColSqlName);
+    const pkSql = pk ? quoteIdent(pk.sqlName) : quoteIdent(matchCols[0].sqlName);
+    // Partial-identity probes (ERR10 classification): only evaluated for tmp
+    // rows that already failed the full-identity JOIN — i.e. a row exists for
+    // one identity field but not the AND conjunction → incoherent identity.
+    const probeCols = matchCols.length > 1 ? matchCols : [];
+    const probeSelects = probeCols
+      .map(
+        (c, i) =>
+          `EXISTS(SELECT 1 FROM ${table} p${i} WHERE p${i}.${quoteIdent(c.sqlName)} = tmp.${quoteIdent(c.sqlName)}) AS s_seen_${i}`,
+      )
+      .join(",\n         ");
+    const anySeen = probeCols.map((_, i) => `s_seen_${i}`).join(" OR ");
+    const inputCols = matchCols
+      .map((c) => `'${c.sqlName}', tmp.${quoteIdent(c.sqlName)}`)
+      .join(", ");
+    const perRowCode = probeCols.length
+      ? `CASE WHEN s_vanished AND (${anySeen}) THEN 'ERR10' WHEN s_vanished THEN 'ERR03' ELSE 'ERR01' END`
+      : `CASE WHEN s_vanished THEN 'ERR03' ELSE 'ERR01' END`;
+    const batchCode = probeCols.length
+      ? `CASE WHEN bool_or(s_vanished AND (${anySeen})) THEN 'ERR10' WHEN bool_and(s_vanished) THEN 'ERR03' ELSE 'ERR01' END`
+      : `CASE WHEN bool_and(s_vanished) THEN 'ERR03' ELSE 'ERR01' END`;
     return `WITH st AS (
-  SELECT tmp.${m} AS s_match, t.${quoteIdent("uuid")} AS s_uuid,
+  SELECT tmp.row_ix AS s_ix, jsonb_build_object(${inputCols}) AS s_match,
+         t.${pkSql} AS s_pk,
          t.${v} AS s_actual, tmp.expected_version AS s_expected,
-         (t.${m} IS NULL) AS s_vanished
+         (t.${pkSql} IS NULL) AS s_vanished${probeSelects ? ",\n         " + probeSelects : ""}
   FROM ${quoteIdent(tmpName)} tmp
-  LEFT JOIN ${table} t ON t.${m} = tmp.${m}
-  WHERE t.${m} IS NULL OR t.${v} IS DISTINCT FROM tmp.expected_version
+  LEFT JOIN ${table} t ON ${joinPred}
+  WHERE t.${pkSql} IS NULL OR t.${v} IS DISTINCT FROM tmp.expected_version
 ),
-agg AS (SELECT count(*) AS n, bool_and(s_vanished) AS all_vanished FROM st),
+agg AS (SELECT count(*) AS n, ${batchCode} AS code FROM st),
 det AS (
   SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) AS rows
   FROM (
-    SELECT s_uuid AS uuid, s_match AS ${quoteIdent(`input_${matchCol.sqlName}`)},
+    SELECT s_ix AS row_ix, s_pk AS pk, s_match AS match,
            s_expected AS expected_version, s_actual AS actual_version,
            s_vanished AS vanished,
-           CASE WHEN s_vanished THEN 'ERR03' ELSE 'ERR01' END AS code
-    FROM st LIMIT 10
+           ${perRowCode} AS code
+    FROM st ORDER BY s_ix LIMIT 10
   ) x
 )
 SELECT public.pg_raise(
-  CASE WHEN agg.all_vanished THEN 'ERR03' ELSE 'ERR01' END,
+  agg.code,
   ${escapeLiteral(`${op}: stale or missing rows on ${meta.entityClassName}`)},
   jsonb_build_object(
     'entity', ${escapeLiteral(meta.entityClassName)},
@@ -2478,23 +2565,16 @@ WHERE agg.n > 0`;
     if (matches.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const matchColMeta = meta.columns[matchCol.sqlName];
+    const matchCols = this.resolveBulkMatchColumns(
+      meta,
+      matches as Array<Record<string, unknown>>,
+      options.matchBy,
+      "deleteMany",
+    );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
-
-    // Extract match values from each match object
-    const matchValues: unknown[] = matches.map((m) => {
-      const v = (m as Record<string, unknown>)[matchCol.propertyKey];
-      if (v === undefined) {
-        throw new ValidationError(
-          `deleteMany: missing match value — property '${matchCol.propertyKey}' must be present in every match object`,
-        );
-      }
-      return jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta));
-    });
 
     const now = new Date();
 
@@ -2510,39 +2590,40 @@ WHERE agg.n > 0`;
     const versionGuard = this.extractExpectedVersions(
       meta,
       matches as Array<Record<string, unknown>>,
-      matchCol.propertyKey,
+      matchCols[0].propertyKey,
       "deleteMany",
     );
 
     // TEMP TABLE strategy (same as updateMany): stream match keys into a temp
     // table, then a single UPDATE ... FROM — a JOIN beats ANY($n::[]) and has
     // no parameter-count ceiling (~65535 limit of ANY/IN does not apply).
-    //
-    // TODO: no optimistic concurrency control — like updateMany, deleteMany
-    // does NOT verify `version`. To add it: include `expected_version` in the
-    // temp table, add `AND ${table}.version = tmp.expected_version` to the
-    // UPDATE WHERE, then diagnose stale rows with a same-transaction SELECT
-    // against the temp table (`LEFT JOIN t ON match AND version` → rows with
-    // no match are stale/vanished) and roll back all-or-nothing.
     const { client, deadline } = await this.bulkBegin(options as BulkOptions);
     try {
-      // 1. Temp table: match column only
-      const matchPgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
+      // 1. Temp table: row_ix + all identity columns (+ expected_version)
       const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const tmpColDefs = matchCols.map(
+        (c) => `${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`,
+      );
       await client.query(
-        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}` +
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (row_ix bigint, ${tmpColDefs.join(", ")}` +
         `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
       );
 
       // 2. Batch INSERT match keys (+ expected_version) into temp table
-      const batchSz = autoBatchSize(versionGuard.guard ? 2 : 1);
-      for (let i = 0; i < matchValues.length; i += batchSz) {
-        const batch = matchValues.slice(i, i + batchSz);
+      const batchSz = autoBatchSize(matchCols.length + 1 + (versionGuard.guard ? 1 : 0));
+      const tmpColsSql = matchCols.map((c) => quoteIdent(c.sqlName)).join(", ");
+      for (let i = 0; i < matches.length; i += batchSz) {
+        const batch = matches.slice(i, i + batchSz);
         const values: unknown[] = [];
         const tuples: string[] = [];
-        for (const [bi, v] of batch.entries()) {
-          values.push(v);
+        for (const [bi, m] of batch.entries()) {
+          const rec = m as Record<string, unknown>;
+          values.push(i + bi);
           const ph = [`$${values.length}`];
+          for (const c of matchCols) {
+            values.push(jsValueToPgParam(rec[c.propertyKey], c.hints));
+            ph.push(`$${values.length}`);
+          }
           if (versionGuard.guard) {
             values.push(versionGuard.versions[i + bi]);
             ph.push(`$${values.length}`);
@@ -2550,7 +2631,7 @@ WHERE agg.n > 0`;
           tuples.push(`(${ph.join(", ")})`);
         }
         await client.query(
-          `INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}` +
+          `INSERT INTO ${quoteIdent(tmpName)} (row_ix, ${tmpColsSql}` +
           `${versionGuard.guard ? ", expected_version" : ""}) VALUES ${tuples.join(", ")}`,
           values,
         );
@@ -2589,25 +2670,29 @@ WHERE agg.n > 0`;
           `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
           `SELECT t.* FROM ${table} t ` +
           `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
-          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+          `ON ${this.bulkJoinPredicate("t", "tmp", matchCols)}`,
         );
       }
 
+      // Ambiguity guard — one set-based aggregate; any tmp item matching >1
+      // row raises ERR10 and aborts the whole transaction before any write.
+      await client.query(this.bulkAmbiguousSql(meta, table, matchCols, tmpName, "deleteMany"));
+
       // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
       // from the command tag.
-      // Version guard pre-check: stale/vanished rows → one pg_raise
-      // (ERR01, or ERR03 when all vanished), aborting the whole transaction
-      // before any write.
+      // Version guard pre-check: stale/vanished/incoherent rows → one pg_raise
+      // (ERR01, ERR03 when all vanished, ERR10 on incoherent identity),
+      // aborting the whole transaction before any write.
       if (versionGuard.guard) {
         await client.query(
-          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "deleteMany"),
+          this.bulkStaleDiagnoseSql(meta, table, matchCols, tmpName, versionGuard.versionColSqlName, "deleteMany"),
         );
         this.assertBulkAlive(deadline, "deleteMany");
       }
 
       const sql =
         `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
-        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        `WHERE ${this.bulkJoinPredicate(table, "tmp", matchCols)}` +
         (versionGuard.guard && versionCol
           ? ` AND ${table}.${quoteIdent(versionCol.sqlName)} = tmp.expected_version`
           : "");
@@ -2645,7 +2730,7 @@ WHERE agg.n > 0`;
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
-          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
         await client.query(auditSql, [now, actor]);
       }
 
@@ -2679,27 +2764,21 @@ WHERE agg.n > 0`;
     if (matches.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
-    const matchColMeta = meta.columns[matchCol.sqlName];
+    const matchCols = this.resolveBulkMatchColumns(
+      meta,
+      matches as Array<Record<string, unknown>>,
+      options.matchBy,
+      "restoreMany",
+    );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
 
-    const matchValues: unknown[] = matches.map((m) => {
-      const v = (m as Record<string, unknown>)[matchCol.propertyKey];
-      if (v === undefined) {
-        throw new ValidationError(
-          `restoreMany: missing match value — property '${matchCol.propertyKey}' must be present in every match object`,
-        );
-      }
-      return jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta));
-    });
-
     const versionGuard = this.extractExpectedVersions(
       meta,
       matches as Array<Record<string, unknown>>,
-      matchCol.propertyKey,
+      matchCols[0].propertyKey,
       "restoreMany",
     );
 
@@ -2712,21 +2791,29 @@ WHERE agg.n > 0`;
 
     const { client, deadline } = await this.bulkBegin(options);
     try {
-      const matchPgType = effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta));
       const tmpName = `tmp_restore_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const tmpColDefs = matchCols.map(
+        (c) => `${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`,
+      );
       await client.query(
-        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)} ${matchPgType}` +
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (row_ix bigint, ${tmpColDefs.join(", ")}` +
         `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
       );
 
-      const batchSz = autoBatchSize(versionGuard.guard ? 2 : 1);
-      for (let i = 0; i < matchValues.length; i += batchSz) {
-        const batch = matchValues.slice(i, i + batchSz);
+      const batchSz = autoBatchSize(matchCols.length + 1 + (versionGuard.guard ? 1 : 0));
+      const tmpColsSql = matchCols.map((c) => quoteIdent(c.sqlName)).join(", ");
+      for (let i = 0; i < matches.length; i += batchSz) {
+        const batch = matches.slice(i, i + batchSz);
         const values: unknown[] = [];
         const tuples: string[] = [];
-        for (const [bi, v] of batch.entries()) {
-          values.push(v);
+        for (const [bi, m] of batch.entries()) {
+          const rec = m as Record<string, unknown>;
+          values.push(i + bi);
           const ph = [`$${values.length}`];
+          for (const c of matchCols) {
+            values.push(jsValueToPgParam(rec[c.propertyKey], c.hints));
+            ph.push(`$${values.length}`);
+          }
           if (versionGuard.guard) {
             values.push(versionGuard.versions[i + bi]);
             ph.push(`$${values.length}`);
@@ -2734,7 +2821,7 @@ WHERE agg.n > 0`;
           tuples.push(`(${ph.join(", ")})`);
         }
         await client.query(
-          `INSERT INTO ${quoteIdent(tmpName)} (${quoteIdent(matchCol.sqlName)}` +
+          `INSERT INTO ${quoteIdent(tmpName)} (row_ix, ${tmpColsSql}` +
           `${versionGuard.guard ? ", expected_version" : ""}) VALUES ${tuples.join(", ")}`,
           values,
         );
@@ -2767,21 +2854,25 @@ WHERE agg.n > 0`;
           `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
           `SELECT t.* FROM ${table} t ` +
           `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
-          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+          `ON ${this.bulkJoinPredicate("t", "tmp", matchCols)}`,
         );
       }
 
-      // Version guard pre-check (same-tx) — stale/vanished → one pg_raise.
+      // Ambiguity guard — any tmp item matching >1 row raises ERR10, aborting
+      // the whole transaction before any write.
+      await client.query(this.bulkAmbiguousSql(meta, table, matchCols, tmpName, "restoreMany"));
+
+      // Version guard pre-check (same-tx) — stale/vanished/incoherent → one pg_raise.
       if (versionGuard.guard) {
         await client.query(
-          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "restoreMany"),
+          this.bulkStaleDiagnoseSql(meta, table, matchCols, tmpName, versionGuard.versionColSqlName, "restoreMany"),
         );
         this.assertBulkAlive(deadline, "restoreMany");
       }
 
       const sql =
         `UPDATE ${table} SET ${setClauses.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
-        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        `WHERE ${this.bulkJoinPredicate(table, "tmp", matchCols)}` +
         (versionGuard.guard && versionCol
           ? ` AND ${table}.${quoteIdent(versionCol.sqlName)} = tmp.expected_version`
           : "");
@@ -2814,7 +2905,7 @@ WHERE agg.n > 0`;
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
-          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
         await client.query(auditSql, [now, actor]);
       }
 
@@ -2855,7 +2946,13 @@ WHERE agg.n > 0`;
     if (updates.length === 0) return { received: 0, affected: 0 };
     const meta = getEntityPersistenceMeta(entity);
     const table = getQualifiedTableName(entity);
-    const matchCol = resolveMatchColumn(entity, meta, options.matchBy as string | undefined);
+    const matchCols = this.resolveBulkMatchColumns(
+      meta,
+      updates as Array<Record<string, unknown>>,
+      options.matchBy,
+      "updateMany",
+    );
+    const matchProps = new Set(matchCols.map((c) => c.propertyKey));
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
 
@@ -2864,20 +2961,20 @@ WHERE agg.n > 0`;
     const versionGuard = this.extractExpectedVersions(
       meta,
       updates as Array<Record<string, unknown>>,
-      matchCol.propertyKey,
+      matchCols[0].propertyKey,
       "updateMany",
     );
 
-    // Determine the update columns from the first row (excluding the match key
-    // and `version`, which is the concurrency guard — never a SET column).
+    // Determine the update columns from the first row (excluding all identity
+    // props and `version`, which is the concurrency guard — never a SET column).
     const first = updates[0] as Record<string, unknown>;
     const versionProp = versionGuard.guard ? findVersionColumn(meta)!.propertyKey : "\0";
     const updateKeys = Object.keys(first).filter(
-      (k) => k !== matchCol.propertyKey && k !== versionProp && first[k] !== undefined,
+      (k) => !matchProps.has(k) && k !== versionProp && first[k] !== undefined,
     );
 
     if (updateKeys.length === 0) {
-      throw new ValidationError(`updateMany: no columns to update (only match key '${matchCol.propertyKey}' provided?)`);
+      throw new ValidationError(`updateMany: no columns to update (only identity props provided?)`);
     }
 
     for (const k of updateKeys) {
@@ -2902,11 +2999,11 @@ WHERE agg.n > 0`;
     const { client, deadline } = await this.bulkBegin(options);
     try {
 
-      // 1. Create temp table — columns must include PG types
-      const tmpColDefs: string[] = [];
-      const matchColMeta = Object.values(meta.columns).find((c) => c.propertyKey === matchCol.propertyKey);
-      const matchPgType = matchColMeta ? effectivePgStorageType(columnHintsFromMetaColumn(matchColMeta)) : "text";
-      tmpColDefs.push(`${quoteIdent(matchCol.sqlName)} ${matchPgType}`);
+      // 1. Create temp table — row_ix + all identity columns + update cols
+      const tmpColDefs: string[] = ["row_ix bigint"];
+      for (const c of matchCols) {
+        tmpColDefs.push(`${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`);
+      }
 
       for (const k of updateKeys) {
         const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
@@ -2933,7 +3030,7 @@ WHERE agg.n > 0`;
 
       // 2. Batch INSERT into temp table
       const now = new Date();
-      const allTmpKeys = [matchCol.propertyKey, ...updateKeys];
+      const allTmpKeys = [...matchCols.map((c) => c.propertyKey), ...updateKeys];
       if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
         const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
@@ -2941,7 +3038,7 @@ WHERE agg.n > 0`;
         if (updatedByCol) allTmpKeys.push(updatedByCol.propertyKey);
       }
 
-      const batchSz = options.batchSize ?? autoBatchSize(allTmpKeys.length + (versionGuard.guard ? 1 : 0));
+      const batchSz = options.batchSize ?? autoBatchSize(allTmpKeys.length + 1 + (versionGuard.guard ? 1 : 0));
       for (let i = 0; i < updates.length; i += batchSz) {
         const batch = updates.slice(i, i + batchSz);
         const values: unknown[] = [];
@@ -2950,17 +3047,13 @@ WHERE agg.n > 0`;
         for (const [bi, row] of batch.entries()) {
           const rec = row as Record<string, unknown>;
           const params: string[] = [];
+          values.push(i + bi);
+          params.push(`$${values.length}`);
           for (const k of allTmpKeys) {
             const sqlName = getColumnName(entity, k);
             const colMeta = meta.columns[sqlName];
-            if (k === matchCol.propertyKey) {
-              const v = rec[matchCol.propertyKey];
-              if (v === undefined) {
-                throw new ValidationError(
-                  `updateMany: missing match value — property '${matchCol.propertyKey}' must be present in every row`,
-                );
-              }
-              values.push(jsValueToPgParam(v, columnHintsFromMetaColumn(matchColMeta!)));
+            if (matchProps.has(k)) {
+              values.push(jsValueToPgParam(rec[k], matchCols.find((c) => c.propertyKey === k)!.hints));
             } else if (auditable && actor !== undefined) {
               const col = Object.values(meta.columns).find((c) => c.propertyKey === k);
               if (col?.auditableType === AuditableFieldType.UPDATED_AT) {
@@ -2986,7 +3079,7 @@ WHERE agg.n > 0`;
           tuples.push(`(${params.join(", ")})`);
         }
 
-        const tmpColsSql = allTmpKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ")
+        const tmpColsSql = "row_ix, " + allTmpKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ")
           + (versionGuard.guard ? `, ${quoteIdent("expected_version")}` : "");
         await client.query(`INSERT INTO ${quoteIdent(tmpName)} (${tmpColsSql}) VALUES ${tuples.join(", ")}`, values);
         this.assertBulkAlive(deadline, "updateMany");
@@ -3012,24 +3105,29 @@ WHERE agg.n > 0`;
           `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
           `SELECT t.* FROM ${table} t ` +
           `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
-          `ON t.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}`,
+          `ON ${this.bulkJoinPredicate("t", "tmp", matchCols)}`,
         );
       }
 
+      // Ambiguity guard — any tmp item matching >1 row raises ERR10, aborting
+      // the whole transaction before any write.
+      await client.query(this.bulkAmbiguousSql(meta, table, matchCols, tmpName, "updateMany"));
+
       // No RETURNING — bulk ops return nothing (204 contract); rowCount comes
       // from the command tag.
-      // Version guard pre-check (same-tx): stale/vanished rows → one pg_raise
-      // (ERR01, or ERR03 when all vanished) before any write happens.
+      // Version guard pre-check (same-tx): stale/vanished/incoherent rows →
+      // one pg_raise (ERR01, ERR03 all-vanished, ERR10 incoherent) before any
+      // write happens.
       if (versionGuard.guard) {
         await client.query(
-          this.bulkStaleDiagnoseSql(meta, table, matchCol, tmpName, versionGuard.versionColSqlName, "updateMany"),
+          this.bulkStaleDiagnoseSql(meta, table, matchCols, tmpName, versionGuard.versionColSqlName, "updateMany"),
         );
         this.assertBulkAlive(deadline, "updateMany");
       }
 
       const updateSql =
         `UPDATE ${table} SET ${setCols.join(", ")} FROM ${quoteIdent(tmpName)} tmp ` +
-        `WHERE ${table}.${quoteIdent(matchCol.sqlName)} = tmp.${quoteIdent(matchCol.sqlName)}` +
+        `WHERE ${this.bulkJoinPredicate(table, "tmp", matchCols)}` +
         (versionGuard.guard ? ` AND ${table}.${quoteIdent(versionGuard.versionColSqlName)} = tmp.expected_version` : "");
       const result = await client.query(updateSql);
 
@@ -3074,7 +3172,7 @@ WHERE agg.n > 0`;
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
-          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON u.${quoteIdent(matchCol.sqlName)} = o.${quoteIdent(matchCol.sqlName)}`;
+          `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
 
         await client.query(auditSql, [now, actor]);
       }

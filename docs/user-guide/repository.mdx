@@ -297,7 +297,7 @@ await dal.hardDelete(CustomerEntity, { uuid: "550e8400-…", version: 3 }, { act
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `matchBy` | `keyof TEntity & string` or `ReadonlyArray<keyof TEntity & string>` | auto `id`/`uuid` from payload | Alternate `@Unique` selector — every prop must be unique; composite groups require all group props in the payload. Single-row ops only; `*Many` still take a single column. |
+| `matchBy` | `keyof TEntity & string` or `ReadonlyArray<keyof TEntity & string>` | auto `id`/`uuid` from payload | Alternate `@Unique` selector — every prop must be unique; composite groups require all group props in the payload. Same rules for single-row and `*Many` ops. |
 
 ## Bulk operations
 
@@ -311,6 +311,16 @@ All `*Many` ops share the same contract:
 - **`BulkResult` return** — `{ received, affected }`. `received` is the row
   count submitted; `affected` is the count actually written. On success they
   are always equal (a mismatch would have rolled back).
+- **Same identity contract as single-row writes** — `id`/`uuid` carried by
+  EVERY item are auto-matched (AND); `matchBy` accepts a prop or prop array
+  of `@Unique` selectors (composite groups require all group props in every
+  item). The identity must be **uniform** across the batch: an identity prop
+  present in only some items is `ERR09`. Illegal selectors are `ERR09` before
+  any SQL runs.
+- **Per-item uniqueness guard** — each temp-table item must match **at most
+  one** target row. A set-based aggregate (`GROUP BY row_ix HAVING count>1`)
+  raises `ERR10` and aborts the whole transaction before any write; the
+  `detail` lists the offending `row_ix` values. |
 - **Per-row version guard** (auditable entities) — every item must carry the
   caller-observed `version`; it lands in the temp table as `expected_version`
   and is enforced in the write join (`target.version = tmp.expected_version`).
@@ -323,6 +333,8 @@ All `*Many` ops share the same contract:
 | Row submitted without `version` | `ERR02` |
 | Row exists but `version` differs (modified meanwhile) | `ERR01` |
 | Row is gone (hard-deleted meanwhile) | `ERR03` |
+| Item identity is incoherent (e.g. `id` of row A + `uuid` of row B) | `ERR10` |
+| Item matches more than one target row | `ERR10` (pre-write guard) |
 
 ### `addMany(entity, rows, options?)`
 
@@ -344,15 +356,19 @@ const res = await dal.addMany(CustomerEntity, [
 
 ### `updateMany(entity, rows, options?)`
 
-Batched UPDATE: `UPDATE target SET ... FROM tmp WHERE target.<match> = tmp.<match>
-AND target.version = tmp.expected_version`. Atomic and SQL-injection safe.
+Batched UPDATE: `UPDATE target SET ... FROM tmp WHERE target.<id> = tmp.<id>
+AND target.<uuid> = tmp.<uuid> AND target.version = tmp.expected_version` —
+the join predicate is the AND of every identity column. Atomic and
+SQL-injection safe.
 
 ```typescript
 const res = await dal.updateMany(CustomerEntity, [
   { uuid: "uuid-1", name: "Alice 2", version: 2 },
   { uuid: "uuid-2", name: "Bob 2",   version: 2 },
-], { actor: "system", matchBy: "uuid", timeoutMs: 60_000 });
+], { actor: "system", timeoutMs: 60_000 });
 // Every row MUST include its caller-observed version.
+// uuid is auto-matched — matchBy:"uuid" is unnecessary.
+// matchBy: ["model_id", "dtype"] selects a composite @Unique group instead.
 ```
 
 ### `deleteMany(entity, matches, options?)`

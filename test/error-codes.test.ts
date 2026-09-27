@@ -520,6 +520,138 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     expect(await repo.findByUUID(SimpleTestEntity, a.uuid, { throwIfNotFound: false })).toBeNull();
   });
 
+  // ─── bulk *Many identity alignment ──────────────────────────────────
+
+  it("updateMany: uuid in every item → auto-match, no matchBy needed", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    const res = await repo.updateMany(
+      SimpleTestEntity,
+      [
+        { uuid: a.uuid, name: "A2", version: a.version },
+        { uuid: b.uuid, name: "B2", version: b.version },
+      ],
+      { actor: "u" },
+    );
+    expect(res.affected).toBe(2);
+    const rows = await repo.findAll(SimpleTestEntity);
+    expect(rows.find((r) => r.uuid === a.uuid)?.name).toBe("A2");
+    expect(rows.find((r) => r.uuid === b.uuid)?.name).toBe("B2");
+  });
+
+  it("updateMany: id+uuid coherent per item → AND-match on both columns", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const storedA = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const res = await repo.updateMany(
+      SimpleTestEntity,
+      [{ id: storedA!.id, uuid: a.uuid, name: "A2", version: a.version }],
+      { actor: "u" },
+    );
+    expect(res.affected).toBe(1);
+  });
+
+  it("updateMany: item with id of row A + uuid of row B → ERR10, whole batch rolled back", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    const storedA = await repo.findByUUID(SimpleTestEntity, a.uuid);
+    const err = await capture(
+      repo.updateMany(
+        SimpleTestEntity,
+        [
+          { id: storedA!.id, uuid: a.uuid, name: "A2", version: a.version },
+          { id: storedA!.id, uuid: b.uuid, name: "B2", version: b.version },
+        ],
+        { actor: "u" },
+      ),
+    );
+    console.log("[updateMany-incoherent] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR10");
+    const rows = await repo.findAll(SimpleTestEntity);
+    expect(rows.find((r) => r.name === "A2")).toBeUndefined();
+    expect(rows.find((r) => r.name === "B2")).toBeUndefined();
+  });
+
+  it("updateMany: heterogeneous identity (uuid in some items only) → ERR09 pre-SQL", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    const storedB = await repo.findByUUID(SimpleTestEntity, b.uuid);
+    const err = await capture(
+      repo.updateMany(
+        SimpleTestEntity,
+        [
+          { uuid: a.uuid, name: "A2", version: a.version },
+          { id: storedB!.id, name: "B2", version: b.version },
+        ],
+        { actor: "u" },
+      ),
+    );
+    console.log("[updateMany-heterogeneous] code:", err.code, "| msg:", err.message);
+    expect(err.code).toBe("ERR09");
+  });
+
+  it("updateMany: matchBy on non-unique column → ERR09 pre-SQL, zero rows touched", async () => {
+    await repo.add(SimpleTestEntity, { name: "shared", email: "one@x.com" }, { actor: "u" });
+    await repo.add(SimpleTestEntity, { name: "shared", email: "two@x.com" }, { actor: "u" });
+    const err = await capture(
+      repo.updateMany(
+        SimpleTestEntity,
+        [{ name: "shared", description: "x", version: 1 }],
+        { actor: "u", matchBy: "name" as never },
+      ),
+    );
+    expect(err.code).toBe("ERR09");
+    const rows = await repo.findAll(SimpleTestEntity);
+    expect(rows.filter((r) => r.description === "x").length).toBe(0);
+  });
+
+  it("updateMany: composite matchBy ['grp_a','grp_b'] → matches the unique pair", async () => {
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    await repo.add(CompositeUniqueEntity, { name: "y", grp_a: "A2", grp_b: "B1" }, {});
+    const res = await repo.updateMany(
+      CompositeUniqueEntity,
+      [
+        { grp_a: "A1", grp_b: "B1", name: "x2" },
+        { grp_a: "A2", grp_b: "B1", name: "y2" },
+      ],
+      { matchBy: ["grp_a", "grp_b"] as never },
+    );
+    expect(res.affected).toBe(2);
+    const all = await repo.findAll(CompositeUniqueEntity);
+    expect(all.find((r) => r.grp_a === "A1")?.name).toBe("x2");
+    expect(all.find((r) => r.grp_a === "A2")?.name).toBe("y2");
+  });
+
+  it("updateMany: composite matchBy ['grp_a'] alone → ERR09 (group incomplete)", async () => {
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    const err = await capture(
+      repo.updateMany(
+        CompositeUniqueEntity,
+        [{ grp_a: "A1", name: "nope" }],
+        { matchBy: ["grp_a"] as never },
+      ),
+    );
+    expect(err.code).toBe("ERR09");
+  });
+
+  it("deleteMany: uuid-only items work; item missing a composite member → ERR09", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A" }, { actor: "u" });
+    const del = await repo.deleteMany(
+      SimpleTestEntity,
+      [{ uuid: a.uuid, version: a.version }],
+      { actor: "u" },
+    );
+    expect(del.affected).toBe(1);
+    await repo.add(CompositeUniqueEntity, { name: "x", grp_a: "A1", grp_b: "B1" }, {});
+    const err = await capture(
+      repo.deleteMany(
+        CompositeUniqueEntity,
+        [{ grp_a: "A1" }],
+        { matchBy: ["grp_a", "grp_b"] as never },
+      ),
+    );
+    expect(err.code).toBe("ERR09");
+  });
+
   // ─── intra-statement race — REAL two-connection concurrency ────────
 
   it("RACE: uncommitted INSERT by tx2 blocks our UPDATE write; commit → raw 23505 (CTE snapshot can't see it)", async () => {

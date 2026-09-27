@@ -119,6 +119,16 @@
   unknown/incomplete selectors → `ERR09` pre-SQL. Identity props are never SET
   columns. A `matched`/`guard` CTE aborts the statement with `ERR10` if the match
   resolves to >1 row (atomic — nothing is written).
+- **Bulk `*Many` writes share the same identity contract** — `updateMany`/`deleteMany`/
+  `restoreMany` resolve identity per item exactly like single-row ops: `id`/`uuid`
+  present in EVERY item auto-AND into the match; `matchBy` accepts a prop or prop
+  array of `@Unique` selectors (composite groups complete in every item). The
+  identity must be uniform across the batch (heterogeneous → `ERR09`). Each
+  temp-table item must match ≤1 target row — a set-based `GROUP BY row_ix`
+  ambiguity guard raises `ERR10` and aborts the transaction before any write;
+  incoherent `id`/`uuid` items are classified `ERR10` by the stale diagnose
+  (partial-identity probes only against already-failed rows — never per-item
+  queries on the happy path).
 - **`pg_raise` is a REQUIRED database function** — it must exist on every target DB
   (init SQL + `setupTestSchema`). Without it, guarded-write/conflict raises cannot fire.
 - Keep error codes stable across versions; changing a code is a breaking change.
