@@ -608,6 +608,14 @@ export class Repository {
         const constraintCase = predicates
           .map((p) => `WHEN (${p.sql}) THEN ${escapeLiteral(p.name)}`)
           .join(" ");
+        const keysCase = predicates
+          .map(
+            (p) =>
+              `WHEN (${p.sql}) THEN jsonb_build_object(${p.keyRefs
+                .map((k) => `${escapeLiteral(k.sqlName)}, ${k.ref}`)
+                .join(", ")})`,
+          )
+          .join(" ");
         sql = `WITH ins AS (
   ${insertSql}
   ON CONFLICT DO NOTHING
@@ -615,7 +623,8 @@ export class Repository {
 ),
 conflict AS (
   SELECT ${uuidSel} AS c_uuid, ${deletedSel} AS c_deleted_at,
-         CASE ${constraintCase} END AS c_constraint
+         CASE ${constraintCase} END AS c_constraint,
+         CASE ${keysCase} END AS c_keys
   FROM ${table} t
   WHERE ${whereOr}
   LIMIT 1
@@ -628,7 +637,8 @@ raised AS (
       'entity', ${escapeLiteral(meta.entityClassName)},
       'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
       'uuid', c.c_uuid::text,
-      'constraint', c.c_constraint
+      'constraint', c.c_constraint,
+      'keys', c.c_keys
     )::text
   ) AS _raised
   FROM conflict c
@@ -728,7 +738,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     meta: EntityPersistenceMeta,
     attemptedParam: Map<string, string>,
     conflictKeys: string[] | undefined,
-  ): { name: string; sql: string }[] {
+  ): { name: string; sql: string; keyRefs: { sqlName: string; ref: string }[] }[] {
     let groups = this.uniqueConflictGroups(meta);
 
     if (conflictKeys !== undefined) {
@@ -750,9 +760,10 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       }
     }
 
-    const predicates: { name: string; sql: string }[] = [];
+    const predicates: { name: string; sql: string; keyRefs: { sqlName: string; ref: string }[] }[] = [];
     for (const g of groups) {
       const refs: string[] = [];
+      const keyRefs: { sqlName: string; ref: string }[] = [];
       let bindable = true;
       for (const c of g.cols) {
         // Attempted value: payload param → constant defaultSql literal → NULL
@@ -767,9 +778,17 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
           bindable = false;
           break;
         }
-        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref}`);
+        // Standard unique indexes are NULLS DISTINCT — a NULL attempted value
+        // can never conflict. Guard at runtime (param/t0 refs) AND skip the
+        // whole group when the attempted value is statically NULL.
+        if (ref === "NULL") {
+          bindable = false;
+          break;
+        }
+        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref} AND ${ref} IS NOT NULL`);
+        keyRefs.push({ sqlName: c.sqlName, ref });
       }
-      if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND ") });
+      if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND "), keyRefs });
     }
     return predicates;
   }
@@ -818,11 +837,12 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         const ref = inPayload.has(c.propertyKey)
           ? `tmp.${quoteIdent(c.sqlName)}`
           : (this.constantDefaultSql(c.defaultSql) ?? (c.defaultSql ? undefined : "NULL"));
-        if (!ref) {
+        if (!ref || ref === "NULL") {
+          // NULLS DISTINCT semantics — a NULL attempted value never conflicts
           bindable = false;
           break;
         }
-        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref}`);
+        refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref} AND ${ref} IS NOT NULL`);
       }
       if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND "), keys: g.cols.map((c) => c.sqlName) });
     }
@@ -1178,6 +1198,7 @@ WHERE agg.n > 0`;
 
     // Add user-provided updates (version already stripped by extractVersion)
     let userFieldCount = 0;
+    const paramRefByProp = new Map<string, string>();
     for (const [key, value] of Object.entries(finalUpdates)) {
       if (value === undefined) continue;
       const sqlName = getColumnName(entity, key);
@@ -1185,8 +1206,10 @@ WHERE agg.n > 0`;
       if (!colMeta) {
         throw new UnknownColumnError(`update: unknown column/property ${key}`);
       }
-      setClauses.push(`${quoteIdent(sqlName)} = $${values.length + 1}`);
+      const ref = `$${values.length + 1}`;
+      setClauses.push(`${quoteIdent(sqlName)} = ${ref}`);
       values.push(jsValueToPgParam(value, columnHintsFromMetaColumn(colMeta)));
+      paramRefByProp.set(key, ref);
       userFieldCount++;
     }
 
@@ -1215,8 +1238,95 @@ WHERE agg.n > 0`;
       whereClause += ` AND ${quoteIdent(versionCol.sqlName)} = $${versionParamIndex}`;
     }
 
+    // Unique-conflict reporting (ERR04/ERR05) — same CTE pattern as add().
+    // Emitted ONLY when the payload writes at least one @Unique column:
+    // predicates reference the attempted value ($n for payload columns,
+    // t0.<col> — the target row's current value — for untouched columns of a
+    // partially-covered composite group). The target row is self-excluded
+    // (IS DISTINCT FROM $match). `NOT EXISTS (SELECT 1 FROM raised)` sits in
+    // the UPDATE WHERE, so the raise fires while filtering the candidate row
+    // — before any write; a stale version short-circuits to ERR01/ERR03 via
+    // the existing zero-row disambiguation below.
+    const uniquePredicates = this.uniqueConflictGroups(meta)
+      .filter((g) => g.cols.some((c) => paramRefByProp.has(c.propertyKey)))
+      .map((g) => {
+        const keyRefs = g.cols.map((c) => {
+          const ref = paramRefByProp.get(c.propertyKey) ?? `t0.${quoteIdent(c.sqlName)}`;
+          return { sqlName: c.sqlName, ref };
+        });
+        return {
+          name: g.name,
+          // NULLS DISTINCT — a NULL attempted value never conflicts
+          sql: keyRefs
+            .map((k) => `t.${quoteIdent(k.sqlName)} IS NOT DISTINCT FROM ${k.ref} AND ${k.ref} IS NOT NULL`)
+            .join(" AND "),
+          keyRefs,
+        };
+      });
+
     const ret = buildReturningClause(entity, options.returning);
-    const sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
+    let sql: string;
+    if (uniquePredicates.length === 0) {
+      sql = `UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause} ${ret.clause}`;
+    } else {
+      const uuidSel = meta.columns["uuid"] ? `t.${quoteIdent("uuid")}` : "NULL";
+      const deletedAtCol = Object.values(meta.columns).find(
+        (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+      );
+      const deletedSel = deletedAtCol ? `t.${quoteIdent(deletedAtCol.sqlName)}` : "NULL";
+      const whereOr = uniquePredicates.map((p) => `(${p.sql})`).join("\n        OR ");
+      const constraintCase = uniquePredicates
+        .map((p) => `WHEN (${p.sql}) THEN ${escapeLiteral(p.name)}`)
+        .join(" ");
+      const keysCase = uniquePredicates
+        .map(
+          (p) =>
+            `WHEN (${p.sql}) THEN jsonb_build_object(${p.keyRefs
+              .map((k) => `${escapeLiteral(k.sqlName)}, ${k.ref}`)
+              .join(", ")})`,
+        )
+        .join(" ");
+      // `t0` is the target row ONLY when it passes the version guard —
+      // `conflict` derives FROM t0, so a stale/vanished target yields an
+      // empty conflict set: no raise fires, rowCount=0 falls into the
+      // existing ERR01/ERR03 disambiguation (ERR01 wins over ERR04/ERR05).
+      const t0Guard =
+        expectedVersion !== null && versionCol
+          ? ` AND ${quoteIdent(versionCol.sqlName)} = $${values.length}`
+          : "";
+      sql = `WITH t0 AS (
+  SELECT * FROM ${table} WHERE ${quoteIdent(matchCol.sqlName)} = $${matchParamIndex}${t0Guard}
+),
+conflict AS (
+  SELECT ${uuidSel} AS c_uuid, ${deletedSel} AS c_deleted_at,
+         CASE ${constraintCase} END AS c_constraint,
+         CASE ${keysCase} END AS c_keys
+  FROM t0, ${table} t
+  WHERE t.${quoteIdent(matchCol.sqlName)} IS DISTINCT FROM $${matchParamIndex}
+    AND (${whereOr})
+  LIMIT 1
+),
+raised AS (
+  SELECT public.pg_raise(
+    CASE WHEN c.c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END,
+    ${escapeLiteral(`update: unique constraint violation on ${meta.entityClassName}`)},
+    jsonb_build_object(
+      'entity', ${escapeLiteral(meta.entityClassName)},
+      'table', ${escapeLiteral(`${meta.tableSchema}.${meta.tableName}`)},
+      'uuid', c.c_uuid::text,
+      'constraint', c.c_constraint,
+      'keys', c.c_keys
+    )::text
+  ) AS _raised
+  FROM conflict c
+),
+upd AS (
+  UPDATE ${table} SET ${setClauses.join(", ")} ${whereClause}
+    AND NOT EXISTS (SELECT 1 FROM raised)
+  ${ret.clause}
+)
+SELECT * FROM upd`;
+    }
     const result = await this.db.query(sql, values);
 
     if (result.rowCount === 0) {

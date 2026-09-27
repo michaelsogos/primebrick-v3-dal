@@ -89,6 +89,10 @@ export async function setupTestSchema(): Promise<void> {
     // Column already exists, ignore
   }
 
+  // Mutable unique column for update() ERR04/ERR05 conflict tests
+  await db.query(`ALTER TABLE dal_test_simple ADD COLUMN IF NOT EXISTS email text`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS dal_test_simple_email_idx ON dal_test_simple (email)`);
+
   // Audit table for dal_test_simple (for AuditLogEntity + tableName override tests)
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_simple_audit (

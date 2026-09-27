@@ -213,6 +213,17 @@ const updated2 = await dal.update(
 );
 ```
 
+**Unique conflicts.** When `updates` touches a column belonging to a declared
+`@Unique` group, the UPDATE statement carries a conflict CTE that checks
+whether another live/soft-deleted row already owns the attempted values —
+raising `ERR04`/`ERR05` with `detail { entity, table, uuid, constraint, keys }`
+(`keys` = the attempted unique values; composite groups include untouched
+column values read from the target row). The conflict check is gated on the
+target row passing the version guard, so `ERR01`/`ERR03` always win over a
+unique conflict. NULL attempted values never conflict (unique indexes are
+NULLS DISTINCT). The check only runs when the payload touches `@Unique`
+columns — a plain `name`-only UPDATE emits the same SQL as before.
+
 ### `delete(entity, matchValue, options?)` — soft delete
 
 Soft-delete a row: sets `deleted_at` and `deleted_by`, increments `version`.
@@ -427,6 +438,7 @@ try {
 | `ERR05` | Unique conflict(s) against **soft-deleted** rows only | 409 |
 | `ERR06` | Bulk op exceeded its wall-clock `timeoutMs` budget (rolled back) | 408 |
 | `ERR07` | PG `57014` — a statement was killed by `statement_timeout` | 500 |
+| `ERR08` | Raw `23505` on a constraint not declared as `@Unique` (manual/deferred/partial index) — signals a missing `@Unique` in metadata | 409 |
 | `NOT_FOUND` / `VALIDATION` / `UNKNOWN_COLUMN` / `MULTIPLE_ROWS` | Finder/validation failures | 404 / 400 |
 
 The DAL never emits HTTP status codes — the `@primebrick/sdk` `mapDalError`

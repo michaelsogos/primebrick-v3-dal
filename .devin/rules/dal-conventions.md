@@ -98,6 +98,17 @@
   - `ERR04`/`ERR05` — unique conflict vs live / soft-deleted row (PG `pg_raise`)
   - `BulkTimeoutError`/`ERR06` — bulk op exceeded the wall-clock budget (rolled back)
   - `ERR07` — logical code for PG `57014` `query_canceled` (statement_timeout)
+  - `ERR08` — logical code for raw PG `23505` on a constraint not declared as `@Unique`
+    (manual/deferred/partial index) — 409 with poor detail; its appearance signals a
+    missing `@Unique` in the entity metadata
+- **Unique-conflict CTEs** on `add()`/`addMany()`/`update()`: when the payload can
+  affect a declared `@Unique` group, the write statement carries a conflict CTE that
+  raises `ERR04`/`ERR05` with DETAIL `{entity, table, uuid, constraint, keys}` —
+  `keys` = the attempted unique values (for `update()`, composite groups include
+  untouched column values read from the target row). NULL attempted values never
+  conflict (standard unique indexes are NULLS DISTINCT). On `update()` the conflict
+  check is gated on the target row passing the version guard, so `ERR01`/`ERR03`
+  always win over `ERR04`/`ERR05`.
 - **`pg_raise` is a REQUIRED database function** — it must exist on every target DB
   (init SQL + `setupTestSchema`). Without it, guarded-write/conflict raises cannot fire.
 - Keep error codes stable across versions; changing a code is a breaking change.

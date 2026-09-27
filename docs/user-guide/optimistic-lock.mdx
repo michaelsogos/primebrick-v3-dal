@@ -151,10 +151,11 @@ the error originated.
 | `ERR01` | Concurrency violation — the row exists but `version` does not match | PostgreSQL (`RAISE EXCEPTION`/`pg_raise`) | 409 Conflict |
 | `ERR02` | Missing `version` field on an auditable-entity write | TypeScript (`MissingVersionError`) | 400 Bad Request |
 | `ERR03` | Record vanished — the row was hard-deleted between read and write | TypeScript (`RecordVanishedError`) / `pg_raise` in bulk | 404 Not Found |
-| `ERR04` | Unique-constraint conflict against a live row | PostgreSQL (`pg_raise`, `add`/`addMany` conflict CTE) | 409 Conflict |
+| `ERR04` | Unique-constraint conflict against a live row | PostgreSQL (`pg_raise`, `add`/`addMany`/`update` conflict CTE) | 409 Conflict |
 | `ERR05` | Unique conflict where every conflicting row is soft-deleted — restore instead | PostgreSQL (`pg_raise`) | 409 Conflict |
 | `ERR06` | Bulk operation exceeded its wall-clock budget (`BulkOptions.timeoutMs` / `DalConfig.bulkTimeoutMs`) — whole tx rolled back | TypeScript (`BulkTimeoutError`) | 408 Request Timeout |
 | `ERR07` | PG `57014` `query_canceled` — a statement was killed by `statement_timeout` | PostgreSQL `57014` → logical `ERR07` at the HTTP boundary | 500 (typed) |
+| `ERR08` | Unique violation NOT identifiable via `@Unique` metadata — a raw `23505` from a manual, deferred, or partial constraint. Signals a missing `@Unique` declaration | PostgreSQL `23505` → logical `ERR08` at the HTTP boundary | 409 Conflict |
 
 Bulk raises carry a jsonb `detail` — `{ entity, table, stale|missing|conflicts,
 rows[≤10] }` — which the HTTP boundary surfaces as `extra.issues` for the

@@ -50,6 +50,15 @@ export const DalErrorCodes = {
    * DB-unreachable).
    */
   ERR07: "ERR07",
+  /**
+   * Raw unique violation — PostgreSQL `23505` that did NOT come through the
+   * DAL conflict CTEs (i.e. a constraint not declared as `@Unique` in the
+   * entity metadata: manual indexes, deferred/partial constraints). The
+   * boundary maps `23505` to this code — poor detail, and a signal that a
+   * `@Unique` group may be missing from the entity declaration.
+   * HTTP 409.
+   */
+  ERR08: "ERR08",
 } as const;
 
 export type DalErrorCode = (typeof DalErrorCodes)[keyof typeof DalErrorCodes];
