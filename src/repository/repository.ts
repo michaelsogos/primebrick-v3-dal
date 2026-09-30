@@ -2077,7 +2077,10 @@ SELECT * FROM w`;
    * - Deletable fields reset (deleted_at=null, deleted_by=null)
    * - All other fields copied from source
    *
-   * No audit is written (matches BE behavior — clone does not audit).
+   * Writes an audit row with action `CLONE` (not INSERT) — version history
+   * MUST distinguish "created via clone" from "created via form". The delta
+   * is the full new record (same shape as INSERT), and `cloned_from` carries
+   * the source uuid.
    */
   async clone<TEntity extends object & IAuditableEntity & IClonableEntity>(
     entity: EntityClass & { new (): TEntity },
@@ -2166,7 +2169,26 @@ SELECT * FROM w`;
       throw new Error(`Failed to clone record for ${meta.tableName}`);
     }
 
-    return pickReturningRow<TEntity>(insertResult.rows[0], ret.visibleKeys);
+    // Audit the clone as `CLONE` (fire-and-forget) — full-row delta like
+    // INSERT, plus `cloned_from` already carries the source uuid.
+    const insertedRow = insertResult.rows[0] as Record<string, unknown>;
+    if (options.audit && actor !== undefined) {
+      const pk = findPkColumn(meta);
+      const delta = calculateDelta({}, insertedRow);
+      options.audit.writeAudit({
+        entityClassName: meta.entityClassName,
+        tableName: meta.tableName,
+        entityId: pk ? ((insertedRow[pk.sqlName] as bigint | undefined) ?? 0n) : 0n,
+        entityUuid: newUuid,
+        action: AuditAction.CLONE,
+        changedAt: now,
+        version: 1,
+        changedBy: actor,
+        delta,
+      }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
+    }
+
+    return pickReturningRow<TEntity>(insertedRow, ret.visibleKeys);
   }
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────

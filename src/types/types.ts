@@ -199,6 +199,9 @@ export enum AuditAction {
   SOFT_DELETE = "SOFT_DELETE",
   HARD_DELETE = "HARD_DELETE",
   RESTORE = "RESTORE",
+  /** Record created by cloning an existing row (distinct from INSERT so the
+   *  version history can label "created via clone" vs "created via form"). */
+  CLONE = "CLONE",
 }
 
 /** Logger port — consumers inject their own logger. */
