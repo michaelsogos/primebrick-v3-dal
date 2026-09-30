@@ -76,6 +76,13 @@ export {
   type FieldProjector,
 } from "./query/dsl.js";
 
+// List filters (canonical HTTP /list conditions -> FilterExpr)
+export {
+  translateFilterConditions,
+  type ListFilterCondition,
+  type ListFilterOptions,
+} from "./query/list-filters.js";
+
 // Query builder
 export {
   buildSelectQuery,
