@@ -382,6 +382,8 @@ export class Repository {
       sorting: options?.sorting,
       deletedRecords: options?.deletedRecords,
       tableName: options?.tableName,
+      groupBy: options?.groupBy,
+      having: options?.having,
       limit: 1,
     });
     const r = await this.db.query(q.text, q.values);
@@ -410,6 +412,8 @@ export class Repository {
         sorting: options.sorting,
         deletedRecords: options.deletedRecords,
         tableName: options.tableName,
+        groupBy: options.groupBy,
+        having: options.having,
       });
       return createStream<TResult>(this.db, q.text, q.values);
     }
@@ -422,6 +426,8 @@ export class Repository {
       sorting: options?.sorting,
       deletedRecords: options?.deletedRecords,
       tableName: options?.tableName,
+      groupBy: options?.groupBy,
+      having: options?.having,
     });
     const r = await this.db.query(q.text, q.values);
     return (r.rows ?? []) as TResult[];
@@ -448,6 +454,8 @@ export class Repository {
       sorting: options?.sorting,
       deletedRecords: options?.deletedRecords,
       tableName: options?.tableName,
+      groupBy: options?.groupBy,
+      having: options?.having,
       limit,
       offset,
       includeTotalRecordsWindow: true,

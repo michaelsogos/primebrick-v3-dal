@@ -7,7 +7,7 @@
  * implement it.
  */
 
-import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector } from "../query/dsl.js";
+import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector, FieldRef } from "../query/dsl.js";
 
 /** Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders. */
 export type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
@@ -31,6 +31,17 @@ export type FindOptions = {
   stream?: boolean;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
+  /**
+   * GROUP BY columns. When set, every non-aggregate projected field (base
+   * entity columns and joined `*_by_name` display columns) is automatically
+   * added to the GROUP BY — correctness-by-construction: PG requires
+   * projected non-aggregate columns to be grouped, and grouping the PK
+   * covers base cols anyway (functional dependency). Use `Project.expr` for
+   * aggregate columns (e.g. COUNT over a LEFT JOIN).
+   */
+  groupBy?: FieldRef<any, any>[];
+  /** HAVING conditions on aggregates (e.g. `Filter.raw("COUNT(u.id)", ">", "0")`). */
+  having?: FilterExpr[];
 };
 
 /** Options for `findByUUID`. */

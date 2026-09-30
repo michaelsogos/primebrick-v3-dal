@@ -1,7 +1,7 @@
 import type { EntityClass } from "../meta/entity-meta.js";
 import { getColumnName, getEntityPersistenceMeta, getTableName, getQualifiedTableName } from "../meta/entity-meta.js";
 
-import type { FieldProjector, FilterExpr, JoinExpr, SortingExpr } from "./dsl.js";
+import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from "./dsl.js";
 import type { WithDeletedRecords } from "../types/types.js";
 
 export type SqlQuery = { text: string; values: unknown[] };
@@ -253,7 +253,81 @@ export type SelectQueryInput = {
   includeTotalRecordsWindow?: boolean;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
+  /**
+   * GROUP BY columns. When set, every non-aggregate projected field is
+   * automatically added to the GROUP BY (base-entity columns via the
+   * provided/default projection, and joined `*_by_name` display columns) —
+   * correctness-by-construction: PostgreSQL requires projected non-aggregate
+   * columns to appear in GROUP BY, and grouping the PK already covers the
+   * whole base row via functional dependency.
+   */
+  groupBy?: FieldRef<any, any>[];
+  /**
+   * HAVING conditions on aggregates. Rendered through the same FilterExpr
+   * machinery as WHERE — use `Filter.raw("COUNT(u.id)", ">", "0")` or
+   * `Filter.group([...], "AND")` for aggregate predicates. Joined with the
+   * per-expression operand, same as filters.
+   */
+  having?: FilterExpr[];
 };
+
+/**
+ * Render the GROUP BY column list. Correctness-by-construction: every
+ * non-aggregate projected field is auto-added — explicit `groupBy` refs,
+ * `field` projectors, the default all-columns projection (when `fields` is
+ * omitted), and the `*_by_name` display columns emitted by auditable joins.
+ * Aggregate projectors (`Project.expr`) are never grouped.
+ */
+function renderGroupBy(input: SelectQueryInput): string[] {
+  if (!input.groupBy || input.groupBy.length === 0) return [];
+  const cols = new Set<string>();
+
+  for (const g of input.groupBy) {
+    const override = g.entity === input.entity ? input.tableName : undefined;
+    cols.add(qQualifiedField(g.entity, g.key, override));
+  }
+
+  if (input.fields && input.fields.length > 0) {
+    for (const f of input.fields) {
+      if (f.kind !== "field") continue;
+      const override = f.field.entity === input.entity ? input.tableName : undefined;
+      cols.add(qQualifiedField(f.field.entity, f.field.key, override));
+    }
+  } else {
+    const meta = getEntityPersistenceMeta(input.entity);
+    for (const c of Object.values(meta.columns)) {
+      cols.add(`${qTable(input.entity, input.tableName)}.${quoteIdent(c.sqlName)}`);
+    }
+  }
+
+  // Auditable-join display columns are projected as `<alias>.display_name`
+  // (see renderProjection) — they must be grouped too.
+  if (input.joins) {
+    for (const j of input.joins) {
+      if (j.alias === "creator" || j.alias === "updater" || j.alias === "deleter") {
+        cols.add(`${quoteIdent(j.alias)}.display_name`);
+      }
+    }
+  }
+
+  return [...cols];
+}
+
+function renderHaving(w: ParamWriter, input: SelectQueryInput): string | null {
+  if (!input.having || input.having.length === 0) return null;
+  let first = true;
+  let expr = "";
+  for (const f of input.having) {
+    const part = renderFilterExpr(w, f, input.entity, input.tableName);
+    if (first) {
+      expr = part;
+      first = false;
+    } else {
+      expr = `${expr} ${f.operand} ${part}`;
+    }
+  }
+  return expr.trim() !== "" ? expr : null;
+}
 
 export function buildSelectQuery(input: SelectQueryInput): SqlQuery {
   const w = new ParamWriter();
@@ -264,12 +338,16 @@ export function buildSelectQuery(input: SelectQueryInput): SqlQuery {
 
   const renderedJoins = renderJoins(input.joins, input.entity, input.tableName);
   const where = renderWhere(w, input.entity, input.deletedRecords, input.filters, input.tableName);
+  const groupBy = renderGroupBy(input);
+  const having = renderHaving(w, input);
   const orderBy = renderOrderBy(input.entity, input.sorting, input.tableName);
 
   const parts: string[] = [];
   parts.push(`SELECT ${projection.join(", ")} FROM ${baseTable}`);
   if (renderedJoins.length) parts.push(renderedJoins.join(" "));
   if (where.length) parts.push(`WHERE ${where.join(" AND ")}`);
+  if (groupBy.length) parts.push(`GROUP BY ${groupBy.join(", ")}`);
+  if (having) parts.push(`HAVING ${having}`);
   if (orderBy) parts.push(`ORDER BY ${orderBy}`);
   if (input.limit !== undefined) parts.push(`LIMIT ${w.add(input.limit)}::int`);
   if (input.offset !== undefined) parts.push(`OFFSET ${w.add(input.offset)}::int`);
