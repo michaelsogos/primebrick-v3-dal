@@ -38,7 +38,9 @@ import type { IAuditableEntity } from "../types/entities.js";
  *   language  varchar(10)  NOT NULL — BCP 47 tag (e.g. 'it-IT')
  *   value     text         NOT NULL — translated string
  *
- * Composite unique: (key, language) — partial index WHERE deleted_at IS NULL.
+ * Composite unique: (key, language) — non-partial index: a soft-deleted row
+ * still reserves the key; recreating it surfaces a conflict (ERR05 → restore),
+ * never a deleted+live duplicate.
  *
  * Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by).
  */
