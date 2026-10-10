@@ -175,3 +175,24 @@ export {
   type DalConfig,
   type WithClientOptions,
 } from "./dal/dal.js";
+
+// Generic entity CRUD service — the shared makeEntityService used by every
+// service that owns entities (BE and microservices alike).
+export {
+  makeEntityService,
+  makeTableAuditPort,
+  type EntityService,
+  type EntityServiceConfig,
+  type EntityListQuery,
+  type EntityListResult,
+  type EntityAction,
+  type BulkItem,
+  type DuplicateResult,
+  type AggregateDecl,
+} from "./entity/entity-service.js";
+export {
+  findAuditPage,
+  type AuditPageOptions,
+  type AuditPageResult,
+  type AuditRow,
+} from "./entity/audit-query.js";
