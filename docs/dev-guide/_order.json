@@ -1,3 +1,18 @@
 {
-  "pages": ["index", "getting-started", "architecture", "entities", "query-dsl", "repository", "repository-pattern", "connections", "audit-trail", "optimistic-lock", "clone", "changelog", "api-reference"]
+  "pages": [
+    "index",
+    "getting-started",
+    "architecture",
+    "entities",
+    "query-dsl",
+    "repository",
+    "repository-pattern",
+    "entity-service",
+    "connections",
+    "audit-trail",
+    "optimistic-lock",
+    "clone",
+    "changelog",
+    "api-reference"
+  ]
 }
