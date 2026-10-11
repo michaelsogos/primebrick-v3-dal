@@ -160,3 +160,7 @@
 
 - **All `*.md` files use English.**
 - This includes rules, skills, README, API docs, and inline markdown references.
+
+## Deep dive
+
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/repository-pattern.mdx` — link, do not duplicate.

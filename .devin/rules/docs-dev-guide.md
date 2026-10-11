@@ -35,3 +35,7 @@
 - ❌ Rewriting unchanged pages (creates git diff churn)
 - ❌ Inventing APIs, props, or endpoints not in the extraction JSON or code
 - ❌ Marketing language or superlatives
+
+## Deep dive
+
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/index.mdx` — link, do not duplicate.

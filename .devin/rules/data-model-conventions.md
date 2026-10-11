@@ -44,3 +44,7 @@ trigger: always_on
 - AI agent MUST NOT add fallback string-literal defaults (`|| "..."`, `?? ""`) for configuration data.
 - AI agent MUST spread raw DB results (`...settings`) instead of field-by-field rebuilding, unless a field needs a real type conversion.
 - When reviewing existing code, flag any camelCase field names in entity-shaped JSON responses as violations.
+
+## Deep dive
+
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/entities.mdx` — link, do not duplicate.

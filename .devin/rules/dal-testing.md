@@ -68,3 +68,7 @@
 ## Documentation Language
 
 - All `*.md` files (including this one) use English.
+
+## Deep dive
+
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/getting-started.mdx` — link, do not duplicate.
