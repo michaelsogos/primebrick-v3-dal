@@ -1,7 +1,7 @@
-# Devin Rule: User-Facing Documentation
+# Devin Rule: Developer Documentation
 
 ## Trigger
-- Applies whenever AI agent creates or updates files in `docs/user-guide/`.
+- Applies whenever AI agent creates or updates files in `docs/dev-guide/`.
 
 ## Editorial conventions
 
