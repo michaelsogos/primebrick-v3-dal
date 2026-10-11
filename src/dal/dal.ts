@@ -158,7 +158,10 @@ export class Dal {
     const onConnectHandler = async (client: pg.ClientBase): Promise<void> => {
       const statements: string[] = [];
       if (schema) {
-        statements.push(`SET search_path TO ${quoteIdent(schema)}`);
+        // `public` stays on the path after the service schema — extensions
+        // (pgvector types/operators, shared functions) live there and must
+        // resolve unqualified.
+        statements.push(`SET search_path TO ${quoteIdent(schema)}, public`);
       }
       if (statementTimeoutMs !== undefined && statementTimeoutMs !== 0) {
         statements.push(`SET statement_timeout TO ${statementTimeoutMs}`);
