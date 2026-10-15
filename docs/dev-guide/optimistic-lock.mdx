@@ -46,16 +46,16 @@ import { Entity, Column, Key, AuditTrail, AuditableField, AuditableFieldType } f
 @Entity("customers")
 @AuditTrail()
 export class CustomerEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
+  @Key() id!: bigint;
+  @Column() uuid!: UUID;
+  @Column() name!: string;
 
   // Auditable fields — the version column is what powers optimistic locking.
-  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
 }
 ```
 
@@ -249,19 +249,16 @@ to the DAL. The DAL strips `version` out of the SET clause, uses it in the
 WHERE guard, and bumps it by 1.
 
 ```typescript
-import { Repository, Filter, field, MissingVersionError } from "@primebrick/dal-pg";
-import type { Pool } from "pg";
-
-const repo = new Repository(pool as unknown as Pool);
+import { Filter, field, MissingVersionError } from "@primebrick/dal-pg";
 
 // 1. Read the record — note its version.
-const [customer] = await repo.findAll(CustomerEntity, null, {
+const [customer] = await dal.findAll(CustomerEntity, null, {
   filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
 // customer.version === 3
 
 // 2. User edits "name" in the UI. Send the update WITH the version we read.
-const updated = await repo.update(
+const updated = await dal.update(
   CustomerEntity,
   customerUuid,                              // matchValue (scalar)
   { name: "Acme Corp", version: customer.version },
@@ -280,7 +277,7 @@ not a silent unguarded write.
 import { MissingVersionError, DalErrorCodes } from "@primebrick/dal-pg";
 
 try {
-  await repo.update(CustomerEntity, customerUuid, { name: "Acme Corp" }, { actor: userUuid, matchBy: "uuid" });
+  await dal.update(CustomerEntity, customerUuid, { name: "Acme Corp" }, { actor: userUuid, matchBy: "uuid" });
 } catch (err) {
   if (err instanceof MissingVersionError) {
     // err.code === "ERR02" → HTTP 400
@@ -301,19 +298,19 @@ zero rows. The DAL disambiguates, confirms the row still exists, and raises
 import { DalErrorCodes, Filter, field } from "@primebrick/dal-pg";
 
 // Both User A and User B read the customer at version 3.
-const [forA] = await repo.findAll(CustomerEntity, null, {
+const [forA] = await dal.findAll(CustomerEntity, null, {
   filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
-const [forB] = await repo.findAll(CustomerEntity, null, {
+const [forB] = await dal.findAll(CustomerEntity, null, {
   filters: [Filter.fieldValue(field(CustomerEntity, "uuid"), "=", customerUuid)],
 });
 
 // User B saves first — succeeds, row is now version 4.
-await repo.update(CustomerEntity, customerUuid, { name: "B's edit", version: forB.version }, { actor: userBUuid, matchBy: "uuid" });
+await dal.update(CustomerEntity, customerUuid, { name: "B's edit", version: forB.version }, { actor: userBUuid, matchBy: "uuid" });
 
 // User A saves later — version 3 no longer matches.
 try {
-  await repo.update(CustomerEntity, customerUuid, { name: "A's edit", version: forA.version }, { actor: userAUuid, matchBy: "uuid" });
+  await dal.update(CustomerEntity, customerUuid, { name: "A's edit", version: forA.version }, { actor: userAUuid, matchBy: "uuid" });
 } catch (err: any) {
   // node-postgres DatabaseError propagated from RAISE EXCEPTION ... ERRCODE = 'ERR01'
   if (err.code === DalErrorCodes.ERR01) {
@@ -334,7 +331,7 @@ PG-originated error into `OptimisticLockError` at its boundary:
 import { OptimisticLockError, DalErrorCodes } from "@primebrick/dal-pg";
 
 try {
-  await repo.update(CustomerEntity, uuid, { name, version }, { actor, matchBy: "uuid" });
+  await dal.update(CustomerEntity, uuid, { name, version }, { actor, matchBy: "uuid" });
 } catch (err: any) {
   if (err.code === DalErrorCodes.ERR01) {
     throw new OptimisticLockError(err.message); // now catchable via instanceof

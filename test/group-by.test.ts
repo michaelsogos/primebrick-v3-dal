@@ -8,7 +8,7 @@ import "reflect-metadata";
 import { describe, it, expect } from "vitest";
 
 import { buildSelectQuery } from "../src/query/query-builder.js";
-import { Filter, field, Project, Sort } from "../src/query/dsl.js";
+import { Filter, field, GroupBy, Project, Sort } from "../src/query/dsl.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 
 describe("buildSelectQuery — GROUP BY / HAVING", () => {
@@ -125,5 +125,44 @@ describe("buildSelectQuery — GROUP BY / HAVING", () => {
     });
     const m = q.text.match(/GROUP BY (.+?)($| ORDER BY| LIMIT| HAVING)/);
     expect(m![1]).toContain('"creator".display_name');
+  });
+
+  it("groupBy accepts parameterized expressions — ? markers bind params", () => {
+    const q = buildSelectQuery({
+      entity: SimpleTestEntity,
+      fields: [
+        Project.expr("date_trunc('hour', created_at)", "bucket"),
+        Project.expr("COUNT(*)", "n"),
+      ],
+      groupBy: [GroupBy.expr("date_trunc(?, \"dal_test_simple\".\"created_at\")", ["hour"])],
+    });
+    expect(q.text).toContain("GROUP BY date_trunc($1, \"dal_test_simple\".\"created_at\")");
+    expect(q.values).toEqual(["hour"]);
+    // the expr projection is NOT auto-grouped (aggregates must not be)
+    expect(q.text).toContain(`date_trunc('hour', created_at) AS "bucket"`);
+    expect(q.text).toContain(`COUNT(*) AS "n"`);
+  });
+
+  it("Sort.byAlias orders on a projected alias; Sort.byExpr renders parameterized order", () => {
+    const q = buildSelectQuery({
+      entity: SimpleTestEntity,
+      fields: [Project.expr("COUNT(*)", "n")],
+      groupBy: [GroupBy.expr("date_trunc(?, \"dal_test_simple\".\"created_at\")", ["hour"])],
+      sorting: [
+        Sort.byAlias("n", "DESC"),
+        Sort.byExpr("MIN(\"dal_test_simple\".\"created_at\") < ?", [new Date("2026-01-01")], "ASC"),
+      ],
+    });
+    expect(q.text).toContain('ORDER BY "n" DESC, MIN("dal_test_simple"."created_at") < $2 ASC');
+    expect(q.values).toEqual(["hour", new Date("2026-01-01")]);
+  });
+
+  it("Sort.byAlias validates the alias identifier part", () => {
+    expect(() =>
+      buildSelectQuery({
+        entity: SimpleTestEntity,
+        sorting: [Sort.byAlias("x; DROP TABLE t", "ASC")],
+      }),
+    ).toThrow();
   });
 });

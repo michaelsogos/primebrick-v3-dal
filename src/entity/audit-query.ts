@@ -10,15 +10,15 @@
  * present).
  */
 
-import {
-  AuditLogEntity,
-  Project,
-  Filter,
-  Sort,
-  field,
-  buildAuditTrailJoins,
-} from "../index.js";
-import type { EntityClass, Repository } from "../index.js";
+import { AuditLogEntity } from "../audit/audit-log-entity.js";
+import { Project, Filter, Sort, field } from "../query/dsl.js";
+import { buildAuditTrailJoins } from "../audit/auditable-joins.js";
+import type { EntityClass } from "../meta/entity-decorators.js";
+import type { Repository } from "../repository/repository.js";
+
+/** Structural minimum the audit page query needs — satisfied by both the
+ *  gateway `Dal` and a tx-scoped/raw `Repository`. */
+export type AuditQueryable = Pick<Repository, "findByPage">;
 
 export interface AuditPageOptions {
   /** e.g. "customers_audit" — the partition parent table name. */
@@ -61,7 +61,7 @@ function entityDateToApiIso(date: Date): string {
  * `UserProfileEntity`). Without it, display-name columns are null.
  */
 export async function findAuditPage(
-  repo: Repository,
+  repo: AuditQueryable,
   opts: AuditPageOptions & { userEntity?: EntityClass },
 ): Promise<AuditPageResult> {
   const { joins, projections } = opts.userEntity

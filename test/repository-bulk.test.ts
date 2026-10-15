@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { Repository, ValidationError } from "../src/index.js";
+import { Repository, ValidationError }
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -17,7 +19,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {

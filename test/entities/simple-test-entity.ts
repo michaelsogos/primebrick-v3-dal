@@ -11,6 +11,7 @@ import {
   AuditTrail,
   AuditableFieldType,
   DeletableFieldType,
+  type UUID,
 } from "../../src/index.js";
 
 /**
@@ -24,7 +25,7 @@ export class SimpleTestEntity {
   id!: bigint;
 
   @Unique()
-  uuid!: string;
+  uuid!: UUID;
 
   @Column({ pgType: "varchar", length: 255 })
   name!: string;

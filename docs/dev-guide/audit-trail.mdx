@@ -98,12 +98,10 @@ All audit tables share this column structure:
 <!-- END -->
 
 ```typescript
-import { Repository, AuditLogEntity, Filter, Sort, field } from "@primebrick/dal-pg";
-
-const repo = new Repository(pool);
+import { AuditLogEntity, Filter, Sort, field } from "@primebrick/dal-pg";
 
 // Read audit entries for a specific entity from its audit table:
-const auditRows = await repo.findAll(
+const auditRows = await dal.findAll(
   AuditLogEntity,
   null,
   {
@@ -114,7 +112,7 @@ const auditRows = await repo.findAll(
 );
 
 // Paginated audit log:
-const page = await repo.findByPage(
+const page = await dal.findByPage(
   AuditLogEntity,
   null,
   {
@@ -139,7 +137,7 @@ from `customers_audit`, `organizations_audit`, or any other audit table.
 { tableName: "customers_audit", filters: [...] }
 
 // WriteOptions — write directly to an audit table:
-await repo.add(
+await dal.add(
   AuditLogEntity,
   { entity_id, entity_uuid, action: "INSERT", changed_at: new Date(), changed_by: actor, version: 1, delta: {} },
   { tableName: "customers_audit" },
@@ -158,14 +156,14 @@ import { Entity, Column, Key, AuditTrailEntity } from "@primebrick/dal-pg";
 @Entity("audit_log")
 @AuditTrailEntity({ changedByColumn: "changed_by" })
 export class AuditLogEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Column({ pgType: "bigint" }) entity_id!: bigint;
-  @Column({ pgType: "uuid" }) entity_uuid!: string;
-  @Column({ pgType: "text" }) action!: string;
-  @Column({ pgType: "timestamptz" }) changed_at!: Date;
-  @Column({ pgType: "text" }) changed_by!: string;
-  @Column({ pgType: "integer" }) version!: number;
-  @Column({ pgType: "jsonb", nullable: true }) delta?: Record<string, { old: unknown; new: unknown }>;
+  @Key() id!: bigint;
+  @Column() entity_id!: bigint;
+  @Column() entity_uuid!: UUID;
+  @Column() action!: string;
+  @Column() changed_at!: Date;
+  @Column() changed_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
+  @Column({ nullable: true }) delta?: Record<string, { old: unknown; new: unknown }>;
 }
 ```
 
@@ -186,7 +184,7 @@ import { Repository, AuditLogEntity, buildAuditTrailJoins, Project, Sort, field 
 
 const { joins, projections } = buildAuditTrailJoins(AuditLogEntity, UserProfileEntity);
 
-const rows = await repo.findAll(
+const rows = await dal.findAll(
   AuditLogEntity,
   [...projections, Project.field(field(AuditLogEntity, "id"))],
   {
@@ -243,7 +241,7 @@ const auditPort: AuditPort = {
   },
 };
 
-await repo.update(CustomerEntity, { uuid: customerUuid }, { name: "New Name" }, {
+await dal.update(CustomerEntity, { uuid: customerUuid }, { name: "New Name" }, {
   actor: userUuid,
   audit: auditPort,
 });
@@ -287,18 +285,18 @@ import {
 @Entity("customers")
 @AuditTrail()
 export class CustomerEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column() name!: string;
 
-  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION)    @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION)    version!: number;
 
-  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ nullable: true }) deleted_at?: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ nullable: true }) deleted_by?: string | null;
 }
 
 const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp" });
@@ -307,8 +305,7 @@ const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp
 const auditPort: AuditPort = {
   async writeAudit(params) {
     // params.entityId is bigint; params.delta is the field-level { old, new } diff.
-    const auditRepo = new Repository(dal.getPool());
-    await auditRepo.add(AuditLogEntity, {
+    await dal.add(AuditLogEntity, {
       entity_id: params.entityId,
       entity_uuid: params.entityUuid,
       action: params.action,

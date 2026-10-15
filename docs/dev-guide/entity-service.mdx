@@ -19,10 +19,9 @@ microservice gets identical behavior to the gateway edition without
 copying a line.
 
 ```ts
-const service = makeEntityService<CustomerEntity>({
+// The gateway owns the Repository — consumers never see it.
+const service = dal.entityService<CustomerEntity>({
   entity: CustomerEntity,
-  repo: new Repository(dal.getPool()),
-  auditPort: makeTableAuditPort(repo),
   actor: requireActor,                 // SDK — the resolved caller
   userEntity: UserProfileEntity,       // optional display-name join
   list: {
@@ -32,6 +31,14 @@ const service = makeEntityService<CustomerEntity>({
   },
 });
 ```
+
+`dal.entityService(cfg)` injects the gateway's own (schema-domain-guarded)
+`Repository` and defaults `auditPort` to `makeTableAuditPort(repo)`.
+The free `makeEntityService(cfg)` function is the internal machinery the
+method delegates to — it requires `cfg.repo` explicitly and throws
+`ValidationError` without it; call it directly only from tests or when
+feeding a decorated repository (e.g. `withCache`-wrapped), never as the
+consumer path.
 
 ## The EntityService contract
 
@@ -71,9 +78,11 @@ no code path that yields `{uuid}` or `{success: true}`.
 
 ## Transactions and hooks
 
-`create`/`update` accept an optional `PoolClient` — pass it inside an
-outer transaction (the BE's `runEntityWrite` envelope does exactly this
-when the write body carries `{entity, translations}` piggyback rows).
+`create`/`update` accept an optional tx-scoped `Repository` — pass the one
+`dal.transaction(txRepo => …)` gives the callback (the BE's `runEntityWrite`
+envelope does exactly this when the write body carries
+`{entity, translations}` piggyback rows). Raw `PoolClient` is never part
+of the contract.
 `afterWrite` hooks fire **only outside a tx** — inside one, commit is
 the caller's job, so notifications can't precede the durable write.
 `beforeCreate`/`beforeUpdate` may rewrite the body before it reaches the
@@ -95,7 +104,10 @@ raw `changed_by` uuid.
 ## What it deliberately does not do
 
 - **No env reads** — no `debugCode`-style toggles; env is bootstrap-only.
-- **No cache port** — wrap `repo` in `withCache` at construction instead.
-- **No pool singletons** — the caller owns the pool and the repository.
+- **No cache port** — feed a `withCache`-wrapped repository through the
+  `cfg.repo` seam instead (the BE binding does exactly this).
+- **No pool singletons** — the `Dal` gateway owns the pool AND the
+  repository; `dal.repository()` does not exist — the engine never leaves
+  the gateway's control.
 - **No permissions** — authorization lives in the router layer
   (`deriveEntityActions`, `rbacHandler`), not here.

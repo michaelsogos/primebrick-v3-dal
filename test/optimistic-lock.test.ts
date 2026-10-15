@@ -5,7 +5,9 @@ import {
   MissingVersionError,
   RecordVanishedError,
   DalErrorCodes,
-} from "../src/index.js";
+}
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -21,7 +23,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {

@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import { Repository } from "../../src/index.js";
+import { REPO_INTERNAL } from "../../src/repository/repository.js";
 import { BenchSimpleEntity } from "../entities/bench-simple.entity.js";
 import { BenchPrimitivesEntity } from "../entities/bench-primitives.entity.js";
 import {
@@ -18,7 +19,7 @@ let repo: Repository;
 beforeAll(async () => {
   pool = getTestPool();
   await setupTestSchema();
-  repo = new Repository(pool);
+  repo = new Repository(pool, REPO_INTERNAL);
 });
 
 afterAll(async () => {

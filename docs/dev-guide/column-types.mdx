@@ -1,0 +1,225 @@
+---
+title: Column types
+description: The entity type contract — how TypeScript annotations map to PostgreSQL types, the guarded types (UUID, ISODate, ISOTime, Vector, Decimal), and the authoring rules `primebrick-db check` enforces.
+---
+
+# Column types
+
+Column types are resolved **statically, from the TypeScript annotation** —
+never from the property name, never from runtime reflection (`design:type` is
+gone: esbuild/tsx emit no decorator metadata and Bun collapses unions, so
+runtime reflection could not be trusted anyway). The TypeScript compiler API
+reads the real annotation, with aliases resolved, and the result is identical
+under `tsc`, `tsx`, and Bun.
+
+The resolution order for every `@Column` is:
+
+1. explicit `@Column({ pgType })` — must be a canonical `PgColumnType` literal
+2. a semantic decorator pin (`@AuditableField(VERSION)` is always `int4`,
+   `*_AT` fields are always `timestamptz`, `@DeletableField(DELETED_AT)` is
+   `timestamptz`, `@SynchronizableField(LAST_SYNCED_AT)` is `timestamptz`)
+3. the TS type annotation
+4. `throw` — an unmappable annotation is a contract violation, it never
+   silently becomes `text`
+
+## The annotation → type matrix
+
+| TS annotation | PostgreSQL type | Notes |
+|---|---|---|
+| `bigint` | `int8` | **default for integers** — like C# `long` |
+| `number` | `float8` | **default for floating point** — like C# `double` |
+| `boolean` | `boolean` | |
+| `string` | `text` | `+ length: N` → `varchar(N)` |
+| `string` literal union (`"a" \| "b"`) | `text` | enum-style unions store as text |
+| `Date` | `timestamptz` | `pgType: "timestamp"` allowed |
+| `UUID` | `uuid` | guarded brand, see below |
+| `ISODate` | `date` | `"YYYY-MM-DD"` string — never a `Date` |
+| `ISOTime` | `time` | `"HH:MM:SS"` string; `pgType: "timetz"` allowed |
+| `Decimal` | `numeric` | `precision`/`scale` → `numeric(p,s)` |
+| `Vector` | `vector` | `+ length: N` → `vector(N)` (pgvector) |
+| `Uint8Array` / `Buffer` | `bytea` | |
+| `string[]` | `text[]` | |
+| `number[]` | `float8[]` | |
+| `bigint[]` | `int8[]` | |
+| `boolean[]` | `boolean[]` | |
+| `UUID[]` | `uuid[]` | |
+| `Decimal[]` | `numeric[]` | |
+| `Record` / interface / `object` | `jsonb` | `pgType: "json"` allowed |
+
+### Two defaults to memorize
+
+- **integers → `bigint` → `int8`**. If a field is an integer, annotate
+  `bigint`. Reaching for `number` + `pgType: "int4"` is only right when the
+  domain genuinely bounds the value below 32 bits (`power_level` 1–5,
+  `sort_order`, `version`) — declare it deliberately, it is a *narrowing*
+  decision, not a default.
+- **reals → `number` → `float8`**. If a field is a floating-point quantity,
+  annotate `number`. `number` + `pgType: "numeric"` is **rejected** — a
+  `numeric` column hydrates as `Decimal`, never a JS `number`.
+
+`Decimal` (exact base-10 arithmetic) is for the third case: financial math or
+anywhere precision is mandatory. Not for config parameters.
+
+## Explicit `pgType` — the whitelist
+
+`pgType` is a `PgColumnType` union literal — aliases (`"integer"`,
+`"timestamp with time zone"`, `"double precision"`) are **compile errors**;
+write the canonical name (`int4`, `timestamptz`, `float8`). Modifiers are
+never spelled inside the string: `length` gives `varchar(N)`/`char(N)`/
+`vector(N)`, `precision`/`scale` give `numeric(p,s)`.
+
+An explicit `pgType` must be compatible with the annotation family — the
+whitelist is enforced by `primebrick-db check` and fails the build:
+
+| Annotation | Allowed `pgType` |
+|---|---|
+| `string` | `text`, `varchar`, `char`, `citext`, `inet`, `cidr`, `macaddr`, `macaddr8`, `json`, `jsonb`, `xml`, `uuid` |
+| `number` | `float8`, `float4`, `int4`, `int2` |
+| `bigint` | `int8` |
+| `boolean` | `boolean` |
+| `UUID` | `uuid` |
+| `ISODate` | `date` |
+| `ISOTime` | `time`, `timetz` |
+| `Date` | `timestamptz`, `timestamp` |
+| `Decimal` | `numeric` |
+| `Vector` | `vector` (incl. `vector(N)` literal) |
+| `Uint8Array` | `bytea` |
+| object | `jsonb`, `json` |
+| `string[]` | `text[]`, `varchar[]`, `jsonb`, `json` |
+| `number[]` | `float8[]`, `float4[]`, `int4[]`, `int2[]`, `numeric[]` |
+| `bigint[]` | `int8[]`, `numeric[]` |
+| `boolean[]` | `boolean[]` |
+| `UUID[]` | `uuid[]` |
+| `Decimal[]` | `numeric[]` |
+
+An annotation the mapper can't handle (functions, tuples, enums, exotic
+unions) is unmappable: `resolvePgTypeForSchema` throws unless an explicit
+`pgType` declares the storage — that combination is the sanctioned escape
+hatch.
+
+Two advisory warnings are printed by `primebrick-db check` (never fatal):
+
+- **`*_uuid` name smell** — a column named `uuid`/`*_uuid` resolving to a
+  non-uuid type. Either retype the prop to `UUID`, or set `pgType` explicitly
+  (`pgType: "text"` declares a deliberate loose reference and silences it —
+  an explicit type on a `*_uuid` column IS the answer to the question).
+- **redundant `pgType`** — `pgType` restating exactly what the annotation
+  already infers. Never spell the default.
+
+## The guarded types
+
+Import from `@primebrick/dal-pg` (`Decimal` is re-exported from
+`@primebrick/decimal`).
+
+### `UUID` — branded string
+
+```typescript
+@Unique() uuid!: UUID;
+@Column({ nullable: true }) doc_uuid?: UUID;
+```
+
+`toUUID(v)` validates and throws at untrusted boundaries (HTTP/NATS input);
+`trustedUUID(v)` is a zero-cost cast for values the DB already validated.
+Hydration is a plain string — no conversion needed, the brand is compile-time
+only.
+
+A column that *only ever holds* UUID values must be `UUID`, whether or not it
+is a foreign key — the name `*_uuid` says what the column is.
+
+### `ISODate` / `ISOTime` — branded strings, no timezones
+
+`date` columns are `"YYYY-MM-DD"` strings and `time` columns `"HH:MM:SS[.µs]"`
+strings — **never `Date` objects**. A calendar date has no timezone:
+`new Date("2025-03-15")` parses as *local* midnight in `node-pg` and shifts a
+day on JSON round-trips in positive-offset zones. `toISODate`/`toISOTime`
+validate; `trustedISODate`/`trustedISOTime` cast; `isoDateFromUTCDate`
+converts a `Date`. `timestamptz`/`timestamp` columns are the ones that carry
+real `Date` values.
+
+### `Vector` — runtime-identifiable `number[]`
+
+```typescript
+@Column({ nullable: false, length: 1024, jsType: "vector" })
+embedding!: Vector;
+```
+
+`Vector extends Array<number>` — a real class so the DAL can `instanceof` it:
+`Vector` params bind as the pgvector literal `'[v1,v2,…]'`, while a plain
+`number[]` binds as a Postgres array `'{v1,v2,…}'`. `length: N` pins the
+`vector(N)` dimension. `jsType: "vector"` marks the column for runtime
+hydration — without it a jsonb round-trip surfaces a raw string.
+
+### `Decimal` — exact base-10 (`@primebrick/decimal`)
+
+```typescript
+import { Decimal, dec } from "@primebrick/dal-pg";
+
+@Column({ nullable: false, jsType: "decimal" })
+price!: Decimal;
+
+@Column({ nullable: false, jsType: "decimal", precision: 12, scale: 4 })
+tax!: Decimal;
+```
+
+`Decimal` is the project's `numeric` type — immutable `{ v: bigint, scale }`
+where `value = v × 10^-scale`. The functional API never allocates through
+your hands: `dec(input)` coerces `Decimal | number | bigint | string` (so
+`dec(".5")` → `0.5`), and `add sub mul div mod neg abs cmp eq signum min max
+rescale round trunc floor ceil normalize` all accept the same union and
+return `Decimal`.
+
+Division follows the PostgreSQL `numeric` rule — `max(16 − 4·qweight,
+scale₁, scale₂)` fractional digits — so `div(1, 3)` matches the database
+digit for digit. When a non-terminating expansion is truncated, the result
+carries the `periodic` flag: `isPeriodic(d)`.
+
+| Direction | Call | Result |
+|---|---|---|
+| JS → PG param | `toPG(d)` | `"12.3400"` — scale preserved |
+| PG string → Decimal | `dec("12.3400")` / `fromPG` | `Decimal` |
+| JSON wire | `d.toJSON()` / `toWire(d)` | `"12.34d"` — self-describing |
+| wire string → Decimal | `dec("12.34d")` / `fromWire` | `Decimal` |
+| display only | `d.toNumber()` | lossy `number` — never for math |
+
+`jsType: "decimal"` marks the column for runtime hydration (jsonb
+round-trips, deferred-transaction results): without it a `"12.34"` payload
+stays a string. `NaN`/`Infinity` inputs throw — `numeric` accepts them, the
+entity contract does not.
+
+## `jsType` — the runtime hydration marker
+
+Type *annotations* don't exist at runtime, so columns whose hydrated value
+is a real class instance need a marker for JSON/deferred-transaction
+round-trips (plain DB reads already come back correctly typed through the pg
+type parsers):
+
+| `jsType` | Hydrates to |
+|---|---|
+| `"instant"` | `Date` from an ISO string |
+| `"decimal"` | `Decimal` from `"12.34"` or `"12.34d"` |
+| `"vector"` | `Vector` from `"[1,2,…]"` or `number[]` |
+
+Required on `Decimal` and `Vector` props, and on non-audit `Date` props that
+must survive a JSON round-trip as `Date`. Not needed for `UUID`/`ISODate`/
+`ISOTime` — those are plain strings at runtime by design.
+
+## Nullability
+
+`design:type` inference is gone — nullability is declared:
+
+- every column defaults to `NOT NULL` (`@Key()`/`@Unique()` set it too)
+- `@Column({ nullable: true })` for nullable columns — including optional
+  props (`?:`), which do *not* imply nullable on their own
+- `@DeletableField`/`@CloneField` imply nullable
+
+A prop can be **optional-but-NOT-NULL** (`@Column({ nullable: false })
+created_at?: Date`) — the DB fills a `defaultSql`, the writer omits it, reads
+always return it.
+
+## Adding a new column type
+
+The mapping table lives in `src/meta/entity-ts-to-pg.ts`, the closed
+`PgColumnType` union in `src/types/pg-column-type.ts`, and the canonical
+matrix test in `test/type-matrix.test.ts`. **Talk to the team before
+inventing a new type** — a new row is a contract decision (storage, runtime
+hydration, wire format, lint rules), not a local edit.

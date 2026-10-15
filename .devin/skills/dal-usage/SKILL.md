@@ -22,7 +22,12 @@
 - `RETURNING *` on all writes
 - `throwIfNotFound: true` by default
 - `deletedRecords: "EXCLUDED"` by default
-- TEMP TABLE strategy for `updateMany` / `upsertMany`
+- TEMP TABLE strategy for `updateMany` / `addMany` (`upsertMany` is disabled)
+- `upsert`/`upsertMany` are removed — never reintroduce (no version guard)
+- Transactions: `dal.transaction(txRepo => …)` only — `withClient` is private;
+  consumers never see `PoolClient` or write raw SQL
+- Health/version probe: `dal.serverVersion()` (no `ping()` — the call IS the probe)
+- Physical reset: `dal.truncate(entity)` / `repo.truncate` (domain-guarded)
 - bigint returned as native `bigint` via INT8_OID (registered by the Dal gateway)
 - Audit is port-based and optional (fire-and-forget)
 - The DAL never commits automatically — wait for explicit user instruction
@@ -119,15 +124,18 @@ const deleted = await dal.delete(UserAccount, created.uuid, { actor: "system" })
 // soft-deletes (sets deleted_at); returns the row
 ```
 
-### Bulk upsert with timeout override
+### Bulk ops with timeout override
 
 ```typescript
-const upserted = await dal.upsertMany(UserAccount, [
+await dal.addMany(UserAccount, [
   { email: "a@x.com", display_name: "A" },
   { email: "b@x.com", display_name: "B" },
 ], { actor: "system", timeoutMs: 60000 });
-// uses ON CONFLICT; returns all rows
 // timeoutMs emits SET LOCAL statement_timeout inside the tx (no leakage)
+
+// upsert / upsertMany are REMOVED by design — they bypassed optimistic
+// locking (no version check on conflict). Never reintroduce them: the
+// standard is find (uuid + version) then add / update.
 ```
 
 ### Streaming large result sets
@@ -141,23 +149,20 @@ for await (const row of stream) {
 }
 ```
 
-### Transactions with withClient
+### Transactions with dal.transaction
 
 ```typescript
-import { Repository } from "@primebrick/dal-pg";
-
-await dal.withClient(async (client) => {
-  const repo = new Repository(client); // Repository backed by this client
-  await client.query("BEGIN");
-  await repo.add(UserAccount, { email: "tx@x.com", display_name: "TX" }, { actor: "tx" });
-  await client.query("COMMIT");
+await dal.transaction(async (txRepo) => {
+  // txRepo is a tx-scoped Repository — the raw PoolClient is never exposed
+  await txRepo.add(UserAccount, { email: "tx@x.com", display_name: "TX" }, { actor: "tx" });
+  // COMMIT on return, ROLLBACK on throw — never manual BEGIN/COMMIT.
 });
 
-// Per-call timeout override for ad-hoc long queries:
-await dal.withClient(
-  async (client) => { await client.query("SELECT * FROM large_export_table"); },
-  { timeoutMs: 120000 }, // 2 minutes for this one query
-);
+// Timeout override (SET LOCAL — transaction-scoped, no leakage):
+await dal.transaction(async (txRepo) => { /* ... */ }, { timeoutMs: 120000 });
+
+// dal.withClient is PRIVATE to dal-pg internals — not a consumer API.
+// No consumer ever holds a PoolClient or issues raw SQL.
 ```
 
 ### Error handling

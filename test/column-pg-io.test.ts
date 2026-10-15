@@ -9,7 +9,7 @@ const jsonb: ColumnPgPersistenceHints = {
 const timestamptz: ColumnPgPersistenceHints = {
   sqlName: "created_at",
   inferredPgType: "timestamptz",
-  tsDesignTypeCtorName: "Date",
+  auditableType: "CREATED_AT",
 };
 
 describe("jsValueToPgParam — jsonb BigInt safety", () => {
@@ -39,7 +39,7 @@ describe("jsValueToPgParam — jsonb BigInt safety", () => {
 
 describe("jsValueToPgParam — non-jsonb behaviour preserved", () => {
   it("converts Date to YYYY-MM-DD for sql date columns", () => {
-    const h = { sqlName: "day", inferredPgType: "date", tsDesignTypeCtorName: "Date" };
+    const h = { sqlName: "day", inferredPgType: "date" };
     expect(jsValueToPgParam(new Date("2026-09-26T10:00:00Z"), h)).toBe("2026-09-26");
   });
 

@@ -14,14 +14,15 @@ table; each decorated property maps to a column. snake_case is used everywhere
 
 ```typescript
 import "reflect-metadata";
-import { Entity, Column, Key, Unique } from "@primebrick/dal-pg";
+import { Entity, Column, Key, Unique, type UUID } from "@primebrick/dal-pg";
+import { Decimal } from "@primebrick/dal-pg";
 
 @Entity("products")
 export class ProductEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
-  @Column({ pgType: "numeric", precision: 18, scale: 2 }) price!: number;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ nullable: false }) name!: string;
+  @Column({ jsType: "decimal", precision: 18, scale: 2, nullable: false }) price!: Decimal;
 }
 ```
 
@@ -38,11 +39,16 @@ defaults to the class name. If `schema` is set, it overrides the Dal gateway's
 default `search_path` schema for this entity only.
 
 ```typescript
-@Entity("customers")                  // table "customers" in the Dal's schema
+@Entity("customers")                  // table "customers" in the Dal's primary schema (schemas[0])
 @Entity("customers", "billing")       // table "billing.customers" (schema override)
 @Entity()                             // table name === class name
 export class CustomerEntity { ... }
 ```
+
+The schema pin (explicit or the `schemas[0]` default) must belong to the
+`DalConfig.schemas` domain — an entity pinned elsewhere throws
+`SchemaDomainViolationError` at `getDal()` (boot) and on every entity
+operation, before SQL is generated.
 
 The table name is also exposed via `Reflect.defineMetadata("primebrick:tableName", ...)`
 so external tooling (e.g. the SDK's `CacheKeyBuilder`) can read it without
@@ -55,7 +61,7 @@ Marks exactly one column as the primary key. Used by `update`/`delete`/
 `identity` generation strategy (DB auto-generates).
 
 ```typescript
-@Key() @Column({ pgType: "bigint" }) id!: bigint;
+@Key() id!: bigint;
 ```
 
 ### `@Unique()`
@@ -65,7 +71,7 @@ that must be excluded from the copy (a new value is generated for them). The
 canonical example is `uuid`:
 
 ```typescript
-@Unique() @Column({ pgType: "uuid" }) uuid!: string;
+@Unique() uuid!: UUID;
 ```
 
 ### `@IsNotColumn()`
@@ -90,12 +96,12 @@ object. The options object must set at least one field — an empty `@Column({})
 throws `TypeError`.
 
 ```typescript
-@Column("full_name")                                  // rename column only
-@Column({ pgType: "text", length: 255 })              // typed varchar
-@Column({ pgType: "numeric", precision: 18, scale: 2 }) // numeric(18,2)
-@Column({ pgType: "timestamptz", nullable: true })    // nullable timestamp
-@Column({ pgType: "uuid", defaultSql: "gen_random_uuid()" }) // DB-side default
-@Column({ pgType: "text", castInJoin: "uuid" })       // cast to uuid in JOIN ON
+@Column("full_name")                                    // rename column only
+@Column({ length: 255 })                                 // varchar(255) on a `string` prop
+@Column({ jsType: "decimal", precision: 18, scale: 2 })  // numeric(18,2) on a `Decimal` prop
+@Column({ nullable: true })                              // nullable column
+@Column({ defaultSql: "gen_random_uuid()" })             // DB-side default
+@Column({ castInJoin: "uuid" })                          // cast to uuid in JOIN ON
 ```
 
 #### `ColumnOptions`
@@ -103,31 +109,39 @@ throws `TypeError`.
 | Field | Type | Purpose |
 |-------|------|---------|
 | `sqlName` | `string` | Override the SQL column name (defaults to the property name) |
-| `pgType` | `string` | PostgreSQL storage type (`bigint`, `uuid`, `text`, `timestamptz`, `numeric`, `jsonb`, `integer`, `date`, ...) |
-| `length` | `number` | For `varchar`/`char`/`bit varying` etc. |
+| `pgType` | `PgColumnType` | Explicit storage type — canonical names only, and only when it *differs* from what the annotation infers (whitelist-enforced) |
+| `length` | `number` | `varchar(N)`/`char(N)` on `string`, `vector(N)` on `Vector` |
 | `precision` | `number` | For `numeric`/`decimal` |
 | `scale` | `number` | For `numeric`/`decimal` |
-| `nullable` | `boolean` | Inferred from TS design type if omitted (`Date \| null` → nullable) |
+| `nullable` | `boolean` | `NOT NULL` by default — declare `nullable: true` for nullable columns |
 | `defaultSql` | `string` | Raw SQL DEFAULT expression (e.g. `now()`, `gen_random_uuid()`) |
+| `jsType` | `"instant" \| "decimal" \| "vector"` | Runtime hydration marker — required on `Decimal`/`Vector` props |
 | `castInJoin` | `string` | Cast type to apply when this field is used in a JOIN ON clause |
 
-#### Type inference
+#### Type resolution
 
-When `pgType` is omitted, the DAL infers the PG type from the TS design type
-via `Reflect.getMetadata("design:type", ...)`:
+When `pgType` is omitted, the PG type resolves **statically from the TS type
+annotation** in the schema pipeline — never from the property name and never
+from runtime reflection. The full matrix and the authoring rules
+(guarded types, whitelist, warnings) live in
+[Column types](./column-types). The short version:
 
-| TS design type | Inferred PG type |
-|----------------|------------------|
-| `String` | `text` |
-| `Number` | `numeric` |
-| `Boolean` | `boolean` |
-| `Date` | `timestamptz` (override with `pgType: "date"` for `date`) |
-| `BigInt` | `bigint` |
-| anything else | `jsonb` |
+| TS annotation | PG type |
+|---|---|
+| `bigint` | `int8` |
+| `number` | `float8` |
+| `boolean` | `boolean` |
+| `string` | `text` |
+| `Date` | `timestamptz` |
+| `UUID` | `uuid` |
+| `ISODate` / `ISOTime` | `date` / `time` |
+| `Decimal` | `numeric` |
+| `Vector` | `vector` (`+ length` → `vector(N)`) |
+| object-shaped types | `jsonb` |
 
-Nullability is inferred from the design type: `@Key()` and `@Unique()` columns
-are not nullable; `Date | null` (TS union with `null`) is nullable. Override
-either with `@Column({ nullable: true })` when the inference is wrong.
+Nullability is NOT inferred: columns default to `NOT NULL`; a nullable column
+must declare `@Column({ nullable: true })` (or a decorator that implies it —
+`@DeletableField`, `@CloneField`).
 
 ### `@AuditableField(type)` — opt into audit columns
 
@@ -137,14 +151,14 @@ Marks a column as one of the five audit fields. The `type` argument can be the
 ```typescript
 import { AuditableField, AuditableFieldType } from "@primebrick/dal-pg";
 
-@AuditableField(AuditableFieldType.CREATED_AT)  @Column({ pgType: "timestamptz" }) created_at!: Date;
-@AuditableField(AuditableFieldType.CREATED_BY)  @Column({ pgType: "text" }) created_by!: string;
-@AuditableField(AuditableFieldType.UPDATED_AT)  @Column({ pgType: "timestamptz" }) updated_at!: Date;
-@AuditableField(AuditableFieldType.UPDATED_BY)  @Column({ pgType: "text" }) updated_by!: string;
-@AuditableField(AuditableFieldType.VERSION)     @Column({ pgType: "integer" }) version!: number;
+@AuditableField(AuditableFieldType.CREATED_AT)  created_at!: Date;
+@AuditableField(AuditableFieldType.CREATED_BY)  created_by!: string;
+@AuditableField(AuditableFieldType.UPDATED_AT)  updated_at!: Date;
+@AuditableField(AuditableFieldType.UPDATED_BY)  updated_by!: string;
+@AuditableField(AuditableFieldType.VERSION)     version!: number;
 
 // Equivalent object form (accepted by the decorator):
-@AuditableField({ type: "createdAt" }) @Column({ pgType: "timestamptz" }) created_at!: Date;
+@AuditableField({ type: "createdAt" }) created_at!: Date;
 ```
 
 The `VERSION` column is what powers [optimistic locking](./optimistic-lock) —
@@ -170,11 +184,11 @@ soft-deleted rows by default (`deletedRecords: "EXCLUDED"`); pass
 ```typescript
 import { DeletableField, DeletableFieldType } from "@primebrick/dal-pg";
 
-@DeletableField(DeletableFieldType.DELETED_AT) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
-@DeletableField(DeletableFieldType.DELETED_BY) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+@DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date | null;
+@DeletableField(DeletableFieldType.DELETED_BY) deleted_by?: string | null;
 
 // Equivalent object form:
-@DeletableField({ type: "deletedAt" }) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
+@DeletableField({ type: "deletedAt" }) deleted_at?: Date | null;
 ```
 
 `DeletableFieldType` enum values: `DELETED_AT` (`"DELETED_AT"`), `DELETED_BY`
@@ -189,7 +203,7 @@ records from an external system on a schedule.
 import { SynchronizableField, SynchronizableFieldType } from "@primebrick/dal-pg";
 
 @SynchronizableField(SynchronizableFieldType.LAST_SYNCED_AT)
-@Column({ pgType: "timestamptz", nullable: true }) last_synced_at!: Date | null;
+@Column({ nullable: true }) last_synced_at?: Date | null;
 ```
 
 `SynchronizableFieldType` enum values: `LAST_SYNCED_AT` (`"LAST_SYNCED_AT"`).
@@ -200,7 +214,7 @@ Marks a column as the clone-tracking field. `Repository.clone()` stamps it with
 the source record's UUID so the clone knows its origin. See [Clone](./clone).
 
 ```typescript
-@CloneField() @Column({ pgType: "uuid", nullable: true }) cloned_from!: string | null;
+@CloneField() cloned_from?: UUID | null;
 ```
 
 ### `@AuditTrail()` — entity HAS an audit trail table
@@ -232,14 +246,14 @@ import { Entity, Column, Key, AuditTrailEntity } from "@primebrick/dal-pg";
 @Entity("audit_log")
 @AuditTrailEntity({ changedByColumn: "changed_by" })
 export class AuditLogEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Column({ pgType: "bigint" }) entity_id!: bigint;
-  @Column({ pgType: "uuid" }) entity_uuid!: string;
-  @Column({ pgType: "text" }) action!: string;
-  @Column({ pgType: "timestamptz" }) changed_at!: Date;
-  @Column({ pgType: "text" }) changed_by!: string;
-  @Column({ pgType: "integer" }) version!: number;
-  @Column({ pgType: "jsonb", nullable: true }) delta?: Record<string, { old: unknown; new: unknown }>;
+  @Key() id!: bigint;
+  @Column({ nullable: false }) entity_id!: bigint;
+  @Column({ nullable: false }) entity_uuid!: UUID;
+  @Column({ nullable: false }) action!: string;
+  @Column({ nullable: false }) changed_at!: Date;
+  @Column({ nullable: false }) changed_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
+  @Column({ nullable: true }) delta?: Record<string, { old: unknown; new: unknown }>;
 }
 ```
 
@@ -283,23 +297,23 @@ import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@prime
 @Entity("customers")
 @AuditTrail()
 export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
 
-  @Column({ pgType: "text" }) name!: string;
-  @Column({ pgType: "text" }) email!: string;
-  @Column({ pgType: "boolean", defaultSql: "false" }) is_active!: boolean;
+  @Column({ nullable: false }) name!: string;
+  @Column({ nullable: false }) email!: string;
+  @Column({ nullable: false, defaultSql: "false" }) is_active!: boolean;
 
-  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION)    @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION)    version!: number;
 
-  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+  @DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) deleted_by?: string | null;
 
-  @CloneField() @Column({ pgType: "uuid", nullable: true }) cloned_from!: string | null;
+  @CloneField() cloned_from?: UUID | null;
 }
 ```
 

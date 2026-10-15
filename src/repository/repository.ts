@@ -21,9 +21,9 @@ import {
   jsValueToPgParam,
 } from "../meta/column-pg-io.js";
 
-import type { FieldProjector, FilterExpr, JoinExpr, SortingExpr } from "../query/dsl.js";
+import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from "../query/dsl.js";
 import { field, Filter } from "../query/dsl.js";
-import { buildSelectQuery, quoteIdent } from "../query/query-builder.js";
+import { buildSelectQuery, buildVectorSearchQuery, quoteIdent } from "../query/query-builder.js";
 import { createStream } from "../query/streaming.js";
 import type {
   FindByIdOptions,
@@ -33,6 +33,7 @@ import type {
   WriteOptions,
   AuditableWriteOptions,
   MatchByOptions,
+  VectorSearchOptions,
   BulkOptions,
   UpsertOptions,
   AuditPort,
@@ -45,7 +46,17 @@ import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
 
-type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
+/** @internal — structural client/pool surface used by Repository; also used by the deferred-transaction capture layer. */
+export type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
+
+/**
+ * @internal Construction token — only dal-pg internals (Dal factories, tx
+ * plumbing) may build a Repository. NOT re-exported from the package index
+ * and unreachable through the package exports map, so consumers cannot
+ * produce a value of this type: `new Repository(...)` outside this package
+ * is a compile-time error by construction.
+ */
+export const REPO_INTERNAL: unique symbol = Symbol("dal-pg:repo-internal");
 
 /** Escape a JS string as a single-quoted SQL literal. */
 function escapeLiteral(value: string): string {
@@ -199,7 +210,8 @@ function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMeta>): b
  * the audit path can still read them; they are stripped from the returned
  * object unless the caller explicitly projected them.
  */
-function buildReturningClause(
+/** @internal — shared with the deferred-transaction finalizer (same projection semantics as direct exec). */
+export function buildReturningClause(
   entity: EntityClass,
   fields?: FieldProjector[] | null,
 ): { clause: string; visibleKeys: string[]; rowKeyToSqlName: Map<string, string> } {
@@ -247,8 +259,8 @@ function buildReturningClause(
   return { clause: `RETURNING ${projections.join(", ")}`, visibleKeys, rowKeyToSqlName };
 }
 
-/** Strip internal bookkeeping keys — the result carries exactly the projected keys. */
-function pickReturningRow<TResult>(raw: Record<string, unknown>, visibleKeys: string[]): TResult {
+/** Strip internal bookkeeping keys — the result carries exactly the projected keys. @internal */
+export function pickReturningRow<TResult>(raw: Record<string, unknown>, visibleKeys: string[]): TResult {
   const out: Record<string, unknown> = {};
   for (const k of visibleKeys) out[k] = raw[k];
   return out as TResult;
@@ -276,8 +288,15 @@ export class Repository {
    */
   constructor(
     private readonly db: Queryable,
+    token: typeof REPO_INTERNAL,
     private readonly bulkTimeoutMs: number = 1800000,
-  ) {}
+  ) {
+    if (token !== REPO_INTERNAL) {
+      throw new ValidationError(
+        "Repository construction is internal to dal-pg — use dal.entityService()/dal.tableAuditPort()",
+      );
+    }
+  }
 
   /**
    * Opens a dedicated-client transaction for a bulk operation and applies the
@@ -433,6 +452,78 @@ export class Repository {
     return (r.rows ?? []) as TResult[];
   }
 
+  /**
+   * pgvector nearest-neighbour search — the DAL-native replacement for raw
+   * `<=>`-style similarity queries.
+   *
+   * Emits `ORDER BY <vectorField> <op> $n::vector LIMIT <topK>` with the
+   * query vector always bound as a parameter (required for HNSW/ivfflat
+   * index usage — never interpolated). Entity-generic: schema, tableName
+   * override, filters, projections and soft-delete scoping behave exactly
+   * like `findAll`.
+   *
+   * The result carries a `similarity` score column when `distance` is the
+   * default `"<=>"` (cosine — `1 - distance`, higher = closer). For other
+   * operators the projected column is `distance` (raw distance, lower =
+   * closer).
+   */
+  async vectorSearch<TEntity extends object, TResult = TEntity>(
+    entity: EntityClass,
+    vectorField: FieldRef<TEntity, keyof TEntity & string>,
+    queryVector: number[] | string,
+    options?: VectorSearchOptions<TEntity>,
+  ): Promise<Array<TResult & { similarity?: number; distance?: number }>> {
+    const topK = options?.topK ?? 10;
+    if (topK <= 0) throw new ValidationError("vectorSearch: topK must be a positive integer");
+    const op = options?.distance ?? "<=>";
+    const scoreAlias = options?.scoreAlias ?? (op === "<=>" ? "similarity" : "distance");
+    const vectorLiteral = Array.isArray(queryVector) ? `[${queryVector.join(",")}]` : queryVector;
+
+    const hybrid = Boolean(
+      options?.lexical || options?.keywordBoost?.terms?.length || options?.scoreAdjust
+    );
+    if (hybrid) {
+      if (options?.joins?.length) {
+        throw new ValidationError("vectorSearch: hybrid channels do not support joins");
+      }
+      const q = buildVectorSearchQuery({
+        entity,
+        field: vectorField,
+        op,
+        vectorLiteral,
+        topK,
+        oversample: options?.oversample,
+        filters: options?.filters,
+        fields: options?.fields ?? undefined,
+        deletedRecords: options?.deletedRecords,
+        tableName: options?.tableName,
+        lexical: options?.lexical,
+        keywordBoost: options?.keywordBoost,
+        scoreAdjust: options?.scoreAdjust,
+      });
+      const r = await this.db.query(q.text, q.values);
+      return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+    }
+
+    const q = buildSelectQuery({
+      entity,
+      fields: options?.fields ?? undefined,
+      joins: options?.joins,
+      filters: options?.filters,
+      deletedRecords: options?.deletedRecords,
+      tableName: options?.tableName,
+      vectorOrder: {
+        field: vectorField,
+        op,
+        vectorLiteral,
+        scoreAlias,
+      },
+      limit: topK,
+    });
+    const r = await this.db.query(q.text, q.values);
+    return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+  }
+
   async findByPage<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     page: number,
@@ -479,6 +570,22 @@ export class Repository {
       : getQualifiedTableName(entity);
     const r = await this.db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM ${table}`, []);
     return r.rows?.[0]?.n ?? 0n;
+  }
+
+  /**
+   * Physical table reset — `TRUNCATE TABLE <schema>.<table>` resolved through
+   * entity metadata, like every other entity op: the schema-domain guard
+   * applies (entities outside the declared domain throw before any SQL).
+   * For auditable tables prefer soft-delete; TRUNCATE is for caches, KB
+   * stores, and test teardown.
+   */
+  async truncate(
+    entity: EntityClass,
+    options?: { restartIdentity?: boolean; cascade?: boolean },
+  ): Promise<void> {
+    const table = getQualifiedTableName(entity);
+    const flags = `${options?.restartIdentity ? " RESTART IDENTITY" : ""}${options?.cascade ? " CASCADE" : ""}`;
+    await this.db.query(`TRUNCATE TABLE ${table}${flags}`);
   }
 
   // ─── Write ops ─────────────────────────────────────────────────────────────
@@ -1678,6 +1785,7 @@ SELECT * FROM upd`;
 
     return pickReturningRow<TResult>(updatedRaw, ret.visibleKeys);
   }
+
   async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
     entity: EntityClass & { new (): TEntity },
     match: Partial<Record<keyof TEntity & string, unknown>>,
@@ -2265,19 +2373,18 @@ SELECT * FROM w`;
     // the whole operation is atomic and bounded by the bulk time budget.
     const { client, deadline } = await this.bulkBegin(options);
     try {
-      // 1. Temp table mirroring the insert columns
+      // 1. Temp table mirroring the insert columns. Column types are derived
+      //    FROM THE REAL TABLE (`AS SELECT … WHERE false`) — the runtime meta
+      //    does not resolve annotation types, and re-deriving pg types here
+      //    would silently degrade to `text` (uuid = text join errors).
       const tmpName = `tmp_add_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const tmpColDefs = allKeys
-        .map((k) => {
-          const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
-          const pgType = colMeta ? effectivePgStorageType(columnHintsFromMetaColumn(colMeta)) : "text";
-          return `${quoteIdent(getColumnName(entity, k))} ${pgType}`;
-        })
-        .join(", ");
-      await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${tmpColDefs}) ON COMMIT DROP`);
+      const tmpColsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
+      await client.query(
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} ON COMMIT DROP AS ` +
+          `SELECT ${tmpColsSql} FROM ${table} WHERE false`,
+      );
 
       // 2. Batch INSERT payload into the temp table
-      const tmpColsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
       for (let i = 0; i < rows.length; i += batchSz) {
         const batch = rows.slice(i, i + batchSz);
         const values: unknown[] = [];
@@ -2631,12 +2738,16 @@ WHERE agg.n > 0`;
     try {
       // 1. Temp table: row_ix + all identity columns (+ expected_version)
       const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const tmpColDefs = matchCols.map(
-        (c) => `${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`,
-      );
+      // Temp table types derive FROM THE REAL TABLE — runtime meta has no
+      // annotation types (AS SELECT … WHERE false inherits them verbatim).
+      const tmpSelCols = [
+        "NULL::bigint AS row_ix",
+        ...matchCols.map((c) => quoteIdent(c.sqlName)),
+        ...(versionGuard.guard ? ["NULL::integer AS expected_version"] : []),
+      ];
       await client.query(
-        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (row_ix bigint, ${tmpColDefs.join(", ")}` +
-        `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} ON COMMIT DROP AS ` +
+          `SELECT ${tmpSelCols.join(", ")} FROM ${table} WHERE false`,
       );
 
       // 2. Batch INSERT match keys (+ expected_version) into temp table
@@ -2774,6 +2885,157 @@ WHERE agg.n > 0`;
     }
   }
 
+  /** Bulk hard-delete — auditable entity (actor required for audit). */
+  async hardDeleteMany<TEntity extends object & IAuditableEntity>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: AuditableWriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  /** Bulk hard-delete — non-auditable entity (actor rejected). */
+  async hardDeleteMany<TEntity extends object>(
+    entity: EntityClass & { new (): TEntity },
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: WriteOptions & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult>;
+  /**
+   * Bulk PHYSICAL delete — same TEMP TABLE strategy as `deleteMany` but
+   * emits `DELETE FROM … USING tmp` instead of the soft-delete UPDATE.
+   * Works on deletable AND non-deletable entities (derived-index tables,
+   * append-only logs). All-or-nothing: ambiguity/version races roll back.
+   */
+  async hardDeleteMany<TEntity extends object>(
+    entity: EntityClass,
+    matches: Array<Partial<Record<keyof TEntity & string, unknown>>>,
+    options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity> & BulkOptions,
+  ): Promise<BulkResult> {
+    if (matches.length === 0) return { received: 0, affected: 0 };
+    const meta = getEntityPersistenceMeta(entity);
+    const table = getQualifiedTableName(entity);
+    const matchCols = this.resolveBulkMatchColumns(
+      meta,
+      matches as Array<Record<string, unknown>>,
+      options.matchBy,
+      "hardDeleteMany",
+    );
+    const auditable = isAuditableEntity(meta);
+    const actor = (options as AuditableWriteOptions).actor;
+    const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
+
+    const versionGuard = auditable
+      ? this.extractExpectedVersions(
+          meta,
+          matches as Array<Record<string, unknown>>,
+          matchCols[0].propertyKey,
+          "hardDeleteMany",
+        )
+      : { guard: false, versions: [] as number[], versionColSqlName: "" };
+
+    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
+    try {
+      const tmpName = `tmp_hdel_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      // Temp table types derive FROM THE REAL TABLE — runtime meta has no
+      // annotation types (AS SELECT … WHERE false inherits them verbatim).
+      const tmpSelCols = [
+        "NULL::bigint AS row_ix",
+        ...matchCols.map((c) => quoteIdent(c.sqlName)),
+        ...(versionGuard.guard ? ["NULL::integer AS expected_version"] : []),
+      ];
+      await client.query(
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} ON COMMIT DROP AS ` +
+          `SELECT ${tmpSelCols.join(", ")} FROM ${table} WHERE false`,
+      );
+
+      const batchSz = autoBatchSize(matchCols.length + 1 + (versionGuard.guard ? 1 : 0));
+      const tmpColsSql = matchCols.map((c) => quoteIdent(c.sqlName)).join(", ");
+      for (let i = 0; i < matches.length; i += batchSz) {
+        const batch = matches.slice(i, i + batchSz);
+        const values: unknown[] = [];
+        const tuples: string[] = [];
+        for (const [bi, m] of batch.entries()) {
+          const rec = m as Record<string, unknown>;
+          values.push(i + bi);
+          const ph = [`$${values.length}`];
+          for (const c of matchCols) {
+            values.push(jsValueToPgParam(rec[c.propertyKey], c.hints));
+            ph.push(`$${values.length}`);
+          }
+          if (versionGuard.guard) {
+            values.push(versionGuard.versions[i + bi]);
+            ph.push(`$${values.length}`);
+          }
+          tuples.push(`(${ph.join(", ")})`);
+        }
+        await client.query(
+          `INSERT INTO ${quoteIdent(tmpName)} (row_ix, ${tmpColsSql}` +
+          `${versionGuard.guard ? ", expected_version" : ""}) VALUES ${tuples.join(", ")}`,
+          values,
+        );
+        this.assertBulkAlive(deadline, "hardDeleteMany");
+      }
+
+      // Audit snapshot of rows about to be physically deleted (same tx).
+      let tmpOldName: string | null = null;
+      const auditEnabled = !!(auditable && actor !== undefined && (options as AuditableWriteOptions).audit);
+      if (auditEnabled) {
+        tmpOldName = `tmp_old_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+        await client.query(
+          `CREATE TEMP TABLE ${quoteIdent(tmpOldName)} ON COMMIT DROP AS ` +
+          `SELECT t.* FROM ${table} t ` +
+          `INNER JOIN ${quoteIdent(tmpName)} tmp ` +
+          `ON ${this.bulkJoinPredicate("t", "tmp", matchCols)}`,
+        );
+      }
+
+      await client.query(this.bulkAmbiguousSql(meta, table, matchCols, tmpName, "hardDeleteMany"));
+
+      if (versionGuard.guard) {
+        await client.query(
+          this.bulkStaleDiagnoseSql(meta, table, matchCols, tmpName, versionGuard.versionColSqlName, "hardDeleteMany"),
+        );
+        this.assertBulkAlive(deadline, "hardDeleteMany");
+      }
+
+      const result = await client.query(
+        `DELETE FROM ${table} USING ${quoteIdent(tmpName)} tmp ` +
+        `WHERE ${this.bulkJoinPredicate(table, "tmp", matchCols)}` +
+        (versionGuard.guard && versionCol
+          ? ` AND ${table}.${quoteIdent(versionCol.sqlName)} = tmp.expected_version`
+          : ""),
+      );
+
+      if (versionGuard.guard && (result.rowCount ?? 0) < matches.length) {
+        throw new OptimisticLockError(
+          `hardDeleteMany: ${matches.length - (result.rowCount ?? 0)} row(s) changed concurrently during the bulk operation on ${meta.entityClassName} — rolled back.`,
+        );
+      }
+
+      // Audit rows: delta = every column old→null (single-record HARD_DELETE
+      // semantics), sourced from the pre-delete snapshot.
+      if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
+        const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
+        const pkCol = findPkColumn(meta);
+        const deltaExpr = Object.values(meta.columns)
+          .map((c) => `'${c.sqlName}', jsonb_build_object('old', o.${quoteIdent(c.sqlName)}, 'new', null)`)
+          .join(",\n          ");
+        await client.query(
+          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT o.${quoteIdent(pkCol!.sqlName)}, o.uuid, 'HARD_DELETE', $1, $2, o.${quoteIdent(versionCol!.sqlName)},\n` +
+          `            jsonb_build_object(\n              ${deltaExpr}\n            )\n` +
+          `          FROM ${quoteIdent(tmpOldName)} o`,
+          [new Date(), actor],
+        );
+      }
+
+      await client.query("COMMIT");
+      return { received: matches.length, affected: result.rowCount ?? 0 };
+    } catch (err) {
+      await this.bulkAbort(client);
+      throw err;
+    } finally {
+      (client as any).release?.();
+    }
+  }
+
   /** Bulk restore — auditable+deletable entity (actor required). */
   async restoreMany<TEntity extends object & IAuditableEntity & IDeletableEntity>(
     entity: EntityClass & { new (): TEntity },
@@ -2822,12 +3084,16 @@ WHERE agg.n > 0`;
     const { client, deadline } = await this.bulkBegin(options);
     try {
       const tmpName = `tmp_restore_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const tmpColDefs = matchCols.map(
-        (c) => `${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`,
-      );
+      // Temp table types derive FROM THE REAL TABLE — runtime meta has no
+      // annotation types (AS SELECT … WHERE false inherits them verbatim).
+      const tmpSelCols = [
+        "NULL::bigint AS row_ix",
+        ...matchCols.map((c) => quoteIdent(c.sqlName)),
+        ...(versionGuard.guard ? ["NULL::integer AS expected_version"] : []),
+      ];
       await client.query(
-        `CREATE TEMP TABLE ${quoteIdent(tmpName)} (row_ix bigint, ${tmpColDefs.join(", ")}` +
-        `${versionGuard.guard ? ", expected_version integer" : ""}) ON COMMIT DROP`,
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} ON COMMIT DROP AS ` +
+          `SELECT ${tmpSelCols.join(", ")} FROM ${table} WHERE false`,
       );
 
       const batchSz = autoBatchSize(matchCols.length + 1 + (versionGuard.guard ? 1 : 0));
@@ -3029,34 +3295,29 @@ WHERE agg.n > 0`;
     const { client, deadline } = await this.bulkBegin(options);
     try {
 
-      // 1. Create temp table — row_ix + all identity columns + update cols
-      const tmpColDefs: string[] = ["row_ix bigint"];
-      for (const c of matchCols) {
-        tmpColDefs.push(`${quoteIdent(c.sqlName)} ${effectivePgStorageType(c.hints)}`);
-      }
-
-      for (const k of updateKeys) {
-        const colMeta = Object.values(meta.columns).find((c) => c.propertyKey === k);
-        const pgType = colMeta ? effectivePgStorageType(columnHintsFromMetaColumn(colMeta)) : "text";
-        tmpColDefs.push(`${quoteIdent(getColumnName(entity, k))} ${pgType}`);
-      }
+      // 1. Create temp table — row_ix + all identity columns + update cols.
+      //    Column types derive FROM THE REAL TABLE via `AS SELECT … WHERE
+      //    false` — runtime meta has no annotation types and a meta-derived
+      //    list would silently degrade to `text`.
+      const tmpSelCols: string[] = [
+        "NULL::bigint AS row_ix",
+        ...matchCols.map((c) => quoteIdent(c.sqlName)),
+        ...updateKeys.map((k) => quoteIdent(getColumnName(entity, k))),
+      ];
 
       if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
         const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
-        if (updatedAtCol) {
-          const pgType = effectivePgStorageType(columnHintsFromMetaColumn(updatedAtCol));
-          tmpColDefs.push(`${quoteIdent(updatedAtCol.sqlName)} ${pgType}`);
-        }
-        if (updatedByCol) {
-          const pgType = effectivePgStorageType(columnHintsFromMetaColumn(updatedByCol));
-          tmpColDefs.push(`${quoteIdent(updatedByCol.sqlName)} ${pgType}`);
-        }
+        if (updatedAtCol) tmpSelCols.push(quoteIdent(updatedAtCol.sqlName));
+        if (updatedByCol) tmpSelCols.push(quoteIdent(updatedByCol.sqlName));
       }
-      if (versionGuard.guard) tmpColDefs.push("expected_version integer");
+      if (versionGuard.guard) tmpSelCols.push("NULL::integer AS expected_version");
 
       const tmpName = `tmp_update_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      await client.query(`CREATE TEMP TABLE ${quoteIdent(tmpName)} (${tmpColDefs.join(", ")}) ON COMMIT DROP`);
+      await client.query(
+        `CREATE TEMP TABLE ${quoteIdent(tmpName)} ON COMMIT DROP AS ` +
+          `SELECT ${tmpSelCols.join(", ")} FROM ${table} WHERE false`,
+      );
 
       // 2. Batch INSERT into temp table
       const now = new Date();
@@ -3215,13 +3476,6 @@ WHERE agg.n > 0`;
     } finally {
       (client as any).release?.();
     }
-  }
-
-  // ─── Raw SQL ───────────────────────────────────────────────────────────────
-
-  async rawSql<TResult = unknown>(text: string, values?: unknown[]): Promise<TResult[]> {
-    const r = await this.db.query(text, values ?? []);
-    return (r.rows ?? []) as TResult[];
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   AuditTrail,
   AuditableFieldType,
   DeletableFieldType,
+  type UUID,
 } from "../../src/index.js";
 
 /**
@@ -23,7 +24,7 @@ export class BenchSimpleEntity {
   id!: bigint;
 
   @Unique()
-  uuid!: string;
+  uuid!: UUID;
 
   @Column({ pgType: "varchar", length: 50 })
   code!: string;

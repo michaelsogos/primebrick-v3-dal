@@ -64,35 +64,28 @@ await dal.close(); // close(timeoutMs?) — default 10s timeout
 - For multi-DB: use `new Dal(config)` directly (bypasses the singleton).
 - `resetDal()` closes and clears the singleton (for tests).
 
-### `dal.withClient(fn, options?)` — transactions & per-call timeout
+### `dal.transaction(fn, options?)` — atomic multi-statement work
 
-Acquires a dedicated client from the pool, optionally sets a per-connection `statement_timeout`, runs `fn(client)`, and releases the client (resetting the timeout).
+Acquires a dedicated client, emits `BEGIN`, runs `fn(txRepo)` with a tx-scoped
+`Repository`, then `COMMIT`s — or `ROLLBACK`s if `fn` throws. The callback
+never sees the raw `PoolClient`; every statement inside the tx goes through
+the entity/DSL surface (schema-domain guard, audit stamping, optimistic lock).
 
 ```typescript
-// Transaction:
-await dal.withClient(async (client) => {
-  await client.query("BEGIN");
-  // ... operations ...
-  await client.query("COMMIT");
+await dal.transaction(async (txRepo) => {
+  await txRepo.add(MyEntity, { ... }, { actor: "tx" });
+  await txRepo.update(OtherEntity, match, { ... }, { actor: "tx" });
+  // COMMIT on return, ROLLBACK on throw — never manual.
 });
 
-// Repository backed by the client (for tx-participating DAL ops):
-import { Repository } from "@primebrick/dal-pg";
-await dal.withClient(async (client) => {
-  const repo = new Repository(client);
-  await client.query("BEGIN");
-  await repo.add(MyEntity, { ... }, { actor: "tx" });
-  await client.query("COMMIT");
-});
-
-// Per-call timeout override (for ad-hoc long queries):
-await dal.withClient(
-  async (client) => {
-    await client.query("SELECT * FROM large_table");
-  },
-  { timeoutMs: 120000 }, // 2 minutes for this one query
-);
+// Timeout override (SET LOCAL — transaction-scoped, no leakage):
+await dal.transaction(async (txRepo) => { /* ... */ }, { timeoutMs: 120000 });
 ```
+
+`dal.withClient` (raw `PoolClient`) is now `private` to dal-pg internals —
+not a consumer API. `dal.serverVersion()` doubles as the connectivity probe
+(there is no `ping()`). Physical resets go through `dal.truncate(entity)` /
+`repo.truncate` (domain-guarded), never raw `TRUNCATE`.
 
 ### `dal.close(timeoutMs?)` — graceful shutdown
 
@@ -127,7 +120,7 @@ Exposes the underlying `pg.Pool` for tooling that needs raw access (e.g. schema 
 
 **Impact per operation:**
 - Normal CRUD: 30s is plenty.
-- Bulk ops (`addMany`, `upsertMany`, `updateMany`): use `options.timeoutMs` to override per-call (emits `SET LOCAL statement_timeout` inside the transaction).
+- Bulk ops (`addMany`, `updateMany`, `deleteMany`): use `options.timeoutMs` to override per-call (emits `SET LOCAL statement_timeout` inside the transaction).
 - `findAll` non-streamed on large sets: **HIGH risk** — the entire result is one statement. Use `stream: true` instead.
 - `findAll` streamed (`stream: true`): **safe** — cursor `FETCH` per batch, each bounded by the session default individually.
 
@@ -289,23 +282,13 @@ const inserted = await repo.add(
 
 ---
 
-### `upsert(entity, row, options)`
+### `upsert` — REMOVED
 
-Insert or update on conflict. Returns the full row.
-
-```typescript
-const result = await repo.upsert(
-  MyEntity,
-  { uuid: existingUuid, name: "Updated Name" },
-  { actor: "admin", conflictTarget: "uuid" }
-);
-```
-
-**Conflict behavior (audit-aware):**
-- `created_at` / `created_by` are **preserved** on conflict (not overwritten)
-- `updated_at` / `updated_by` are stamped with `now()` / `options.actor`
-- `version` is incremented by 1
-- The conflict target column itself is not updated
+Single-record upsert was removed by design: `ON CONFLICT … DO UPDATE`
+overwrote unconditionally, bypassing the optimistic `version` check.
+Never reintroduce it. The standard is: read (`findByUUID`/`find` —
+carries the observed `version`) then `add` or `update`. A stale `version`
+fails the write — that IS the concurrency guard.
 
 ---
 
@@ -392,23 +375,13 @@ const inserted = await repo.addMany(MyEntity, rows, { actor: "admin" });
 
 ---
 
-### `upsertMany(entity, rows, options)`
+### `upsertMany` — DISABLED (commented out in source)
 
-Bulk upsert with conflict handling. Returns all rows (inserted + updated).
-
-```typescript
-const result = await repo.upsertMany(
-  MyEntity,
-  rows,
-  { actor: "admin", conflictTarget: "uuid" }
-);
-```
-
-**Options:**
-- `conflictTarget` (default: `"uuid"`) — column name for ON CONFLICT
-- `batchSize` — override auto-batch size
-
-**Audit-aware ON CONFLICT:** Same rules as single `upsert` — `created_at`/`created_by` preserved, `updated_at`/`updated_by` stamped, `version` incremented.
+Parked pending a guarded-vs-sync-import design decision: its conflict
+branch overwrote rows without a `version` check — the same optimistic-lock
+bypass that killed single `upsert`. Do not call; if a legitimate bulk
+sync-import use case surfaces it must come back WITH a version guard or
+an explicitly unguarded (documented) mode.
 
 ---
 
@@ -569,10 +542,10 @@ Marks the primary key column. Only one per entity.
 
 ```typescript
 @Key()
-id!: number;
+id!: bigint;
 
 @Key({ generated: "manual" })
-custom_id!: number;
+custom_id!: bigint;
 ```
 
 ### `@Unique()`
@@ -581,7 +554,7 @@ Marks a column with a unique constraint.
 
 ```typescript
 @Unique()
-uuid!: string;
+uuid!: UUID;
 ```
 
 ### `@Column(options)`
@@ -589,14 +562,14 @@ uuid!: string;
 Overrides SQL name, PG type, nullability, length, precision, scale, default, or join cast.
 
 ```typescript
-@Column({ pgType: "varchar", length: 255 })
+@Column({ length: 255 })          // string + length → varchar(255)
 name!: string;
 
-@Column({ pgType: "numeric", precision: 15, scale: 2 })
-price!: number;
+@Column({ precision: 15, scale: 2 })  // Decimal + precision/scale → numeric(15,2)
+price!: Decimal;
 
-@Column({ pgType: "date })
-birth_date!: Date;
+@Column({ jsType: "isodate" })        // ISODate → date (plain "YYYY-MM-DD")
+birth_date!: ISODate;
 
 @Column({ sqlName: "short_name" })
 displayName!: string;

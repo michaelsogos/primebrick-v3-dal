@@ -35,7 +35,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     // Use a direct instance (not the singleton) for most tests
     dal = new Dal({
       connectionString,
-      schema: "public",
+      schemas: ["public"],
       max: 5,
       statementTimeoutMs: 30000,
       applicationName: "dal-test-gateway",
@@ -60,11 +60,11 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     expect(dal.config.connectionTimeoutMillis).toBe(5000);
     expect(dal.config.idleTimeoutMillis).toBe(30000);
     expect(dal.config.applicationName).toBe("dal-test-gateway");
-    expect(dal.config.schema).toBe("public");
+    expect(dal.config.schemas).toEqual(["public"]);
   });
 
   it("Dal: throws if connectionString is missing", () => {
-    expect(() => new Dal({ connectionString: "" } as DalConfig)).toThrow("connectionString is required");
+    expect(() => new Dal({ connectionString: "", schemas: [] } as DalConfig)).toThrow("connectionString is required");
   });
 
   // ─── Pool lifecycle ──────────────────────────────────────────────────
@@ -75,15 +75,15 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
   });
 
   it("Dal.close: drains the pool; subsequent operations fail", async () => {
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     await tempDal.close();
     expect(tempDal.isClosed).toBe(true);
     // Pool is ended — querying should reject
-    await expect(tempDal.rawSql("SELECT 1")).rejects.toThrow();
+    await expect(tempDal.getPool().query("SELECT 1")).rejects.toThrow();
   });
 
   it("Dal.isClosed: false before close, true after", async () => {
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     expect(tempDal.isClosed).toBe(false);
     await tempDal.close();
     expect(tempDal.isClosed).toBe(true);
@@ -92,7 +92,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
   // ─── close() hardening: re-entrancy, timeout, error containment ──────
 
   it("Dal.close: re-entrant — concurrent calls both resolve without error", async () => {
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     // Both calls should resolve without error — the first wins, the second is a no-op
     await Promise.all([tempDal.close(), tempDal.close()]);
     expect(tempDal.isClosed).toBe(true);
@@ -100,7 +100,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
   });
 
   it("Dal.close: re-entrant — sequential second call is a no-op", async () => {
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     await tempDal.close();
     expect(tempDal.isClosed).toBe(true);
     // Second call on already-closed pool — should NOT throw
@@ -108,7 +108,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
   });
 
   it("Dal.isClosing: false before, transient during, false after", async () => {
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     expect(tempDal.isClosing).toBe(false);
     await tempDal.close();
     expect(tempDal.isClosing).toBe(false);
@@ -119,7 +119,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     // With a real PG, pool.end() completes quickly. But we verify the timeout
     // mechanism: close(1) must resolve regardless of whether pool.end() or the
     // timeout wins the race. Either way, close() must not hang.
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     const start = Date.now();
     await tempDal.close(1); // 1ms timeout
     const elapsed = Date.now() - start;
@@ -130,7 +130,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
   it("Dal.close: default timeoutMs is 10000", async () => {
     // Verify the default parameter — just ensure close() with no args works
     // and completes (pool.end() on a healthy pool is instant).
-    const tempDal = new Dal({ connectionString, max: 2 });
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 2 });
     await tempDal.close();
     expect(tempDal.isClosed).toBe(true);
   });
@@ -139,14 +139,14 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
 
   it("Dal.onConnect: sets search_path, statement_timeout, application_name", async () => {
     // Query the session settings through the Dal's pool
-    const result = await dal.rawSql<{ setting: string }>(`
+    const result = (await dal.getPool().query<{ setting: string }>(`
       SELECT current_setting('search_path') AS setting
-    `);
+    `)).rows;
     expect(result[0].setting).toContain("public");
 
-    const timeoutResult = await dal.rawSql<{ setting: string }>(`
+    const timeoutResult = (await dal.getPool().query<{ setting: string }>(`
       SELECT current_setting('statement_timeout') AS setting
-    `);
+    `)).rows;
     // PG normalizes statement_timeout to human-readable (e.g. "30s" for 30000ms)
     // Parse it: if it ends with "s" and has no decimal, it's seconds; if it's a
     // plain integer, it's ms. We expect 30s.
@@ -159,9 +159,9 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
       expect(parseInt(raw, 10)).toBe(30000);
     }
 
-    const appNameResult = await dal.rawSql<{ setting: string }>(`
+    const appNameResult = (await dal.getPool().query<{ setting: string }>(`
       SELECT current_setting('application_name') AS setting
-    `);
+    `)).rows;
     expect(appNameResult[0].setting).toBe("dal-test-gateway");
   });
 
@@ -197,11 +197,11 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
 
   it("Dal.find: finds by filter", async () => {
     await dal.add(SimpleTestEntity, { name: "Find Me" }, { actor: "test" });
-    // Use rawSql to find by name (avoid DSL import complexity in this test)
-    const rows = await dal.rawSql<{ name: string }>(
+    // Query by name via the pool (avoid DSL import complexity in this test)
+    const rows = (await dal.getPool().query<{ name: string }>(
       `SELECT name FROM dal_test_simple WHERE name = $1`,
       ["Find Me"],
-    );
+    )).rows;
     expect(rows.length).toBe(1);
     expect(rows[0].name).toBe("Find Me");
   });
@@ -225,73 +225,68 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     expect(count).toBe(2n);
   });
 
-  // ─── withClient ──────────────────────────────────────────────────────
+  // ─── repository / serverVersion / transaction / truncate ─────────────
 
-  it("Dal.withClient: acquires and releases a client", async () => {
-    const result = await dal.withClient(async (client) => {
-      const r = await client.query("SELECT 42 AS answer");
-      return r.rows[0].answer;
+  it("Dal.entityService: builds the generic worker over the gateway repo", async () => {
+    const svc = dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      list: {
+        searchableKeys: ["name"],
+        filterableKeys: new Set(["name"]),
+      },
     });
-    expect(result).toBe(42);
+    const created = await svc.create({ name: "svc-created" });
+    expect(created.name).toBe("svc-created");
+    const fetched = await svc.get(created.uuid);
+    expect(fetched.name).toBe("svc-created");
   });
 
-  it("Dal.withClient: supports transactions (BEGIN/COMMIT)", async () => {
-    await dal.withClient(async (client) => {
-      await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO dal_test_simple (name, created_by, updated_by) VALUES ($1, $2, $3)`,
-        ["tx-test", "tx", "tx"],
-      );
-      await client.query("COMMIT");
-    });
-    const rows = await dal.rawSql<{ name: string }>(
-      `SELECT name FROM dal_test_simple WHERE name = $1`,
-      ["tx-test"],
-    );
-    expect(rows.length).toBe(1);
+  it("Dal.tableAuditPort: returns an AuditPort bound to the gateway repo", async () => {
+    const port = dal.tableAuditPort();
+    expect(typeof port.writeAudit).toBe("function");
   });
 
-  it("Dal.withClient: supports transaction rollback", async () => {
-    try {
-      await dal.withClient(async (client) => {
-        await client.query("BEGIN");
-        await client.query(
-          `INSERT INTO dal_test_simple (name, created_by, updated_by) VALUES ($1, $2, $3)`,
-          ["rollback-test", "rb", "rb"],
-        );
-        await client.query("ROLLBACK");
-        throw new Error("intentional rollback");
-      });
-    } catch {
-      // expected
-    }
-    const rows = await dal.rawSql<{ name: string }>(
-      `SELECT name FROM dal_test_simple WHERE name = $1`,
-      ["rollback-test"],
-    );
-    expect(rows.length).toBe(0);
+  it("Dal.serverVersion: returns server_version and full banner", async () => {
+    const v = await dal.serverVersion();
+    expect(v.server_version).toMatch(/^\d+\.\d+/);
+    expect(v.version).toContain("PostgreSQL");
   });
 
-  it("Dal.withClient: Repository backed by the client works inside tx", async () => {
-    // This is the documented advanced path: construct a Repository with the
-    // client inside withClient for transaction-participating DAL ops.
-    const { Repository } = await import("../src/index.js");
-    await dal.withClient(async (client) => {
-      const repo = new Repository(client);
-      await client.query("BEGIN");
-      const inserted = await repo.add(
-        SimpleTestEntity,
-        { name: "repo-in-tx" },
-        { actor: "tx" },
-      );
-      expect(inserted.name).toBe("repo-in-tx");
-      await client.query("COMMIT");
+  it("Dal.serverVersion: doubles as connectivity probe — rejects after close", async () => {
+    const tempDal = new Dal({ connectionString, schemas: ["public"], max: 1 });
+    await tempDal.close();
+    await expect(tempDal.serverVersion()).rejects.toThrow();
+  });
+
+  it("Dal.transaction: commits tx-scoped repository writes", async () => {
+    await dal.transaction(async (txRepo) => {
+      await txRepo.add(SimpleTestEntity, { name: "tx-dal" }, { actor: "tx" });
     });
-    const rows = await dal.rawSql<{ name: string }>(
-      `SELECT name FROM dal_test_simple WHERE name = $1`,
-      ["repo-in-tx"],
-    );
-    expect(rows.length).toBe(1);
+    expect(await dal.count(SimpleTestEntity)).toBe(1n);
+  });
+
+  it("Dal.transaction: rolls back on throw", async () => {
+    await expect(
+      dal.transaction(async (txRepo) => {
+        await txRepo.add(SimpleTestEntity, { name: "tx-rb" }, { actor: "tx" });
+        throw new Error("intentional");
+      }),
+    ).rejects.toThrow("intentional");
+    expect(await dal.count(SimpleTestEntity)).toBe(0n);
+  });
+
+  it("Dal.truncate: resets the table through entity metadata", async () => {
+    await dal.add(SimpleTestEntity, { name: "to-truncate" }, { actor: "test" });
+    await dal.truncate(SimpleTestEntity);
+    expect(await dal.count(SimpleTestEntity)).toBe(0n);
+  });
+
+  it("Dal.truncate: rejects entities outside the declared schema domain", async () => {
+    const { Entity } = await import("../src/index.js");
+    @Entity("anything", "other_schema")
+    class ForeignEntity {}
+    await expect(dal.truncate(ForeignEntity)).rejects.toThrow();
   });
 });
 
@@ -319,7 +314,7 @@ describe("Dal singleton — getDal / resetDal", () => {
     await resetDal();
     const dal = getDal({
       connectionString,
-      schema: "public",
+      schemas: ["public"],
       max: 3,
       applicationName: "dal-singleton-test",
     });
@@ -335,13 +330,13 @@ describe("Dal singleton — getDal / resetDal", () => {
 
   it("getDal: returns same instance with same connectionString", async () => {
     const dal1 = getDal();
-    const dal2 = getDal({ connectionString, schema: "public" });
+    const dal2 = getDal({ connectionString, schemas: ["public"] });
     expect(dal1).toBe(dal2);
   });
 
   it("getDal: throws on different connectionString", async () => {
     expect(() =>
-      getDal({ connectionString: "postgresql://wrong:5432/wrong" }),
+      getDal({ connectionString: "postgresql://wrong:5432/wrong", schemas: ["public"] }),
     ).toThrow("different connectionString");
   });
 
@@ -350,7 +345,7 @@ describe("Dal singleton — getDal / resetDal", () => {
     await resetDal();
     expect(dal.isClosed).toBe(true);
     // After reset, a new instance can be created
-    const newDal = getDal({ connectionString, schema: "public", max: 2 });
+    const newDal = getDal({ connectionString, schemas: ["public"], max: 2 });
     expect(newDal).not.toBe(dal);
     await resetDal();
   });

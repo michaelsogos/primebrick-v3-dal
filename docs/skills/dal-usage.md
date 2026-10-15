@@ -21,7 +21,9 @@
 - **RETURNING \*** on all writes — the DB returns the full row
 - **throwIfNotFound: true** by default on all finders
 - **deletedRecords: "EXCLUDED"** by default — soft-deleted rows excluded
-- **TEMP TABLE strategy** for `updateMany` / `upsertMany`
+- **TEMP TABLE strategy** for `updateMany` / `addMany` (`upsert`/`upsertMany` REMOVED — no version guard; never reintroduce)
+- **Transactions** via `dal.transaction(txRepo => …)` only — `withClient`/`PoolClient` are internal; no consumer raw SQL
+- **Health probe** is `dal.serverVersion()` (no `ping()`); physical reset is `dal.truncate(entity)` (domain-guarded)
 - **Audit is port-based and optional** — inject `AuditPort` only if needed
 - **Errors are framework-agnostic** — stable `code` field, no HTTP coupling
 - **LEAF dependency** — MUST NOT import from `primebrick-be-v3` or `primebrick-us-v3`
@@ -35,10 +37,10 @@ import { Entity, Key, Unique, Column, AuditableField, DeletableField, AuditableF
 
 @Entity("my_table")
 class MyEntity {
-  @Key() id!: number;
-  @Unique() uuid!: string;
-  @Column({ pgType: "varchar", length: 255 }) name!: string;
-  @Column({ pgType: "text", nullable: true }) description?: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ length: 255 }) name!: string;
+  @Column({ nullable: true }) description?: string | null;
   @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
   @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
   @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
@@ -52,19 +54,19 @@ class MyEntity {
 ### Insert and find
 
 ```typescript
-const repo = new Repository(pool);
+// Repository is sealed — use the Dal proxies directly:
 
 // Insert
-const row = await repo.add(MyEntity, { name: "test" }, { actor: "user1" });
+const row = await dal.add(MyEntity, { name: "test" }, { actor: "user1" });
 
 // Find by PK
-const byId = await repo.findById(MyEntity, row.id);
+const byId = await dal.findById(MyEntity, row.id);
 
 // Find by UUID
-const byUuid = await repo.findByUUID(MyEntity, row.uuid);
+const byUuid = await dal.findByUUID(MyEntity, row.uuid);
 
 // Find with filters (returns null with throwIfNotFound: false)
-const found = await repo.find(MyEntity, null, {
+const found = await dal.find(MyEntity, null, {
   filters: [Filter.fieldValue(field(MyEntity, "name"), "=", "test")],
 });
 ```
@@ -74,7 +76,7 @@ const found = await repo.find(MyEntity, null, {
 ```typescript
 import { field, Filter, Sort, Project } from "@primebrick/dal-pg";
 
-const rows = await repo.findAll(MyEntity,
+const rows = await dal.findAll(MyEntity,
   [Project.field(field(MyEntity, "name")), Project.field(field(MyEntity, "uuid"))],
   {
     filters: [
@@ -94,32 +96,30 @@ const rows = await repo.findAll(MyEntity,
 
 ```typescript
 // Update
-const updated = await repo.update(MyEntity, uuid, { name: "new name" }, { actor: "user1" });
+const updated = await dal.update(MyEntity, uuid, { name: "new name" }, { actor: "user1" });
 
 // Soft delete
-const deleted = await repo.delete(MyEntity, uuid, { actor: "user1" });
+const deleted = await dal.delete(MyEntity, uuid, { actor: "user1" });
 
 // Restore
-const restored = await repo.restore(MyEntity, uuid, { actor: "user1" });
+const restored = await dal.restore(MyEntity, uuid, { actor: "user1" });
 
 // Hard delete
-await repo.hardDelete(MyEntity, uuid, { actor: "user1" });
+await dal.hardDelete(MyEntity, uuid, { actor: "user1" });
 ```
 
-### Bulk upsert (TEMP TABLE)
+### Bulk insert (TEMP TABLE)
 
 ```typescript
 const rows = [{ name: "a" }, { name: "b" }, { name: "c" }];
-const result = await repo.upsertMany(MyEntity, rows, {
-  actor: "user1",
-  conflictTarget: "uuid",
-});
+const result = await dal.addMany(MyEntity, rows, { actor: "user1" });
+// upsert/upsertMany are removed — find (uuid+version) then add/update.
 ```
 
 ### Streaming
 
 ```typescript
-const stream = await repo.findAll(MyEntity, null, { stream: true });
+const stream = await dal.findAll(MyEntity, null, { stream: true });
 for await (const row of stream) {
   console.log(row.uuid);
 }
@@ -131,7 +131,7 @@ for await (const row of stream) {
 import { NotFoundError, ValidationError } from "@primebrick/dal-pg";
 
 try {
-  await repo.findByUUID(MyEntity, uuid);
+  await dal.findByUUID(MyEntity, uuid);
 } catch (err) {
   if (err instanceof NotFoundError) {
     // 404 in HTTP layer

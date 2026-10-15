@@ -83,7 +83,7 @@ This entity has NO
 
 | Property | Type | Flags |
 |----------|------|-------|
-| `config` | Required&lt;Pick&lt;DalConfig, "connectionString" | "max" | "statementTimeoutMs" | "connectionTimeoutMillis" | "idleTimeoutMillis" | "applicationName"&gt;&gt; & Pick&lt;DalConfig, "schema" | "maxUses"&gt; | readonly |
+| `config` | Required&lt;Pick&lt;DalConfig, "connectionString" | "schemas" | "max" | "statementTimeoutMs" | "bulkTimeoutMs" | "connectionTimeoutMillis" | "idleTimeoutMillis" | "applicationName"&gt;&gt; & Pick&lt;DalConfig, "maxUses" | "sharedTables" | "repoDecorator"&gt; | readonly |
 
 #### `getPool(): Pool`
 
@@ -159,13 +159,12 @@ Graceful shutdown — drains the pool with a timeout deadline.
 | `row` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
 | `options` | AuditableWriteOptions |  |
 
-#### `upsert(entity: EntityClass & () => TEntity, row: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & UpsertOptions): Promise<TEntity>`
+#### `upsert` — REMOVED
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `row` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & UpsertOptions |  |
+Single-record upsert was removed by design: it bypassed optimistic-lock
+semantics (unconditional overwrite, no `version` check). The standard is an
+explicit read (`findByUUID`, `find`) followed by `add` or `update` — the write
+that carries the observed `version` is the concurrency guard.
 
 #### `update(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
 
@@ -246,29 +245,81 @@ audit fields. Same version guard as `deleteMany`.
 | `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
 
-#### `rawSql(text: string, values: unknown[]): Promise<TResult[]>`
+#### `transaction(fn: (txRepo: Repository) => Promise<TResult>, options: TimeoutOverrideOptions): Promise<TResult>`
+
+Atomic multi-statement work: acquires a dedicated client, emits BEGIN, runs
+``fn(txRepo)`` with a tx-scoped ``Repository``, then COMMITs — or ROLLBACKs if
+``fn`` throws. The callback never sees the raw ``PoolClient``: every statement
+inside the transaction goes through the entity/DSL surface, so the
+schema-domain guard, audit stamping, and optimistic locking apply inside the
+tx exactly as outside.
+
+``options.timeoutMs`` emits ``SET LOCAL statement_timeout`` right after BEGIN —
+auto-reset at COMMIT/ROLLBACK, no session leakage.
+
+``dal.withClient`` — which used to expose the raw ``PoolClient`` — is now
+``private`` (it powers ``transaction`` and ``partitionMaintenance``).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `text` | string |  |
-| `values` | unknown[] |  |
+| `fn` | (txRepo: Repository) =&gt; Promise&lt;TResult&gt; |  |
+| `options` | TimeoutOverrideOptions |  |
 
-#### `withClient(fn: (client: PoolClient) => Promise<TResult>, options: WithClientOptions): Promise<TResult>`
+#### `beginTransaction(options?: TimeoutOverrideOptions): DeferredTransaction`
 
-Acquires a dedicated client from the pool, optionally sets a per-connection
-statement_timeout, runs fn(client), and releases the client (resetting the
-timeout to the session default).
-
-Use for:
-- Transactions (BEGIN/COMMIT inside fn).
-- Ad-hoc long queries with a timeoutMs override.
-- Constructing a Repository backed by a specific client for tx participation:
-  ``dal.withClient(async (client) =&gt; &#123; const repo = new Repository(client); ... &#125;)``.
+Deferred fluent transaction — the preferred shape for straightforward
+dependent writes. `beginTransaction` returns a buffering handle; its
+``add``/``update``/``delete``/``restore``/``hardDelete`` (and reads) do
+NOT execute — they are appended to a buffer. ``commit()`` compiles the
+whole buffer into ONE data-modifying CTE statement
+(``WITH s0 AS (… RETURNING …), s1 AS (…), …``) and executes it: atomicity
+comes from the single-statement guarantee — there is no BEGIN/COMMIT/
+ROLLBACK code. Ops receive ``Deferred&lt;T&gt;`` handles; ``deferred.ref("col")``
+turns an earlier op's RETURNING field into a scalar subquery usable in
+later ops' values. Read ``Deferred.value`` only after ``commit()`` — it
+throws before. Prefer this over ``transaction(fn)`` when the flow does not
+need conditional TS logic on intermediate results (that is the one case
+``transaction(fn)`` remains for).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `fn` | (client: PoolClient) =&gt; Promise&lt;TResult&gt; |  |
-| `options` | WithClientOptions |  |
+| `options` | TimeoutOverrideOptions | optional |
+
+#### `entityService<TEntity>(cfg: EntityServiceConfig<TEntity>): EntityService<TEntity>`
+
+The public path to the generic entity-service worker (see the
+[entity-service guide](./entity-service.mdx)). The gateway injects its own
+schema-domain-guarded ``Repository`` — consumers never see it; ``cfg.repo``
+is only a decorator seam (e.g. BE ``withCache``). Defaults ``auditPort`` to
+``makeTableAuditPort(repo)``.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `cfg` | EntityServiceConfig&lt;TEntity&gt; |  |
+
+#### `tableAuditPort(): AuditPort`
+
+The standard ``{table}_audit`` writer port, bound to the gateway
+Repository. Use for adapters that need an ``AuditPort`` without exposing
+the Repository itself.
+
+#### `truncate(entity: EntityClass, options: {   restartIdentity?: boolean; cascade?: boolean }): Promise<void>`
+
+Physical table reset — entity-resolved and schema-domain guarded (rejects
+entities outside the service's declared schemas). For auditable tables prefer
+soft-delete; TRUNCATE is for caches, KB stores, and test teardown. Same op on
+``Repository``.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `entity` | EntityClass |  |
+| `options` | &#123;   restartIdentity?: boolean; cascade?: boolean &#125; |  |
+
+#### `serverVersion(): Promise<{   server_version: string; version: string }>`
+
+Server version + connectivity probe in one call — a successful response IS the
+health probe (there is deliberately no ``ping()``; a dedicated ``SELECT 1``
+would be a redundant round-trip). Throws on connectivity/timeout failure.
 
 ### `DalError`
 
@@ -637,7 +688,7 @@ a();
 
 ### `Repository`
 
-**Constructor**: `new Repository(db: Queryable)`
+**Construction**: `Repository` is NOT consumer-constructible — `new Repository(...)` requires an internal token unavailable outside dal-pg (compile-time + runtime sealed). Consumers get repo-equivalent access via `dal.*` entity proxies, `dal.entityService(cfg)`, `dal.tableAuditPort()`, and `dal.transaction(repo => …)`.
 
 #### `findById(entity: EntityClass, id: string | bigint, options: FindByIdOptions): Promise<TResult | null>`
 
@@ -808,13 +859,6 @@ caller-observed `version`; atomic rollback with ERR01/02/03 per-row detail.
 | `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | every row needs `version` on auditable entities |
 | `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; & BulkOptions |  |
 
-#### `rawSql(text: string, values: unknown[]): Promise<TResult[]>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `text` | string |  |
-| `values` | unknown[] |  |
-
 ## Interfaces
 
 ### `DalConfig`
@@ -824,7 +868,9 @@ Configuration for the Dal gateway.
 | Field | Type | Description |
 |-------|------|-------------|
 | `connectionString` | string | PostgreSQL connection string. Required. |
-| `schema?` | string | Schema to set as search_path on every connection. Default: undefined (uses DB default). |
+| `schemas` | string[] | Declared schema domain — the ONLY PostgreSQL schemas this service may touch (`schemas[0]` is the owned/primary schema). Required. |
+| `sharedTables?` | string[] | Shared table names exempt from the schema-domain check (today only `translations`). |
+| `repoDecorator?` | (repo: Repository) =&gt; Repository | Optional decorator applied to the internal root Repository at construction — the governed seam for cross-cutting behavior (e.g. BE `withCache`). Tx-scoped repositories are NOT decorated. |
 | `max?` | number | Maximum pool size. Default: 10.
  Formula: max ≤ (PG max_connections − reserved) / service_instances.
  The lib cannot pick this for you, but it documents it. |
@@ -838,13 +884,14 @@ Configuration for the Dal gateway.
  Default: undefined (off). |
 | `applicationName?` | string | Optional application_name for PG logging/observability. Default: "primebrick-dal". |
 
-### `WithClientOptions`
+### `TimeoutOverrideOptions`
 
-Options for withClient — per-connection timeout override.
+Per-operation statement_timeout override for dedicated-client work
+(``transaction``, ``partitionMaintenance``).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `timeoutMs?` | number | Override statement_timeout (ms) for this client. Resets to session default on release. |
+| `timeoutMs?` | number | Transaction-scoped for `transaction` (SET LOCAL, auto-resets); connection-scoped with session-default restore for `partitionMaintenance`. |
 
 ### `IExposableEntity`
 
@@ -1153,11 +1200,11 @@ For multi-DB: construct ``new Dal(config)`` directly (bypasses the singleton).
 Resets the singleton. Closes the existing instance if any.
 Intended for tests — call in afterAll to release the pool.
 
-### `columnHintsFromMetaColumn(col: {   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   nullable?: boolean;   pgType?: string;   tsDesignTypeCtorName?: string;   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string }): ColumnPgPersistenceHints`
+### `columnHintsFromMetaColumn(col: {   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   uniqueIndexName?: string;   uniqueIndexOrder?: number;   nullable?: boolean;   pgType?: string;   jsType?: "instant" | "decimal" | "vector";   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string;   isPartition?: boolean;   partitionOpts?: PartitionOpts }): ColumnPgPersistenceHints`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `col` | &#123;   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   nullable?: boolean;   pgType?: string;   tsDesignTypeCtorName?: string;   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string &#125; |  |
+| `col` | &#123;   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   uniqueIndexName?: string;   uniqueIndexOrder?: number;   nullable?: boolean;   pgType?: string;   jsType?: "instant" &#124; "decimal" &#124; "vector";   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string;   isPartition?: boolean;   partitionOpts?: PartitionOpts &#125; |  |
 
 ### `effectivePgStorageType(h: ColumnPgPersistenceHints): string`
 
@@ -1211,7 +1258,7 @@ After ``Object.assign`` from JSON, coerce ISO strings into ``Date`` for date-lik
 
 ### `syncImplicitEntityColumns(ctor: Function): void`
 
-Registers every implicit column + ``design:type`` / nullability when not already set by decorators.
+Registers every implicit column not already claimed by decorators — `NOT NULL` by default; nullability comes from explicit `@Column({ nullable })` or implying decorators, never from `design:type`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

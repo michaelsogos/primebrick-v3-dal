@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { Repository } from "../src/index.js";
+import { Repository }
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { CompositeUniqueEntity } from "./entities/composite-unique-entity.js";
 import { ManualUniqueEntity } from "./entities/manual-unique-entity.js";
@@ -47,7 +49,7 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
     // Composite-unique table (metadata-driven UNIQUE INDEX (grp_a, grp_b))
     await pool.query(`
       CREATE TABLE IF NOT EXISTS dal_test_composite (

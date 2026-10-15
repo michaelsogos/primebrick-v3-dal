@@ -5,12 +5,16 @@
  * their entities end-to-end. Every BE-specific dependency is injected —
  * this module is transport-free and BE-free by construction:
  *
- *   - `repo`        — a `Repository` over the SERVICE pool/schema (the
- *                     caller builds it: `new Repository(dal.getPool())`,
- *                     optionally `withCache`-wrapped)
- *   - `auditPort`   — caller-provided (e.g. `makeTableAuditPort(repo)`);
- *                     the BE adapter also publishes entity-changed markers,
- *                     which are gateway collaboration infra, NOT required here
+ *   - `repo`        — the gateway-owned Repository. Consumers NEVER pass it:
+ *                     the public construction path is `dal.entityService(cfg)`,
+ *                     which injects it. `repo` stays in the config only as the
+ *                     injection seam for the free factory itself and for
+ *                     decorated repositories (e.g. `withCache`-wrapped) that
+ *                     still flow through `dal.entityService`.
+ *   - `auditPort`   — defaults to `makeTableAuditPort(repo)`; override only
+ *                     for ports with extra side effects (the BE adapter also
+ *                     publishes entity-changed markers, which are gateway
+ *                     collaboration infra, NOT required here)
  *   - `actor`       — `() => string` supplier (US passes SDK `requireActor`)
  *   - `userEntity`  — optional auditable display-name join target (BE:
  *                     `UserProfileEntity`). Without it, `created_by_name` /
@@ -34,28 +38,31 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "pg";
 
+import { Repository } from "../repository/repository.js";
 import {
-  Repository,
   field,
   Filter,
   Sort,
-  buildAuditableJoinsSelective,
-  DeletableFieldType,
-  entityDateToApiIso,
   Project,
-  translateFilterConditions,
-  getEntityPersistenceMeta,
-  type EntityClass,
   type FieldProjector,
   type FilterExpr,
   type JoinExpr,
+} from "../query/dsl.js";
+import { buildAuditableJoinsSelective } from "../audit/auditable-joins.js";
+import { AuditLogEntity } from "../audit/audit-log-entity.js";
+import {
+  DeletableFieldType,
+  getEntityPersistenceMeta,
+  type EntityClass,
+} from "../meta/entity-decorators.js";
+import { entityDateToApiIso } from "../meta/column-pg-io.js";
+import {
+  translateFilterConditions,
   type ListFilterCondition,
-  type AuditPort,
-  AuditLogEntity,
-} from "../index.js";
-import { NotFoundError } from "../errors/errors.js";
+} from "../query/list-filters.js";
+import type { AuditPort } from "../types/types.js";
+import { NotFoundError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 
 // ─── Public contract ─────────────────────────────────────────────────────────
@@ -129,11 +136,16 @@ export interface AggregateDecl {
 export interface EntityServiceConfig<TEntity> {
   /** Newable entity class (DB row shape). */
   entity: EntityClass & { new (): object };
-  /** Repository over the service pool/schema — required, caller-owned. */
-  repo: Repository;
-  /** Audit port — required: every auditable write needs one. Use
-   *  `makeTableAuditPort(repo)` for the standard `{table}_audit` writer. */
-  auditPort: AuditPort;
+  /** Repository — INTERNAL injection point only. `dal.entityService(cfg)`
+   *  supplies the gateway-owned instance; callers of the free
+   *  `makeEntityService` (tests, decorators such as BE `withCache`) must
+   *  pass one explicitly. Consumer configs MUST NOT set it — a missing
+   *  `repo` is a hard error, not a fallback. */
+  repo?: Repository;
+  /** Audit port — defaults to `makeTableAuditPort(repo)` (the standard
+   *  `{table}_audit` writer). Override only for ports with extra side
+   *  effects (e.g. the BE entity-changed marker publisher). */
+  auditPort?: AuditPort;
   /** Actor supplier for audit stamping (e.g. SDK `requireActor`). */
   actor?: () => string;
   /** Optional auditable display-name join target (BE: UserProfileEntity). */
@@ -163,11 +175,11 @@ export interface EntityServiceConfig<TEntity> {
 export interface EntityService<TEntity> {
   list(query: EntityListQuery): Promise<EntityListResult<TEntity>>;
   get(uuid: string): Promise<TEntity>;
-  create(body: Record<string, unknown>, tx?: PoolClient): Promise<TEntity>;
+  create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
     body: Record<string, unknown> & { version: number },
-    tx?: PoolClient,
+    tx?: Repository,
   ): Promise<TEntity>;
   delete(uuid: string, version: number): Promise<TEntity>;
   restore(uuid: string, version: number): Promise<TEntity>;
@@ -263,7 +275,12 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
 ): EntityService<TEntity> {
   const meta = getEntityPersistenceMeta(cfg.entity);
   const repo = cfg.repo;
-  const auditPort = cfg.auditPort;
+  if (!repo) {
+    throw new ValidationError(
+      "EntityServiceConfig.repo is required — use `dal.entityService(cfg)` so the gateway injects its own Repository",
+    );
+  }
+  const auditPort = cfg.auditPort ?? makeTableAuditPort(repo);
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
 
@@ -280,7 +297,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           includeDeleter: hasDeletedBy,
         }) as JoinExpr[])
       : [];
-  const repoFor = (tx?: PoolClient) => (tx ? new Repository(tx) : repo);
+  const repoFor = (tx?: Repository) => tx ?? repo;
 
   function buildListFilters(q: EntityListQuery): FilterExpr[] {
     const filters: FilterExpr[] = [];

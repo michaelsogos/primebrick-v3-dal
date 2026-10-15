@@ -1,0 +1,114 @@
+# Partitioning & retention
+
+Primebrick partitions append-only tables with **pg_partman** so retention
+becomes "drop a partition" instead of `DELETE` — no table lock on the hot
+path, and old data can live on slower storage.
+
+## What is partitioned today
+
+Every `{table}_audit` audit-trail table is a native RANGE partition parent:
+
+```sql
+PRIMARY KEY ("id", "changed_at")
+) PARTITION BY RANGE ("changed_at");
+SELECT partman.create_parent('schema.mytable_audit', 'changed_at', 'native', 'monthly');
+```
+
+The DDL generator (`database-patch-to-sql.ts`) emits this for every
+`@AuditTrail()` entity — `premake = 4` keeps four future partitions ready.
+Reads always go through the parent table: all partitions are visible as one
+logical table, so `audit-query.ts` (and any `findAll`/`findByPage`) needs
+zero partition awareness.
+
+## Entity model
+
+The entity declares a single logical `@Key()` — the composite DDL primary
+key `(id, changed_at)` is a DDL detail only:
+
+```ts
+@Key()
+id!: bigint;              // DDL PK is actually (id, changed_at)
+
+@Column()
+changed_at!: Date;        // partition key — normal @Column (Date → timestamptz)
+```
+
+See `src/audit/audit-log-entity.ts` for the canonical shape.
+
+## Partitioning a main table — rules
+
+1. **All UNIQUE/PK constraints must include the partition key** (PG
+   rule): `UNIQUE (uuid)` → `UNIQUE (uuid, created_at)`; `PRIMARY KEY (id)`
+   → `PRIMARY KEY (id, created_at)`. The entity keeps `@Key() id` +
+   `@Unique() uuid` — the generated constraint just widens.
+2. **Prefer an immutable key** (`created_at`, not `updated_at`): updates
+   that cross a partition boundary physically move the row. A mutable
+   watermark key (`last_seen_at`) is allowed only when that movement IS
+   the retention semantic — see "activity watermark" below.
+3. **Child tables cannot FK to a partitioned parent.** Because the unique
+   constraint must contain the partition key, `child.parent_uuid →
+   parent.uuid` has no matching constraint. Integrity becomes
+   application-level: the repository performs the cascade in one
+   transaction (`hardDelete` per child + parent). This is the deliberate
+   trade-off — document it in the entity header.
+4. **Non-key filters don't prune** — acceptable for append-only logs at
+   normal volume.
+5. Write the `PARTITION BY RANGE` + `create_parent` DDL in the table's
+   patch — there are no entity decorators for partitioning; it is a
+   pure DDL concern.
+
+## First partitioned domain table: `ai.ai_conversations`
+
+`ai_conversations` is partitioned `RANGE (last_seen_at)` — the **activity
+watermark**, not `created_at`. Semantics: "a conversation is dead N
+months after its last event", not "N months after creation".
+
+- `last_seen_at` = `max(created_at)` of every child event
+  (message, feedback). Child writes stamp it via a versioned
+  `update` (the entity is auditable — the optimistic lock applies
+  to bookkeeping writes too; `Repository.touch` was removed because
+  it bypassed the version contract) inside the same transaction as
+  the child insert — the clock can never drift from the rows that
+  justify it.
+- Invariant: `conv.last_seen_at >= every child's updated_at`. So a
+  partition about to expire contains only conversations whose ENTIRE
+  subtree is expired — retention removes each family's data in the same
+  window ("quasi-atomic").
+- `ai_messages` / `ai_feedback` are NOT partitioned — they die with their
+  conversation, never independently.
+- **Retention job order matters**: partition drop is DDL — it does NOT
+  fire FK cascades and leaves no parent rows to JOIN. The maintenance
+  runner must purge children FIRST, set-based on the expiring window:
+
+  ```sql
+  DELETE FROM ai.ai_feedback f
+  USING ai.ai_conversations c
+  WHERE f.conversation_uuid = c.uuid AND c.last_seen_at < $1;
+  DELETE FROM ai.ai_messages m
+  USING ai.ai_conversations c
+  WHERE m.conversation_uuid = c.uuid AND c.last_seen_at < $1;
+  -- then partman.run_maintenance_proc() drops the now-safe partition
+  ```
+
+  Do NOT purge children by bare `created_at < cutoff` — children of a
+  still-active conversation can predate the cutoff; key the purge on
+  parent membership (`last_seen_at`), never on child time alone.
+
+## Retention
+
+Retention is configured on `partman.part_config`, per parent:
+
+```sql
+UPDATE partman.part_config
+SET retention = '6 months', retention_keep_table = false
+WHERE parent_table = 'ai.ai_conversations';
+```
+
+Partitions older than the window are **dropped** at the next
+`partman.run_maintenance_proc()` run (`retention_keep_table = false`;
+`true` detaches instead, keeping them as plain tables for archival).
+
+**Scheduler**: nothing in the platform calls `run_maintenance_proc()`
+today — `pg_cron` is not installed. The sanctioned path is a
+service-side scheduled job calling `dal.partitionMaintenance(entities)` —
+it owns the dedicated client internally (consumers never touch `PoolClient`).

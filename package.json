@@ -31,15 +31,19 @@
   "files": [
     "dist/"
   ],
+  "bin": {
+    "primebrick-db": "./dist/cli/primebrick-db.js"
+  },
   "scripts": {
     "version:auto": "node scripts/version-sync.mjs",
-    "prebuild": "node scripts/version-sync.mjs",
+    "prebuild": "node scripts/version-sync.mjs && pnpm check:standards",
     "build": "tsc",
     "prepare": "tsc",
-    "test": "vitest run",
+    "test": "pnpm check:standards && vitest run",
     "test:watch": "vitest",
     "test:benchmark": "vitest run --config test/benchmark.vitest.config.ts",
-    "extract-docs": "node scripts/extract-api-docs.mjs"
+    "extract-docs": "node scripts/extract-api-docs.mjs",
+    "check:standards": "bun ../primebrick-v3-sdk/tools/check-standards.ts src --profile=lib"
   },
   "publishConfig": {
     "access": "public",
@@ -47,6 +51,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
+    "@primebrick/decimal": "workspace:*",
     "pg": "8.22.0",
     "pg-query-stream": "4.16.0",
     "reflect-metadata": "0.2.2"

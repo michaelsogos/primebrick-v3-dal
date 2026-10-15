@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import { Entity, Column, Key, Unique } from "../../src/index.js";
+import { Entity, Column, Key, Unique, type UUID } from "../../src/index.js";
 
 /**
  * Manual-unique test entity — `email` is a PLAIN column (no @Unique) but the
@@ -13,7 +13,7 @@ export class ManualUniqueEntity {
   id!: bigint;
 
   @Unique()
-  uuid!: string;
+  uuid!: UUID;
 
   @Column({ pgType: "text", nullable: true })
   name?: string;

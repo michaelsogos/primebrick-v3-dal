@@ -1,6 +1,6 @@
 ---
 title: Connections & transactions
-description: The Dal gateway, getDal singleton, pool config, withClient transactions, per-call timeouts, type parsers, and graceful shutdown.
+description: The Dal gateway, getDal singleton, pool config, dal.transaction transactions, per-call timeouts, type parsers, and graceful shutdown.
 ---
 
 # Connections & transactions
@@ -8,8 +8,8 @@ description: The Dal gateway, getDal singleton, pool config, withClient transact
 The Dal gateway (`getDal()`) is the recommended entry point. It owns the
 `pg.Pool`, registers type parsers once per process, and sets `search_path`,
 `statement_timeout`, and `application_name` on every connection. The existing
-`Repository` class stays exported as the low-level engine — for transaction
-participation via `withClient`, and for tests that inject a mock `Queryable`.
+`Repository` class stays exported as the low-level engine — `dal.transaction`
+hands a tx-scoped instance to the callback; tests may inject a mock `Queryable`.
 
 ## `getDal(config)` — the singleton gateway
 
@@ -24,7 +24,7 @@ import { getDal, type Dal } from "@primebrick/dal-pg";
 
 const dal = getDal({
   connectionString: process.env.DATABASE_URL!,
-  schema: "myapp",
+  schemas: ["myapp"],
   max: 10,
   statementTimeoutMs: 30_000,
   connectionTimeoutMillis: 5_000,
@@ -38,7 +38,7 @@ const dal = getDal({
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `connectionString` | `string` | (required) | PostgreSQL connection string |
-| `schema` | `string` | undefined (DB default) | Set as `search_path` on every connection |
+| `schemas` | `string[]` | (required, non-empty) | Declared schema domain. `search_path` on every connection = `schemas` + `public` (extension/type resolution only). Every `@Entity` schema pin must belong to this set — violations throw `SchemaDomainViolationError` at `getDal()` (boot guard) and on every entity operation (runtime guard), before SQL is built |
 | `max` | `number` | `10` | Maximum pool size. Formula: `max ≤ (PG max_connections − reserved) / service_instances` |
 | `statementTimeoutMs` | `number` | `30000` | Per-statement timeout in ms, set via `SET statement_timeout`. Set to `0` to disable |
 | `connectionTimeoutMillis` | `number` | `5000` | Time to wait when acquiring a connection before erroring. Fail fast when pool exhausted |
@@ -56,7 +56,7 @@ const dal = getDal({
   participant PG as PostgreSQL
   App->>Dal: getDal(config)
   Dal->>TP: ensureTypeParsers() (idempotent, once per process)
-  Note over TP: INT8 -> bigint<br/>NUMERIC -> number
+  Note over TP: INT8 -> bigint<br/>NUMERIC -> string<br/>DATE -> string
   Dal->>Pool: new Pool({ connectionString, max, onConnect })
   App->>Dal: dal.add(Entity, values, opts)
   Dal->>Pool: acquire connection
@@ -67,13 +67,20 @@ const dal = getDal({
   Pool-->>Pool: release connection
 `} />
 
-1. **`ensureTypeParsers()`** — registers `INT8 → bigint` and `NUMERIC → number`
-   parsers idempotently. Called once per process; subsequent calls are no-ops.
+1. **`ensureTypeParsers()`** — registers `INT8 → bigint`, `NUMERIC → string`,
+   and `DATE → string` parsers idempotently. Called once per process;
+   subsequent calls are no-ops.
 2. **`new pg.Pool(config)`** — creates the pool with the merged config and an
    `onConnect` hook.
-3. **`onConnect`** — runs on every new connection: `SET search_path TO &lt;schema&gt;`,
-   `SET statement_timeout TO &lt;ms&gt;`, `SET application_name TO '&lt;name&gt;'`. The
-   `application_name` is single-quote-escaped to prevent injection.
+3. **`configureSchemaDomain`** — registers the declared `schemas` as the
+   process-wide entity domain. Entities pinned to a schema outside the set
+   fail before any SQL is emitted.
+4. **`onConnect`** — runs on every new connection: `SET search_path TO
+   &lt;schemas…&gt;, public`, `SET statement_timeout TO &lt;ms&gt;`,
+   `SET application_name TO '&lt;name&gt;'`. The `public` tail exists only so
+   extension types (`vector`, …) resolve — unqualified table access outside
+   the declared domain is rejected by the entity guard, not by the path.
+   The `application_name` is single-quote-escaped to prevent injection.
 4. **Per-request** — `dal.add(...)` acquires a connection from the pool, runs
    the parameterized SQL, hydrates the result row, and releases the connection.
    No per-request allocation.
@@ -109,55 +116,73 @@ process.on("SIGTERM", async () => {
 await dal.close(5_000);   // wait up to 5s
 ```
 
-## Transactions with `withClient`
+## Transactions with `dal.transaction`
 
-`dal.withClient(fn)` acquires a pooled client, runs `fn(client)`, and releases
-the client back to the pool (even if `fn` throws). Inside `fn`, construct a
-`new Repository(client)` to participate in the transaction — the Repository
-accepts any `Queryable` (pool or pooled client).
+`dal.transaction(fn)` acquires a pooled client, emits `BEGIN`, runs `fn(txRepo)`
+with a **tx-scoped `Repository`**, then `COMMIT`s — or `ROLLBACK`s if `fn`
+throws. The callback never sees the raw `PoolClient`: every statement inside
+the transaction goes through the entity/DSL surface (`add`, `update`,
+`findAll`, …), so the schema-domain guard, audit stamping, and optimistic
+locking all apply inside the tx exactly as outside.
 
 ```typescript
-import { Repository } from "@primebrick/dal-pg";
-
-await dal.withClient(async (client) => {
-  const repo = new Repository(client);
-  await client.query("BEGIN");
-  try {
-    const customer = await repo.add(CustomerEntity, { name: "Alice" }, { actor: "tx" });
-    await repo.add(OrderEntity, { customer_id: customer.id, total: 100 }, { actor: "tx" });
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  }
+await dal.transaction(async (txRepo) => {
+  const customer = await txRepo.add(CustomerEntity, { name: "Alice" }, { actor: "tx" });
+  await txRepo.add(OrderEntity, { customer_id: customer.id, total: 100 }, { actor: "tx" });
 });
 ```
 
-The Dal gateway does not manage `BEGIN`/`COMMIT` for you — that's deliberate,
-so you can use savepoints, nested transactions, or any other PG feature inside
-`fn`. The contract is: the client is released when `fn` returns or throws.
+Commit/rollback are never manual: the end of the callback is the commit, a
+thrown error is the rollback. There is no way to leak a connection or forget
+`COMMIT`.
+
+`dal.withClient` — which used to expose the raw `PoolClient` — is now
+`private` to dal-pg internals (it powers `transaction` and partition
+maintenance). It is not part of the consumer API.
+
+## Deferred transactions with `dal.beginTransaction`
+
+For straightforward dependent writes, `dal.beginTransaction()` is the
+preferred shape: it returns a `DeferredTransaction` whose `add`, `update`,
+`delete`, `restore`, `hardDelete` (and read ops) do NOT execute — they
+buffer. `commit()` compiles the whole buffer into **one data-modifying
+CTE statement** (`WITH s0 AS (…RETURNING…), s1 AS (…), …`) and runs it —
+atomicity is the single-statement guarantee; there is no BEGIN/COMMIT/
+ROLLBACK code at all.
+
+```typescript
+const tx = dal.beginTransaction();
+const msg = tx.add(AiMessageEntity, { conversation_uuid, body }, { actor });
+tx.update(
+  AiConversationEntity,
+  { uuid: conversation_uuid, version },          // optimistic guard
+  { last_seen_at: msg.ref("created_at") },        // flows s0→s1 in SQL
+);
+const { results } = await tx.commit();           // ONE round-trip
+const saved = msg.value;                          // materialized row
+```
+
+Inter-op data flow uses `deferred.ref("col")` — compiled to a
+`(SELECT col FROM sN)` scalar subquery — and `Deferred.value` throws if
+read before commit. The hard limit: the buffer cannot branch on
+intermediate DB results (nothing exists until commit) — flows that need
+conditional TS logic on a read still use `transaction(fn)`.
 
 ## Per-call timeout override
 
-`withClient` accepts an optional `WithClientOptions` with a `timeoutMs` field.
-It emits `SET LOCAL statement_timeout` on that specific client and resets it to
-the session default on release. Use it for ad-hoc long queries that should not
-hold a connection for the default 30s.
+`transaction` accepts an optional `{ timeoutMs }` — it emits
+`SET LOCAL statement_timeout` right after `BEGIN`, so the override is
+transaction-scoped and auto-resets at `COMMIT`/`ROLLBACK` (no leakage to the
+session default).
 
 ```typescript
-// A long-running export query that needs 2 minutes:
-await dal.withClient(
-  async (client) => {
-    const result = await client.query("SELECT * FROM large_export_table");
-    console.log(result.rowCount);
-  },
-  { timeoutMs: 120_000 },
-);
-// After fn returns, the client's statement_timeout is reset to the session
-// default before release — no leakage to the next request on that connection.
+// A long-running transactional import that needs 2 minutes:
+await dal.transaction(async (txRepo) => {
+  await txRepo.addMany(ImportEntity, rows, { actor: "import" });
+}, { timeoutMs: 120_000 });
 ```
 
-The bulk operations (`addMany`, `upsertMany`, `updateMany`) accept
+The bulk operations (`addMany`, `updateMany`, `deleteMany`, …) accept
 `options.timeoutMs` directly — they emit `SET LOCAL statement_timeout` inside
 their own transaction (transaction-scoped, no leakage).
 
@@ -169,7 +194,8 @@ The Dal gateway registers two type parsers once per process via
 | PG type OID | JS type | Reason |
 |-------------|---------|--------|
 | `INT8_OID` (20) | `bigint` | Preserve precision for PKs and counts above 2^53 |
-| `NUMERIC_OID` (1700) | `number` (or `string` if too large for a safe number) | `numeric`/`decimal` columns |
+| `NUMERIC_OID` (1700) | `string` | Lossless — `Decimal` columns hydrate via the column contract |
+| `DATE_OID` (1082) | `string` | `"YYYY-MM-DD"` — a calendar date has no timezone (see `ISODate`) |
 
 Without these parsers, `node-postgres` returns `int8` as a `string` (to avoid
 precision loss) and `numeric` as a `string`. The Dal gateway opts into native

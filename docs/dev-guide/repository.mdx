@@ -8,22 +8,19 @@ description: Finders, writes, bulk operations, streaming, and clone — the full
 The `Repository` is the low-level engine that turns entity metadata + the
 [Query DSL](./query-dsl) into parameterized SQL. The Dal gateway delegates to
 an internal `Repository(pool)`, so `dal.findById(...)` and `repo.findById(...)`
-are the same call. Use `new Repository(client)` directly only when you need to
-participate in a transaction via `dal.withClient()` — see
-[Connections & transactions](./connections).
+are the same call. Inside `dal.transaction(txRepo => …)` the callback gets a
+tx-scoped `Repository` — see [Connections & transactions](./connections).
 
 ```typescript
 import { getDal, Repository } from "@primebrick/dal-pg";
 
-const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp" });
+const dal = getDal({ connectionString: process.env.DATABASE_URL!, schemas: ["myapp"] });
 
 // dal.add, dal.findAll, dal.update, ... all delegate to an internal Repository.
-// Inside a transaction, construct a Repository backed by the pooled client:
-await dal.withClient(async (client) => {
-  const repo = new Repository(client);
-  await client.query("BEGIN");
-  await repo.add(CustomerEntity, { name: "TX" }, { actor: "tx" });
-  await client.query("COMMIT");
+// Inside a transaction the callback receives a tx-scoped Repository:
+await dal.transaction(async (txRepo) => {
+  await txRepo.add(CustomerEntity, { name: "TX" }, { actor: "tx" });
+  // COMMIT on return, ROLLBACK on throw — never manual.
 });
 ```
 
@@ -494,7 +491,7 @@ for the full code table, and [Optimistic locking](./optimistic-lock) for the
 
 ## Next steps
 
-- [Connections & transactions](./connections) — pool config, `withClient`, per-call timeouts, graceful shutdown.
+- [Connections & transactions](./connections) — pool config, `dal.transaction`, per-call timeouts, graceful shutdown.
 - [Query DSL](./query-dsl) — the expressions passed to finders.
 - [Audit trail](./audit-trail) — the `AuditPort` system that hooks into write ops.
 - [Optimistic locking](./optimistic-lock) — the version guard on auditable writes.

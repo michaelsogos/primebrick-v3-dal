@@ -21,9 +21,9 @@ pnpm add @primebrick/dal-pg pg pg-query-stream reflect-metadata
 `primebrick-be-v3` or `primebrick-us-v3`.
 
 `reflect-metadata` must be imported **once, at the entry point of your
-process**, before any entity class is loaded. The decorators rely on the
-`Reflect.getMetadata("design:type", ...)` reflection that
-`reflect-metadata` polyfills.
+process**, before any entity class is loaded. The decorators use it to
+register per-class metadata used by tooling (e.g. `primebrick:tableName`,
+`primebrick:keyColumn`).
 
 ```typescript
 // src/index.ts — your process entry point
@@ -34,7 +34,7 @@ import "reflect-metadata";
 ## 2. Bootstrap the Dal gateway
 
 The Dal gateway (`getDal()`) is a singleton that owns the `pg.Pool`, registers
-type parsers (`INT8`→`bigint`, `NUMERIC`→`number`), and sets `search_path`,
+type parsers (`INT8`→`bigint`, `NUMERIC`→`string`, `DATE`→`string`), and sets `search_path`,
 `statement_timeout`, and `application_name` on every connection. Create it once
 at process startup and reuse it for every request — zero per-request allocation.
 
@@ -49,7 +49,7 @@ export function getDb(): Dal {
   if (!_dal) {
     _dal = getDal({
       connectionString: process.env.DATABASE_URL!,
-      schema: "myapp",
+      schemas: ["myapp"],
       max: 10,
       statementTimeoutMs: 30_000,
       connectionTimeoutMillis: 5_000,
@@ -99,19 +99,19 @@ import type { IAuditableEntity, IDeletableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
 export class CustomerEntity implements IAuditableEntity, IDeletableEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
-  @Column({ pgType: "text" }) email!: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ nullable: false }) name!: string;
+  @Column({ nullable: false }) email!: string;
 
-  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
 
-  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+  @DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) deleted_by?: string | null;
 }
 ```
 
@@ -194,7 +194,7 @@ DATABASE_URL=postgres://user:pass@localhost:5432/myapp tsx src/demo.ts
   participant PG as PostgreSQL
   App->>Dal: getDal(config)
   Dal->>Pool: new Pool(onConnect)
-  Note over Pool: registers type parsers<br/>(INT8 -> bigint, NUMERIC -> number)
+  Note over Pool: registers type parsers<br/>(INT8 -> bigint, NUMERIC -> string, DATE -> string)
   App->>Dal: dal.add(Entity, values, opts)
   Dal->>Pool: acquire connection
   Pool->>PG: onConnect: SET search_path, statement_timeout, application_name
@@ -229,4 +229,4 @@ DATABASE_URL=postgres://user:pass@localhost:5432/myapp tsx src/demo.ts
 - [Entities & decorators](./entities) — every decorator and entity interface.
 - [Query DSL](./query-dsl) — `field()`, `Filter`, `Sort`, `Join`, `Project`.
 - [Repository](./repository) — finders, writes, bulk ops, streaming.
-- [Connections & transactions](./connections) — pool config, `withClient`, timeouts, shutdown.
+- [Connections & transactions](./connections) — pool config, `dal.transaction`, timeouts, shutdown.

@@ -23,14 +23,14 @@ together and the design decisions behind them.
     QB[Query builder]
     Meta[Entity metadata<br/>WeakMap + decorators]
     DSL["Query DSL<br/>field/Filter/Sort/Join/Project"]
-    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> number]
+    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> string<br/>DATE -> string]
   end
   subgraph PostgreSQL
     Pool[(pg.Pool)]
     DB[(Database)]
   end
   App -->|dal.add/findAll/...| Gateway
-  App -->|Repository(client)<br/>inside withClient| Repo
+  App -->|dal.transaction(txRepo)| Gateway
   Gateway -->|delegates| Repo
   Repo --> Meta
   Repo --> DSL
@@ -46,7 +46,8 @@ The **Dal gateway** is the recommended entry point. It owns the `pg.Pool`,
 registers type parsers once per process, and sets session defaults on every
 connection. The **Repository** is the low-level engine — it accepts any
 `Queryable` (pool or pooled client), which is how it participates in
-transactions via `dal.withClient(client => new Repository(client))`.
+transactions via `dal.transaction(txRepo => …)` — the tx-scoped `Repository` is
+handed to the callback; consumers never touch the raw `PoolClient`.
 
 ## Module structure
 
@@ -95,10 +96,13 @@ When a class is loaded, every own enumerable property of `new ctor()` is
 treated as a column by convention — you only need `@Column()` to override
 `sqlName`, `pgType`, `nullable`, `length`, `precision`, `scale`, `defaultSql`,
 or `castInJoin`. `syncImplicitEntityColumns(ctor)` walks the discovered
-property keys, reads `Reflect.getMetadata("design:type", ...)`, and infers
-nullability from the TS design type (`Date | null` → nullable, `@Key()` →
-not nullable, `@Unique()` → not nullable). This is why a property declared
-without any decorator still becomes a column.
+property keys and registers every one that decorators didn't already claim —
+columns are `NOT NULL` by default (`@Key()`/`@Unique()` pin it too; a nullable
+column must declare `@Column({ nullable: true })` or a decorator that implies
+it). This is why a property declared without any decorator still becomes a
+column. Storage types resolve **statically from the TS annotation** in the
+schema pipeline — never from `design:type` or the property name (see
+[Column types](./column-types)).
 
 ## Query builder pipeline
 
@@ -138,10 +142,12 @@ per process so that `node-postgres` returns the right JS type for each PG type:
 | `uuid` / `text` / `varchar` | `string` | native `node-postgres` default |
 
 For writes, `jsValueToPgParam` does the reverse: a `Date` is bound as an ISO
-string for `timestamptz`, a `bigint` is bound as a string for `INT8`, etc. The
-`pgType` hint on `@Column({ pgType: ... })` controls which coercion path is
-used when the TS design type is ambiguous (e.g. `Date` could be `date` or
-`timestamptz`).
+string for `timestamptz` (or `YYYY-MM-DD` when the column is `ISODate`-marked),
+a `bigint` is bound as a string for `INT8`, a `Decimal` serializes to its plain
+numeric string, a `Vector`/`number[]` to a `[1,2,3]` literal. Runtime meta
+cannot see annotations, so the coercion path is driven by explicit `jsType`
+markers, semantic decorator pins, and value shape — never `design:type` (see
+[Column types](./column-types)).
 
 ## Bulk operation strategies
 
@@ -240,6 +246,6 @@ them as custom codes without colliding with built-in error classes. See
 - [Entities & decorators](./entities) — every decorator and entity interface in detail.
 - [Query DSL](./query-dsl) — `field()`, `Filter`, `Sort`, `Join`, `Project`.
 - [Repository](./repository) — finders, writes, bulk ops, streaming.
-- [Connections & transactions](./connections) — pool config, `withClient`, timeouts, shutdown.
+- [Connections & transactions](./connections) — pool config, `dal.transaction`, timeouts, shutdown.
 - [Audit trail](./audit-trail) — the port-based audit system in action.
 - [Optimistic locking](./optimistic-lock) — the `ERR01`/`ERR02`/`ERR03` flow.

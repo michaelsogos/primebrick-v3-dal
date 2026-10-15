@@ -22,7 +22,7 @@ are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
 - **Optimistic locking** — automatic for auditable entities; stable `ERR01`/`ERR02`/`ERR03` codes.
 - **Clone** — `Repository.clone()` copies a record by UUID, resetting audit/unique fields.
 - **Streaming** — `findAll({ stream: true })` returns an `AsyncIterable` backed by a pg cursor.
-- **Dal gateway** — `getDal()` singleton owns the pool, registers type parsers (`INT8`→`bigint`, `NUMERIC`→`number`), and sets `search_path`/`statement_timeout`/`application_name` on every connection.
+- **Dal gateway** — `getDal()` singleton owns the pool, registers type parsers (`INT8`→`bigint`, `NUMERIC`→`string`, `DATE`→`string`), and sets `search_path`/`statement_timeout`/`application_name` on every connection.
 - **Framework-agnostic errors** — `DalError` carries a stable `code` string; consumers map it to HTTP/NATS at their own boundary.
 
 ## Architecture at a glance
@@ -36,7 +36,7 @@ are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
   subgraph Dal gateway
     D[getDal singleton] --> P[(pg.Pool)]
     P -->|onConnect| S["search_path<br/>statement_timeout<br/>application_name"]
-    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> number"]
+    TP[Type parsers<br/>INT8 -> bigint<br/>NUMERIC -> string<br/>DATE -> string"]
   end
   QB --> P
   P --> PG[(PostgreSQL)]
@@ -45,8 +45,9 @@ are plain TypeScript classes decorated with `@Entity`, `@Column`, `@Key`,
 `} />
 
 The **Dal gateway** owns the connection pool and is the recommended entry point.
-The **Repository** is the low-level engine — it accepts any `Queryable` (pool or
-pooled client), which is how it participates in transactions via `dal.withClient()`.
+The **Repository** is the low-level engine — `dal.transaction(txRepo => …)`
+hands a tx-scoped instance to the callback; consumers never touch the raw
+`PoolClient`.
 
 ## Hello World
 
@@ -64,15 +65,15 @@ import {
 // 1. Define an entity — plain TS class + decorators.
 @Entity("customers")
 export class CustomerEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column() name!: string;
 
-  @AuditableField(AuditableFieldType.CREATED_AT) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION) @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
 }
 
 // 2. Bootstrap the Dal gateway once at process startup.

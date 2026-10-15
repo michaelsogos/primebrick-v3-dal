@@ -11,7 +11,9 @@ import {
   buildAuditTrailJoins,
   type AuditPort,
   type AuditParams,
-} from "../src/index.js";
+}
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { TestUserEntity } from "./entities/test-user-entity.js";
 import {
@@ -47,7 +49,7 @@ describe("Repository — clone operation", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {
@@ -106,7 +108,7 @@ describe("Repository — audit-on-all-writes", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
     auditPort = new TestAuditPort();
   });
 
@@ -331,7 +333,7 @@ describe("Repository — AuditLogEntity + tableName override", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {
@@ -453,7 +455,7 @@ describe("Repository — buildAuditTrailJoins", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {

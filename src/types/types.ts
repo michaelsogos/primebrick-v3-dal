@@ -7,7 +7,7 @@
  * implement it.
  */
 
-import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector, FieldRef } from "../query/dsl.js";
+import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector, FieldRef, GroupByOperand } from "../query/dsl.js";
 
 /** Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders. */
 export type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
@@ -37,11 +37,76 @@ export type FindOptions = {
    * added to the GROUP BY — correctness-by-construction: PG requires
    * projected non-aggregate columns to be grouped, and grouping the PK
    * covers base cols anyway (functional dependency). Use `Project.expr` for
-   * aggregate columns (e.g. COUNT over a LEFT JOIN).
+   * aggregate columns (e.g. COUNT over a LEFT JOIN). To group on a
+   * computed expression (`date_trunc(?, created_at)`, histograms) use
+   * `GroupBy.expr(sql, params)` — `?` markers bind `params` in order.
    */
-  groupBy?: FieldRef<any, any>[];
+  groupBy?: GroupByOperand[];
   /** HAVING conditions on aggregates (e.g. `Filter.raw("COUNT(u.id)", ">", "0")`). */
   having?: FilterExpr[];
+};
+
+/** pgvector distance operator for `vectorSearch` — `<=>` cosine, `<->` L2, `<#>` inner product, `<+>` L1. */
+export type VectorDistanceOp = "<=>" | "<->" | "<#>" | "<+>";
+
+/** Options for `Repository.vectorSearch` — entity-generic like `FindOptions`. */
+export type VectorSearchOptions<TEntity extends object = Record<string, unknown>> = {
+  /** Max nearest neighbours returned (default 10). */
+  topK?: number;
+  /** Distance operator — default `"<=>"` (cosine). */
+  distance?: VectorDistanceOp;
+  /** Alias of the projected score column — default `"similarity"` for `<=>`, `"distance"` otherwise. */
+  scoreAlias?: string;
+  deletedRecords?: WithDeletedRecords;
+  filters?: FilterExpr[];
+  joins?: JoinExpr[];
+  fields?: FieldProjector[];
+  /** Override the table name (e.g., for audit trail tables). */
+  tableName?: string;
+  /**
+   * Inner-channel row budget — each retrieval CTE fetches
+   * `topK * oversample` candidates before re-ranking (default 1). Only
+   * meaningful when hybrid channels below are enabled.
+   */
+  oversample?: number;
+  /**
+   * Full-text lexical channel — OFF by default. When set, a `lex` CTE
+   * (`to_tsvector @@ websearch_to_tsquery`) runs alongside the vector
+   * channel, lexical-only hits UNION into the candidate set, and
+   * `lexical_score`/`lexical_match` are projected.
+   */
+  lexical?: {
+    /** Column indexed with `to_tsvector` (e.g. `field(E,"content")`). */
+    field: FieldRef<any, any>;
+    /** Search string — bound param fed to `websearch_to_tsquery`. */
+    query: string;
+    /** Text-search configuration — default `"simple"` (no stemming). */
+    config?: string;
+    /** Weight of `lexical_score` in the final score — default 0. */
+    boost?: number;
+    /** Threshold for the `lexical_match` flag — default 0.05. */
+    minScore?: number;
+  };
+  /**
+   * Keyword-hit lateral count — OFF by default. When set, a
+   * `CROSS JOIN LATERAL unnest($terms)` counts ILIKE hits over the given
+   * fields per candidate and projects `keyword_hits`.
+   */
+  keywordBoost?: {
+    terms: string[];
+    /** Fields ILIKE-matched against every term (e.g. title, path, content). */
+    fields: FieldRef<any, any>[];
+    /** Weight of `keyword_hits` in the final score — default 0. */
+    boost?: number;
+  };
+  /**
+   * CASE-based score adjustment — OFF by default. Added to the final score:
+   * `CASE <expr> WHEN 'k' THEN <v> … ELSE <fallback> END` (e.g.
+   * `{ expr: "d.metadata->>'content_type'", map: { tutorial: 0.08, api: -0.10 } }`).
+   */
+  scoreAdjust?: { expr: string; map: Record<string, number>; fallback?: number };
+  /** Phantom brand — keeps TEntity tied to the entity for typing. */
+  _entityBrand?: TEntity;
 };
 
 /** Options for `findByUUID`. */

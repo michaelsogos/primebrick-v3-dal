@@ -34,14 +34,15 @@
 ## Conventions
 
 - **snake_case everywhere** — DB columns, TS properties, JSON responses. No DTO transformation.
-- **Explicit write ops** — `add` / `update` / `delete` (soft) / `restore` / `hardDelete`. Single-record `upsert` is removed; never reintroduce it. `upsertMany` (bulk) remains.
+- **Explicit write ops** — `add` / `update` / `delete` (soft) / `restore` / `hardDelete`. `upsert` and `upsertMany` are removed/disabled (they bypassed optimistic locking); never reintroduce them — the standard is read (`uuid`+`version`) then `add`/`update`.
+- **No consumer raw SQL** — `dal.transaction(txRepo => …)` hands out only a tx-scoped `Repository`; `withClient`/`getPool` are internal. `serverVersion()` is the health+version probe (no `ping()`); `truncate(entity)` is the domain-guarded physical reset.
 - **Optimistic concurrency** — auditable writes (`update`, `delete`, `restore`) require the observed `version`; stale version fails the write.
 - **RETURNING \*** on all writes — the DB returns the full row, hydrated into entity shape; callers consume it instead of re-reading.
 - **throwIfNotFound: true** by default on finders.
 - **deletedRecords: "EXCLUDED"** by default — soft-deleted rows excluded.
 - **TEMP TABLE strategy** for bulk update/upsert/delete — atomic, SQL-injection safe.
 - **bigint via INT8_OID** — native `bigint`, not strings.
-- **Metadata-driven types** — `@Column({ dbType: ... })` controls PG<->JS type coercion.
+- **Static-annotation type contract** — column types resolve from the TS annotation (`bigint`→int8, `number`→float8, `string`→text, `Date`→timestamptz, `UUID`→uuid, `Decimal`→numeric, `Vector`→vector, `T[]`→base[]), never from the property name or `design:type`. `@Column({ pgType })` is a whitelist-checked override; runtime io is driven by `jsType` markers + value shape. See `docs/dev-guide/column-types.mdx` and `.devin/rules/entity-type-contract.md`.
 - **Naming convention** — PG table = snake_case **plural** (collection of rows, e.g. `customers`). Entity class = PascalCase **singular** (one row schema, e.g. `CustomerEntity`). This is enforced by the `@Entity` decorator — the table name is plural, the class name is singular.
 
 ## GitFlow

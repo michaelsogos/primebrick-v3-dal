@@ -62,30 +62,27 @@ import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@prime
 
 @Entity("customers")
 export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
-  @Key() @Column({ pgType: "bigint" }) id!: bigint;
-  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
-  @Column({ pgType: "text" }) name!: string;
-  @Column({ pgType: "text" }) email!: string;
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column() name!: string;
+  @Column() email!: string;
 
-  @AuditableField({ type: "createdAt" }) @Column({ pgType: "timestamptz" }) created_at!: Date;
-  @AuditableField({ type: "createdBy" }) @Column({ pgType: "text" }) created_by!: string;
-  @AuditableField({ type: "updatedAt" }) @Column({ pgType: "timestamptz" }) updated_at!: Date;
-  @AuditableField({ type: "updatedBy" }) @Column({ pgType: "text" }) updated_by!: string;
-  @AuditableField({ type: "version" }) @Column({ pgType: "integer" }) version!: number;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
 
-  @DeletableField({ type: "deletedAt" }) @Column({ pgType: "timestamptz", nullable: true }) deleted_at!: Date | null;
-  @DeletableField({ type: "deletedBy" }) @Column({ pgType: "text", nullable: true }) deleted_by!: string | null;
+  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ nullable: true }) deleted_at?: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ nullable: true }) deleted_by?: string | null;
 
-  @CloneField() @Column({ pgType: "uuid", nullable: true }) cloned_from!: string | null;
+  @CloneField() @Column({ nullable: true }) cloned_from?: UUID | null;
 }
 ```
 
 ```typescript
-import { Repository } from "@primebrick/dal-pg";
-
-const repo = new Repository(pool);
-
-const cloned = await repo.clone(
+// Repository is sealed — clone via the Dal proxy:
+const cloned = await dal.clone(
   CustomerEntity,
   sourceCustomerUuid,
   { actor: userUuid },

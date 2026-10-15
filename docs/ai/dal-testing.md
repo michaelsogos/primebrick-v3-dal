@@ -87,10 +87,12 @@ Drops test tables entirely. Not used in normal test runs — useful for full tea
 Each test file follows this pattern:
 
 ```typescript
+import { REPO_INTERNAL } from "../src/repository/repository.js";
+
 beforeAll(async () => {
   pool = getTestPool();
   await setupTestSchema();
-  repo = new Repository(pool);
+  repo = new Repository(pool, REPO_INTERNAL);
 });
 
 afterAll(async () => {
