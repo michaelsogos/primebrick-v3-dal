@@ -38,6 +38,7 @@ import {
   buildPatchFilename,
   buildSqlPatchFromMetaDiff,
   compareSnapshots,
+  normalizePatchEol,
   patchNameFromFilename,
   sha256Hex,
   type SchemaSnapshot,
@@ -190,7 +191,7 @@ async function cmdCompare(flags: Record<string, string>): Promise<void> {
       // Refresh the (unsigned) manifest entries — `primebrick-db sign` seals it.
       const { manifestPath } = manifestPaths(outDir);
       const existing = loadManifest(manifestPath);
-      const patches = { ...(existing?.patches ?? {}), [patchName]: sha256Hex(sql) };
+      const patches = { ...(existing?.patches ?? {}), [patchName]: sha256Hex(normalizePatchEol(sql)) };
       const unsigned: Omit<PatchManifest, "signature"> = {
         version: 1,
         key_id: existing?.key_id ?? "unsigned",
@@ -324,7 +325,7 @@ async function cmdSign(flags: Record<string, string>): Promise<void> {
     const patches: Record<string, string> = {};
     if (existsSync(patchesDir)) {
       for (const f of readdirSync(patchesDir).filter((f) => f.endsWith(".sql")).sort()) {
-        patches[patchNameFromFilename(f)] = sha256Hex(readFileSync(join(patchesDir, f), "utf8"));
+        patches[patchNameFromFilename(f)] = sha256Hex(normalizePatchEol(readFileSync(join(patchesDir, f), "utf8")));
       }
     }
     const manifest = signManifest(
@@ -337,11 +338,12 @@ async function cmdSign(flags: Record<string, string>): Promise<void> {
   }
 
   // Re-hash everything on disk — the signature covers what is THERE, not
-  // what the previous manifest claimed.
+  // what the previous manifest claimed. Hashes are EOL-normalized so the
+  // manifest verifies identically on LF and CRLF checkouts.
   const patchesDir = join(dbMetaDir, "patches");
   const patches: Record<string, string> = {};
   for (const f of readdirSync(patchesDir).filter((f) => f.endsWith(".sql")).sort()) {
-    patches[patchNameFromFilename(f)] = sha256Hex(readFileSync(join(patchesDir, f), "utf8"));
+    patches[patchNameFromFilename(f)] = sha256Hex(normalizePatchEol(readFileSync(join(patchesDir, f), "utf8")));
   }
   const manifest = signManifest(
     { version: 1, key_id: keyId, issued_at: new Date().toISOString(), patches },

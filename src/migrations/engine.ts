@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 
 import type { LoggerPort } from "../types/types.js";
-import { patchNameFromFilename, sha256Hex } from "../schema-diff/patch-naming.js";
+import { normalizePatchEol, patchNameFromFilename, sha256Hex } from "../schema-diff/patch-naming.js";
 import {
   loadKeyring,
   loadManifest,
@@ -75,7 +75,10 @@ type PatchFile = {
   filename: string;
   patchName: string;
   raw: string;
+  /** Canonical hash (EOL-normalized) — manifest + new registry rows. */
   sha256: string;
+  /** Raw-bytes hash — accepted at the registry for pre-normalization rows. */
+  sha256Raw: string;
   requiresReview: boolean;
   noTransaction: boolean;
 };
@@ -192,7 +195,8 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
     for (const filename of filenames) {
       const raw = readFileSync(join(opts.patchesDir, filename), "utf8");
       const patchName = patchNameFromFilename(filename);
-      const sha = sha256Hex(raw);
+      const sha = sha256Hex(normalizePatchEol(raw));
+      const shaRaw = sha256Hex(raw);
       const declared = manifest.patches[patchName];
       if (declared === undefined) {
         result.securityEvents.push(`patch_unknown:${patchName}`);
@@ -202,7 +206,7 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
         result.securityEvents.push(`patch_sha_mismatch:${patchName}`);
         throw new Error(`db-migration: ${filename} content sha256 ≠ manifest — refusing (fail-closed)`);
       }
-      files.push({ filename, patchName, raw, sha256: sha, ...parsePatchPragmas(raw) });
+      files.push({ filename, patchName, raw, sha256: sha, sha256Raw: shaRaw, ...parsePatchPragmas(raw) });
     }
 
     // ── registry prefetch (ONE query, in-memory map) ─────────────────────
@@ -217,7 +221,12 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
     // immutability: an applied patch whose content changed → refuse everything
     for (const f of files) {
       const row = byName.get(f.patchName);
-      if (row && (row.status === "applied" || row.status === "resolved_manual") && row.content_sha256 !== f.sha256) {
+      if (
+        row &&
+        (row.status === "applied" || row.status === "resolved_manual") &&
+        row.content_sha256 !== f.sha256 &&
+        row.content_sha256 !== f.sha256Raw
+      ) {
         throw new Error(
           `db-migration: ${f.filename} is registered as ${row.status} with a different sha256 — immutable patch changed, refusing`
         );

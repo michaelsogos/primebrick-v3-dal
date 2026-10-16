@@ -28,5 +28,6 @@ export {
   buildPatchFilename,
   patchNameFromFilename,
   sha256Hex,
+  normalizePatchEol,
 } from "./patch-naming.js";
 export { buildSqlPatchFromMetaDiff } from "./emit-sql-patch.js";

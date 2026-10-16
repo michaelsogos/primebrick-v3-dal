@@ -55,3 +55,13 @@ export function patchNameFromFilename(filename: string): string {
 export function sha256Hex(body: string): string {
   return createHash("sha256").update(body, "utf8").digest("hex");
 }
+
+/**
+ * Patch integrity hashes are EOL-insensitive: a Windows checkout may
+ * materialize CRLF while the committed blob and the signed MANIFEST are LF.
+ * Normalize before hashing so manifest verification and the patch registry
+ * are platform-stable.
+ */
+export function normalizePatchEol(body: string): string {
+  return body.replace(/\r\n?/g, "\n");
+}
