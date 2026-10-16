@@ -1,0 +1,21 @@
+{
+  "pages": [
+    "index",
+    "getting-started",
+    "architecture",
+    "entities",
+    "column-types",
+    "query-dsl",
+    "repository",
+    "repository-pattern",
+    "entity-service",
+    "connections",
+    "audit-trail",
+    "partitioning",
+    "optimistic-lock",
+    "clone",
+    "migrations",
+    "changelog",
+    "api-reference"
+  ]
+}

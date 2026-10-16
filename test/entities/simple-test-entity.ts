@@ -11,6 +11,7 @@ import {
   AuditTrail,
   AuditableFieldType,
   DeletableFieldType,
+  type UUID,
 } from "../../src/index.js";
 
 /**
@@ -24,10 +25,15 @@ export class SimpleTestEntity {
   id!: bigint;
 
   @Unique()
-  uuid!: string;
+  uuid!: UUID;
 
   @Column({ pgType: "varchar", length: 255 })
   name!: string;
+
+  /** Mutable unique column — used by update() ERR04/ERR05 conflict tests. */
+  @Unique()
+  @Column({ pgType: "text", nullable: true })
+  email?: string;
 
   @Column({ pgType: "text", nullable: true })
   description?: string;

@@ -5,7 +5,9 @@ import {
   MissingVersionError,
   RecordVanishedError,
   DalErrorCodes,
-} from "../src/index.js";
+}
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -21,7 +23,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {
@@ -397,8 +399,16 @@ describe("Repository — optimistic concurrency control (update)", () => {
     expect(restored.version).toBe(deleted.version + 1);
   });
 
-  // ─── upsert: version guard (ON CONFLICT path only, per OD4) ───────
-
+  // ─── upsert() — REMOVED API (tests preserved as comments) ────────────
+  // Single-row upsert() was intentionally removed from Repository (see the
+  // rationale comment in repository.ts): the ON CONFLICT path had become a
+  // vacuous version guard. The contract is now:
+  //   - new row → add() (unique conflict raises ERR04/ERR05 — covered in
+  //     repository-crud.test.ts)
+  //   - existing row → update() with the observed version (ERR01/ERR02/ERR03
+  //     covered by the update tests above).
+  // The original tests are kept commented for reference.
+  /*
   it("upsert INSERT path: succeeds without version (OD4 — no guard on new row)", async () => {
     const result = await repo.upsert(
       SimpleTestEntity,
@@ -470,4 +480,5 @@ describe("Repository — optimistic concurrency control (update)", () => {
     expect(result.name).toBe("Updated");
     expect(result.version).toBe(inserted.version + 1);
   });
+  */
 });

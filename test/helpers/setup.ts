@@ -52,6 +52,17 @@ export async function closeTestPool(): Promise<void> {
 export async function setupTestSchema(): Promise<void> {
   const db = getTestPool();
 
+  // pg_raise(code, msg, detail) — DAL add() conflict CTE raises ERR04/ERR05
+  // through it. Mirrors the global init script in primebrick-be-v3.
+  await db.query(`
+    CREATE OR REPLACE FUNCTION public.pg_raise(p_code text, p_message text, p_detail text DEFAULT NULL)
+    RETURNS void LANGUAGE plpgsql AS $func$
+    BEGIN
+      RAISE EXCEPTION '%', p_message USING ERRCODE = p_code, DETAIL = p_detail;
+    END;
+    $func$;
+  `);
+
   // Simple test table
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_simple (
@@ -77,6 +88,10 @@ export async function setupTestSchema(): Promise<void> {
   } catch {
     // Column already exists, ignore
   }
+
+  // Mutable unique column for update() ERR04/ERR05 conflict tests
+  await db.query(`ALTER TABLE dal_test_simple ADD COLUMN IF NOT EXISTS email text`);
+  await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS dal_test_simple_email_idx ON dal_test_simple (email)`);
 
   // Audit table for dal_test_simple (for AuditLogEntity + tableName override tests)
   await db.query(`

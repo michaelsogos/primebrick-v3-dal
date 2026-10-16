@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
-import { Repository, NotFoundError, MultipleRowsError, RecordVanishedError } from "../src/index.js";
+import { Repository, NotFoundError, MultipleRowsError, RecordVanishedError, ValidationError }
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -16,7 +18,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {
@@ -37,8 +39,11 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     );
 
     expect(inserted).toBeDefined();
-    expect(inserted.id).toBeGreaterThan(0n);
+    // id (bigint PK) is intentionally excluded from the returned projection —
+    // resolve it via findByUUID when needed.
     expect(inserted.uuid).toBeDefined();
+    const stored = await repo.findByUUID(SimpleTestEntity, inserted.uuid);
+    expect(stored!.id).toBeGreaterThan(0n);
     expect(inserted.name).toBe("Test Item");
     expect(inserted.description).toBe("A test");
     expect(inserted.created_by).toBe("test-user");
@@ -76,7 +81,8 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "test-user" }
     );
 
-    const found = await repo.findById(SimpleTestEntity, inserted.id);
+    const stored = await repo.findByUUID(SimpleTestEntity, inserted.uuid);
+    const found = await repo.findById(SimpleTestEntity, stored!.id);
     expect(found).toBeDefined();
     expect(found!.name).toBe("Find by ID");
   });
@@ -358,8 +364,14 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     ).rejects.toThrow(RecordVanishedError);
   });
 
-  // ─── upsert ───────────────────────────────────────────────────────
-
+  // ─── upsert() — REMOVED API (tests preserved as comments) ────────────
+  // Single-row upsert() was intentionally removed from Repository — see the
+  // comment block above the removal marker in repository.ts. The equivalent
+  // contract is now: add() for expected-absent rows (unique conflict raises
+  // ERR04/ERR05), update() with version when the row exists.
+  // These tests documented the old ON CONFLICT DO UPDATE behaviour; kept
+  // here for reference until the single-row write design is finalized.
+  /*
   it("upsert: inserts when no conflict (INSERT path, no version guard per OD4)", async () => {
     const result = await repo.upsert(
       SimpleTestEntity,
@@ -390,5 +402,207 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(result.updated_by).toBe("upsert-user");
     // created_at and created_by should be preserved
     expect(result.created_by).toBe("test-user");
+  });
+  */
+
+  // ─── add() conflict semantics (onConflict) ────────────────────────────
+  // Conflict behaviour: 'raise' (default) emits PG-raised ERR04 (live row) /
+  // ERR05 (soft-deleted row); 'ignore' is bare ON CONFLICT DO NOTHING →
+  // add() returns undefined.
+
+  it("add onConflict 'raise' (default): inserts when no conflict", async () => {
+    const result = await repo.add(
+      SimpleTestEntity,
+      { name: "Upserted" },
+      { actor: "test-user" }
+    );
+
+    expect(result).toBeDefined();
+    expect(result.name).toBe("Upserted");
+    expect(result.version).toBe(1);
+  });
+
+  it("add onConflict 'raise': PG raises ERR04 on duplicate uuid (live row)", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "Original" },
+      { actor: "test-user" }
+    );
+
+    const err = await repo
+      .add(SimpleTestEntity, { uuid: inserted.uuid, name: "Dup" }, { actor: "u2" })
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(err.code).toBe("ERR04");
+    // PG DETAIL carries the conflicting row's uuid + matched constraint
+    const detail = JSON.parse(err.detail ?? "{}");
+    expect(detail.uuid).toBe(inserted.uuid);
+    expect(detail.constraint).toBe("uuid");
+  });
+
+  it("add onConflict 'raise': PG raises ERR05 on duplicate uuid of a soft-deleted row", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "To Delete" },
+      { actor: "test-user" }
+    );
+    await repo.delete(
+      SimpleTestEntity,
+      { uuid: inserted.uuid, version: inserted.version },
+      { actor: "test-user", matchBy: "uuid" }
+    );
+
+    const err = await repo
+      .add(SimpleTestEntity, { uuid: inserted.uuid, name: "Dup" }, { actor: "u2" })
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(err.code).toBe("ERR05");
+    const detail = JSON.parse(err.detail ?? "{}");
+    expect(detail.uuid).toBe(inserted.uuid);
+  });
+
+  it("add onConflict 'ignore': duplicate is skipped silently, returns undefined", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "Original" },
+      { actor: "test-user" }
+    );
+
+    const skipped = await repo.add(
+      SimpleTestEntity,
+      { uuid: inserted.uuid, name: "Dup" },
+      { actor: "u2", onConflict: "ignore" }
+    );
+    expect(skipped).toBeUndefined();
+    // original row untouched
+    const still = await repo.findByUUID(SimpleTestEntity, inserted.uuid);
+    expect(still!.name).toBe("Original");
+  });
+
+  it("add conflictKeys: narrows conflict identification to a named unique group", async () => {
+    const inserted = await repo.add(
+      SimpleTestEntity,
+      { name: "Original" },
+      { actor: "test-user" }
+    );
+
+    // conflictKeys=['uuid'] matches the uuid unique group → ERR04 with detail
+    const err = await repo
+      .add(
+        SimpleTestEntity,
+        { uuid: inserted.uuid, name: "Dup" },
+        { actor: "u2", conflictKeys: ["uuid"] }
+      )
+      .then(() => null)
+      .catch((e) => e);
+    expect(err.code).toBe("ERR04");
+  });
+
+  it("add conflictKeys: throws ValidationError when keys match no unique group", async () => {
+    await expect(
+      repo.add(
+        SimpleTestEntity,
+        { name: "X" },
+        { actor: "u", conflictKeys: ["name"] }
+      )
+    ).rejects.toThrow(ValidationError);
+  });
+
+  // ─── update() unique-conflict semantics (ERR04/ERR05 via CTE) ─────────
+  // When the payload writes a @Unique column, the UPDATE carries a
+  // conflict-reporting CTE (self-excluded target row) → pg_raise ERR04
+  // (live conflicting row) / ERR05 (soft-deleted) with uuid + constraint +
+  // keys in DETAIL. Payloads without unique columns emit the plain UPDATE.
+
+  it("update: unique conflict on another live row raises ERR04 with uuid/constraint/keys", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A", email: "taken@x.com" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B", email: "free@x.com" }, { actor: "u" });
+
+    const err = await repo
+      .update(
+        SimpleTestEntity,
+        { uuid: b.uuid, email: "taken@x.com", version: b.version },
+        { actor: "u2", matchBy: "uuid" as any }
+      )
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(err.code).toBe("ERR04");
+    const detail = JSON.parse(err.detail ?? "{}");
+    expect(detail.uuid).toBe(a.uuid);
+    expect(detail.constraint).toBe("email");
+    expect(detail.keys).toEqual({ email: "taken@x.com" });
+    // the conflicting row is untouched, the attempted update rolled back
+    const unchanged = await repo.findByUUID(SimpleTestEntity, b.uuid);
+    expect(unchanged!.email).toBe("free@x.com");
+  });
+
+  it("update: unique conflict on a soft-deleted row raises ERR05", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A", email: "gone@x.com" }, { actor: "u" });
+    await repo.delete(SimpleTestEntity, { uuid: a.uuid, version: a.version }, { actor: "u", matchBy: "uuid" as any });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+
+    const err = await repo
+      .update(
+        SimpleTestEntity,
+        { uuid: b.uuid, email: "gone@x.com", version: b.version },
+        { actor: "u2", matchBy: "uuid" as any }
+      )
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(err.code).toBe("ERR05");
+    const detail = JSON.parse(err.detail ?? "{}");
+    expect(detail.uuid).toBe(a.uuid);
+    expect(detail.keys).toEqual({ email: "gone@x.com" });
+  });
+
+  it("update: rewriting the SAME unique value on the SAME row is not a conflict", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A", email: "self@x.com" }, { actor: "u" });
+
+    const updated = await repo.update(
+      SimpleTestEntity,
+      { uuid: a.uuid, name: "A2", email: "self@x.com", version: a.version },
+      { actor: "u2", matchBy: "uuid" as any }
+    );
+    expect(updated.name).toBe("A2");
+    expect(updated.version).toBe(2);
+  });
+
+  it("update: stale version wins over unique conflict (ERR01, conflict not reported)", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A", email: "hold@x.com" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+    // bump b's version so the caller's observed version is stale
+    const b2 = await repo.update(
+      SimpleTestEntity,
+      { uuid: b.uuid, name: "B2", version: b.version },
+      { actor: "u", matchBy: "uuid" as any }
+    );
+
+    const err = await repo
+      .update(
+        SimpleTestEntity,
+        { uuid: b.uuid, email: "hold@x.com", version: b.version }, // stale: real is b2.version
+        { actor: "u2", matchBy: "uuid" as any }
+      )
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(err.code).toBe("ERR01");
+  });
+
+  it("update: payload without unique columns performs a plain update (no conflict CTE)", async () => {
+    const a = await repo.add(SimpleTestEntity, { name: "A", email: "other@x.com" }, { actor: "u" });
+    const b = await repo.add(SimpleTestEntity, { name: "B" }, { actor: "u" });
+
+    // 'name' is not unique — no conflict check at all; must just work.
+    const updated = await repo.update(
+      SimpleTestEntity,
+      { uuid: b.uuid, name: "B-renamed", version: b.version },
+      { actor: "u", matchBy: "uuid" as any }
+    );
+    expect(updated.name).toBe("B-renamed");
   });
 });

@@ -25,6 +25,7 @@ export function calculateDelta(
   for (const key in newEntity) {
     const oldVal = bigintToNumber(oldEntity[key]);
     const newVal = bigintToNumber(newEntity[key]);
+    // standards-exempt: ext-json — field-equality probe on bigint-normalized scalars (no @primebrick/sdk dep)
     if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
       delta[key] = { old: oldVal, new: newVal };
     }

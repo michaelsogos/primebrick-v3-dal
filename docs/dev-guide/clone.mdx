@@ -1,0 +1,146 @@
+---
+title: Clone
+description: Copy entity records by UUID with Repository.clone(), preserving non-unique fields and resetting audit columns.
+---
+
+# Clone
+
+`Repository.clone()` copies an entity record by UUID. It fetches the source
+record (including soft-deleted rows), builds a new row, and inserts it with a
+fresh UUID.
+
+## How it works
+
+<Mermaid chart={`flowchart TD
+  Start([repo.clone Entity, sourceUuid, opts]) --> Fetch[Fetch source row by UUID<br/>including soft-deleted rows]
+  Fetch --> Exclude[Exclude PK column<br/>and all @Unique columns<br/>including uuid]
+  Exclude --> Stamp[Stamp @CloneField column<br/>with source UUID]
+  Stamp --> ResetAudit[Reset audit fields<br/>created_at/by = now/actor<br/>updated_at/by = now/actor<br/>version = 1]
+  ResetAudit --> ResetDel[Reset deletable fields<br/>deleted_at = null<br/>deleted_by = null]
+  ResetDel --> Copy[Copy all other fields from source]
+  Copy --> Insert[INSERT new row<br/>RETURNING *]
+  Insert --> End([Return cloned TEntity])
+  Fetch -.->|no row| NotFound[throw NotFoundError]
+  Insert -.->|no rows returned| InsertFail[throw Error: clone failed]
+`} />
+
+The clone operation:
+
+1. Fetches the source record by UUID (including soft-deleted rows).
+2. Excludes the PK column (DB auto-generates) and all `@Unique` columns
+   (including `uuid` — a new UUID is generated).
+3. Sets the `@CloneField` column to the source UUID (so the clone knows its
+   origin).
+4. Resets audit fields: `created_at` = now, `created_by` = actor,
+   `updated_at` = now, `updated_by` = actor, `version` = 1.
+5. Resets deletable fields: `deleted_at` = null, `deleted_by` = null.
+6. Copies all other fields from the source.
+7. Inserts the new row with `RETURNING *`.
+
+No audit log is written for the clone itself (matches backend behavior — clone
+does not audit).
+
+## Use cases
+
+- **Template-based record creation** — clone a "template" customer with
+  pre-filled defaults, then edit the clone.
+- **Duplicate-and-edit** — let a user copy an existing record instead of
+  re-typing all fields.
+- **Soft-delete recovery** — clone a soft-deleted record (the clone fetches
+  soft-deleted rows too) to restore its data into a fresh, live row.
+- **Branching workflows** — clone a record before applying a risky change so
+  the original is preserved.
+
+## Usage
+
+The entity must implement `IAuditableEntity` and `IClonableEntity`, and have at
+least one `@CloneField` column:
+
+```typescript
+import { Entity, Column, Key, Unique, AuditableField, DeletableField, CloneField } from "@primebrick/dal-pg";
+import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@primebrick/dal-pg";
+
+@Entity("customers")
+export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column() name!: string;
+  @Column() email!: string;
+
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
+
+  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ nullable: true }) deleted_at?: Date | null;
+  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ nullable: true }) deleted_by?: string | null;
+
+  @CloneField() @Column({ nullable: true }) cloned_from?: UUID | null;
+}
+```
+
+```typescript
+// Repository is sealed — clone via the Dal proxy:
+const cloned = await dal.clone(
+  CustomerEntity,
+  sourceCustomerUuid,
+  { actor: userUuid },
+);
+
+// cloned is a full CustomerEntity with:
+// - new id (auto-generated)
+// - new uuid (randomUUID())
+// - cloned_from = sourceCustomerUuid
+// - created_at/updated_at = now, created_by/updated_by = userUuid
+// - version = 1
+// - deleted_at/deleted_by = null
+// - name, email copied from source
+```
+
+## Signature
+
+```typescript
+repo.clone<TEntity>(
+  entity: EntityClass & { new (): TEntity },
+  sourceUuid: string,
+  options: AuditableWriteOptions,
+): Promise<TEntity>
+```
+
+`AuditableWriteOptions` requires an `actor` (the UUID of the user performing the
+clone). The `audit` and `logger` options are accepted but no audit log is
+written for the clone operation itself.
+
+## Errors
+
+- `NotFoundError` — no record found with the given `sourceUuid`.
+- `Error` — the entity has no `uuid` column (no `@Unique` column found).
+- `Error` — the INSERT returned no rows (clone failed).
+
+### Error handling with try/catch
+
+```typescript
+import { NotFoundError } from "@primebrick/dal-pg";
+
+async function cloneCustomer(sourceUuid: string, actor: string) {
+  try {
+    const cloned = await dal.clone(CustomerEntity, sourceUuid, { actor });
+    return cloned;
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      // err.code === "NOT_FOUND" — the source UUID doesn't exist
+      throw new Error(`Cannot clone: customer ${sourceUuid} not found`);
+    }
+    // UnknownColumnError, ValidationError, etc. — rethrow for the boundary to map
+    throw err;
+  }
+}
+```
+
+## Next steps
+
+- [Audit trail](./audit-trail) — automatic field-level audit logging for write operations.
+- [Optimistic locking](./optimistic-lock) — the version guard on auditable writes.
+- [Repository](./repository) — the full write API.
+- [Entities & decorators](./entities) — the `@CloneField` decorator and `IClonableEntity` interface.

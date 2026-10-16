@@ -57,7 +57,7 @@ include:
 If NO user-facing files changed, skip to step 6 (proceed with normal close).
 
 ### 3. Run extraction (refresh API docs data)
-Run `pnpm extract-docs` to regenerate `docs/user-guide/_extracted/api.json`
+Run `pnpm extract-docs` to regenerate `docs/dev-guide/_extracted/api.json`
 from TypeDoc. This ensures the extraction JSON reflects the latest API
 signatures, types, and TSDoc comments.
 
@@ -78,9 +78,9 @@ against the diff:
 **The goal is surgical edits, not regeneration.** A 10-line code change
 should produce at most a few lines of doc changes, not a rewritten page.
 
-### 5. Update docs/user-guide/ and commit
+### 5. Update docs/dev-guide/ and commit
 For each page that needs updating (after the anti-rewrite check):
-- Follow `.devin/rules/docs-user-guide.md` for editorial conventions
+- Follow `.devin/rules/docs-dev-guide.md` for editorial conventions
 - Use `<Mermaid chart={...} />` for diagrams, never ```Code or ```mermaid
 - Update `<!-- AUTO-GENERATED:reference -->` blocks with extracted TypeDoc data
 - Make minimal edits — preserve existing prose structure
@@ -88,8 +88,8 @@ For each page that needs updating (after the anti-rewrite check):
 Commit the doc updates (including regenerated _extracted/ JSON) ON the
 branch BEFORE merging:
 ```
-git add docs/user-guide/
-git commit -m "docs: update user-guide for <branch-name> changes"
+git add docs/dev-guide/
+git commit -m "docs: update dev-guide for <branch-name> changes"
 ```
 
 ### 6. Proceed with normal close

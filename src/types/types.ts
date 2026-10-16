@@ -7,7 +7,7 @@
  * implement it.
  */
 
-import type { FilterExpr, SortingExpr, JoinExpr } from "../query/dsl.js";
+import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector, FieldRef, GroupByOperand } from "../query/dsl.js";
 
 /** Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders. */
 export type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
@@ -31,6 +31,82 @@ export type FindOptions = {
   stream?: boolean;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
+  /**
+   * GROUP BY columns. When set, every non-aggregate projected field (base
+   * entity columns and joined `*_by_name` display columns) is automatically
+   * added to the GROUP BY — correctness-by-construction: PG requires
+   * projected non-aggregate columns to be grouped, and grouping the PK
+   * covers base cols anyway (functional dependency). Use `Project.expr` for
+   * aggregate columns (e.g. COUNT over a LEFT JOIN). To group on a
+   * computed expression (`date_trunc(?, created_at)`, histograms) use
+   * `GroupBy.expr(sql, params)` — `?` markers bind `params` in order.
+   */
+  groupBy?: GroupByOperand[];
+  /** HAVING conditions on aggregates (e.g. `Filter.raw("COUNT(u.id)", ">", "0")`). */
+  having?: FilterExpr[];
+};
+
+/** pgvector distance operator for `vectorSearch` — `<=>` cosine, `<->` L2, `<#>` inner product, `<+>` L1. */
+export type VectorDistanceOp = "<=>" | "<->" | "<#>" | "<+>";
+
+/** Options for `Repository.vectorSearch` — entity-generic like `FindOptions`. */
+export type VectorSearchOptions<TEntity extends object = Record<string, unknown>> = {
+  /** Max nearest neighbours returned (default 10). */
+  topK?: number;
+  /** Distance operator — default `"<=>"` (cosine). */
+  distance?: VectorDistanceOp;
+  /** Alias of the projected score column — default `"similarity"` for `<=>`, `"distance"` otherwise. */
+  scoreAlias?: string;
+  deletedRecords?: WithDeletedRecords;
+  filters?: FilterExpr[];
+  joins?: JoinExpr[];
+  fields?: FieldProjector[];
+  /** Override the table name (e.g., for audit trail tables). */
+  tableName?: string;
+  /**
+   * Inner-channel row budget — each retrieval CTE fetches
+   * `topK * oversample` candidates before re-ranking (default 1). Only
+   * meaningful when hybrid channels below are enabled.
+   */
+  oversample?: number;
+  /**
+   * Full-text lexical channel — OFF by default. When set, a `lex` CTE
+   * (`to_tsvector @@ websearch_to_tsquery`) runs alongside the vector
+   * channel, lexical-only hits UNION into the candidate set, and
+   * `lexical_score`/`lexical_match` are projected.
+   */
+  lexical?: {
+    /** Column indexed with `to_tsvector` (e.g. `field(E,"content")`). */
+    field: FieldRef<any, any>;
+    /** Search string — bound param fed to `websearch_to_tsquery`. */
+    query: string;
+    /** Text-search configuration — default `"simple"` (no stemming). */
+    config?: string;
+    /** Weight of `lexical_score` in the final score — default 0. */
+    boost?: number;
+    /** Threshold for the `lexical_match` flag — default 0.05. */
+    minScore?: number;
+  };
+  /**
+   * Keyword-hit lateral count — OFF by default. When set, a
+   * `CROSS JOIN LATERAL unnest($terms)` counts ILIKE hits over the given
+   * fields per candidate and projects `keyword_hits`.
+   */
+  keywordBoost?: {
+    terms: string[];
+    /** Fields ILIKE-matched against every term (e.g. title, path, content). */
+    fields: FieldRef<any, any>[];
+    /** Weight of `keyword_hits` in the final score — default 0. */
+    boost?: number;
+  };
+  /**
+   * CASE-based score adjustment — OFF by default. Added to the final score:
+   * `CASE <expr> WHEN 'k' THEN <v> … ELSE <fallback> END` (e.g.
+   * `{ expr: "d.metadata->>'content_type'", map: { tutorial: 0.08, api: -0.10 } }`).
+   */
+  scoreAdjust?: { expr: string; map: Record<string, number>; fallback?: number };
+  /** Phantom brand — keeps TEntity tied to the entity for typing. */
+  _entityBrand?: TEntity;
 };
 
 /** Options for `findByUUID`. */
@@ -45,37 +121,112 @@ export type PaginatedEntity<TEntity> = {
   total_records: bigint;
 };
 
+/** Insert conflict semantics for `add()`. */
+export type OnConflictMode =
+  /**
+   * Default. A unique/exclusion conflict raises a typed PG error:
+   * `ERR04` when the conflicting row is live, `ERR05` when it is
+   * soft-deleted (`deleted_at` set → restore it, never duplicate).
+   * Generated as a CTE: `ins` (INSERT ... ON CONFLICT DO NOTHING
+   * RETURNING), `conflict` (matches the pre-existing row by unique-group
+   * values), `raised` (`pg_raise`). The conflicting row's `uuid` and the
+   * matched constraint name travel in the error `detail` (jsonb).
+   */
+  | "raise"
+  /**
+   * Bare `ON CONFLICT DO NOTHING` — the conflicting row is skipped without
+   * raising, so the surrounding transaction survives. `add()` returns
+   * `undefined` when the row was skipped (RETURNING yields zero rows).
+   * For statement-level idempotent inserts (e.g. piggybacked translations
+   * inside an entity-write transaction).
+   */
+  | "ignore";
+
 /** Base write options — no actor (for non-auditable entities). */
-export type WriteOptions = {
+export type WriteOptions<TEntity extends object = Record<string, unknown>> = {
   /** Optional audit port — if not injected, audit is silently skipped. */
   audit?: AuditPort;
   /** Optional logger port — if not injected, errors are swallowed. */
   logger?: LoggerPort;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
+  /**
+   * Conflict semantics for `add()`. Default `"raise"` — see
+   * {@link OnConflictMode}. `"ignore"` is reserved for statement-level
+   * idempotent inserts that must not abort an open transaction.
+   */
+  onConflict?: OnConflictMode;
+  /**
+   * `add()` + `onConflict: "raise"` only. Restricts conflict identification
+   * to the unique constraint defined by these entity property keys — they
+   * must exactly match one `@Unique` group (single column or named
+   * composite). Defaults to every unique group whose attempted values are
+   * all known — payload values (including a caller-provided `uuid`),
+   * constant `defaultSql` literals, or NULL when the column is omitted
+   * without a default. Groups containing columns with volatile DB-side
+   * defaults (`gen_random_uuid()`, `identity` PK, `now()`) are excluded
+   * automatically since their attempted value is unknowable.
+   * Unknown keys throw `UnknownColumnError`; a set matching no unique
+   * group throws `ValidationError`.
+   */
+  conflictKeys?: (keyof TEntity & string)[];
+  /**
+   * Projection applied to the write's RETURNING clause.
+   * - `undefined` (default): every persisted column EXCEPT the identity PK
+   *   (`id` bigint — not JSON-safe), aliased to its TS property key.
+   * - `FieldProjector[]`: only these fields/expressions are returned —
+   *   honors `<TEntity, TResult>`: the result object carries exactly the
+   *   projected keys/aliases. Projections must target the base entity —
+   *   RETURNING cannot reference joined tables.
+   * Internal bookkeeping columns (`id`, `uuid`, `version`) are always
+   * emitted for the audit path, then stripped from the returned object.
+   */
+  returning?: FieldProjector[];
 };
 
 /** Write options for auditable entities — actor is required. */
-export type AuditableWriteOptions = WriteOptions & {
+export type AuditableWriteOptions<TEntity extends object = Record<string, unknown>> = WriteOptions<TEntity> & {
   /** The actor performing the operation (stamped into created_by/updated_by/deleted_by). */
   actor: string;
 };
 
-/** Options for match-by operations (update, delete, restore, hardDelete). */
+/** Options for match-by operations (update, delete, restore, hardDelete, *Many). */
 export type MatchByOptions<TEntity> = {
   /**
-   * Which entity property to use as the WHERE left operand.
-   * Defaults to the @Key() column.
-   * TypeScript guardrail: only accepts actual properties of TEntity.
+   * Non-standard identity selectors — an array of `@Unique`/`@Key` entity
+   * properties used as AND-match conditions on top of any `id`/`uuid`
+   * present in the payload. A prop belonging to a composite `@Unique`
+   * group pulls in the WHOLE group (all group props required in payload).
+   * Omitted → auto-match on `id`/`uuid` from the payload. Bulk `*Many`
+   * accept only a single-column selector for now (pass a 1-element array
+   * or a bare string).
    */
-  matchBy?: keyof TEntity & string;
+  matchBy?: (keyof TEntity & string) | ReadonlyArray<keyof TEntity & string>;
+};
+
+/** Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany). */
+export type BulkResult = {
+  /** Rows received in the payload. */
+  received: number;
+  /**
+   * Rows actually written, from PostgreSQL `rowCount` (inserted / upserted /
+   * updated / deleted). `affected < received` is not an error for
+   * upsert/update/delete — it reports unmatched or conflicted rows.
+   */
+  affected: number;
 };
 
 /** Bulk operation options (batch size, timeout). */
 export type BulkOptions = {
   /** Batch size for temp table loading (default: auto-calculated from column count). */
   batchSize?: number;
-  /** Per-statement timeout in ms. */
+  /**
+   * Whole-operation wall-clock budget in ms for this bulk call — overrides
+   * `DalConfig.bulkTimeoutMs`. Applied as `SET LOCAL statement_timeout`
+   * (bounds each statement) plus a JS deadline checked between statements
+   * (bounds the whole operation); on expiry the transaction rolls back and
+   * a `BulkTimeoutError` is thrown.
+   */
   timeoutMs?: number;
 };
 
@@ -113,6 +264,9 @@ export enum AuditAction {
   SOFT_DELETE = "SOFT_DELETE",
   HARD_DELETE = "HARD_DELETE",
   RESTORE = "RESTORE",
+  /** Record created by cloning an existing row (distinct from INSERT so the
+   *  version history can label "created via clone" vs "created via form"). */
+  CLONE = "CLONE",
 }
 
 /** Logger port — consumers inject their own logger. */

@@ -1,0 +1,152 @@
+---
+title: Entity Service Factory
+description: "makeEntityService — the generic CRUD service that sits between a Repository and the route layer: the EntityAction surface, list/search/aggregate machinery, tx propagation, hooks, and audit port wiring."
+---
+
+# Entity service factory
+
+`makeEntityService` (in `src/entity/entity-service.ts`) is **the one
+generic CRUD service** for entity routes. It sits one layer above the
+[Repository](./repository.mdx) and one layer below the route factories
+(BE `src/http/entity-router.ts`, SDK `makeEntityRouter`): the router
+maps HTTP verbs to methods, this service owns the semantics every entity
+shares — projection, optimistic-lock versioning, audit, search,
+aggregates, bulk ops, streaming.
+
+It is **transport-free and BE-free by construction**: every
+infrastructure dependency is injected through `EntityServiceConfig`, so a
+microservice gets identical behavior to the gateway edition without
+copying a line.
+
+```ts
+// The gateway owns the Repository — consumers never see it.
+const service = dal.entityService<CustomerEntity>({
+  entity: CustomerEntity,
+  actor: requireActor,                 // SDK — the resolved caller
+  userEntity: UserProfileEntity,       // optional display-name join
+  list: {
+    searchableKeys: ["name", "email"],
+    filterableKeys: new Set(["status", "country", "created_at"]),
+    defaultSort: { key: "updated_at", dir: "desc" },
+  },
+});
+```
+
+`dal.entityService(cfg)` injects the gateway's own (schema-domain-guarded)
+`Repository` and defaults `auditPort` to `makeTableAuditPort(repo)`.
+The free `makeEntityService(cfg)` function is the internal machinery the
+method delegates to — it requires `cfg.repo` explicitly and throws
+`ValidationError` without it; call it directly only from tests or when
+feeding a decorated repository (e.g. `withCache`-wrapped), never as the
+consumer path.
+
+## `DomainService<TEntity>` — the worker-service base class
+
+`DomainService` (in `src/entity/domain-service.ts`) is the sanctioned
+**base class** for every service that owns one entity — the shape behind
+the `CONTROLLER → WORKER SERVICE → DAL lib → DB` layer contract:
+
+```ts
+export class CustomersService extends DomainService<CustomerEntity> {
+  constructor() {
+    super({ entity: CustomerEntity });          // EntityServiceConfig
+  }
+  // domain queries are methods on the service itself — no *Dal/*Repo
+  // wrapper layer, no separate DTO:
+  async findByVat(vat: string) {
+    return this.dal.find(CustomerEntity, null, {
+      filters: [Filter.fieldValue(field(CustomerEntity, "vat"), "=", vat)],
+    });
+  }
+}
+```
+
+Three design guarantees make it the only legal shape:
+
+- **Lazy resolution** — the constructor takes NO data-access arguments and
+  does NO I/O. `this.dal` (the `getDal()` singleton) and `this.svc` (the
+  composed `EntityService`) resolve on first use, so importing or
+  instantiating a service at router-mount time is always safe; `getDal()`
+  still fails fast if a method runs before bootstrap (`initDal()`).
+- **IS an `EntityService`** — a subclass can be handed to an entity-router
+  unchanged; domain rules override whichever methods need them.
+- **`buildConfig()` seam** — override to inject extra `EntityServiceConfig`
+  fields (`auditPort`, `actor`, `userEntity`) at resolution time; it runs
+  inside the lazy path so it may itself use `this.dal`.
+
+Collaborator services may still be constructor-injected for tests; the DAL
+never is. Per-entity `*Dal`/`*Repo` wrapper classes are banned — custom
+queries are methods on the owning service, using the `this.dal.*` proxies
+(`find`, `add`, `update`, `findByPage`, `transaction`, …).
+
+## The EntityService contract
+
+The returned object covers the full `EntityAction` surface:
+
+| Method | Action | What it guarantees |
+|---|---|---|
+| `list(q)` | list | paged rows; search, declared filters, sort, aggregates |
+| `get(uuid)` | get | full row (pk excluded); `NotFoundError` if absent |
+| `create(body, tx?)` | create | `RETURNING` row, caller `uuid` respected, `beforeCreate` hook |
+| `update(uuid, body, tx?)` | update | `version` in body = optimistic lock; `beforeUpdate` hook |
+| `delete` / `restore` / `purge` | delete / restore / purge | matched by `{uuid, version}`; the row is returned |
+| `duplicate(uuids)` | duplicate | per-item clone → `{uuids, errors}` (partial success) |
+| `bulkDelete` / `bulkRestore` | bulkDelete / bulkRestore | `{uuid, version}`[] via `deleteMany`/`restoreMany` |
+| `audit(uuid, page, limit)` | audit | paged `{table}_audit` rows with `changed_by_name` |
+| `stream(q)` | export | async generator over the list shape (`stream: true`) |
+
+**Every write returns the real row** produced by `RETURNING` — there is
+no code path that yields `{uuid}` or `{success: true}`.
+
+## List machinery
+
+`list.list` config declares — per entity — the only variation allowed:
+
+- **`searchableKeys`** — `q.search` is an escaped `ILIKE` across these
+  columns (wildcard escape `#`/`%`/`_`; `\*` `\?` become real wildcards).
+  Under 3 real characters the search is rejected as `1 = 0` rather than
+  scanning. A full-uuid input matches `=` instead of `ILIKE`.
+- **`filterableKeys`** — the allowlist `translateFilterConditions`
+  enforces on `q.filters` (see [query DSL](./query-dsl.mdx)); anything
+  else is silently dropped. `q.connector` picks `AND`/`OR`.
+- **`aggregates`** — declarative rollups: `AggregateDecl` adds a LEFT
+  join + `CAST(expr FILTER (WHERE ...) AS cast)` expression column plus
+  a `GROUP BY` on the pk. e.g. `user_count` on a company list.
+- **`extraFilters(q)`** — entity-specific predicate escape hatch.
+- **`deleted_records`** — `EXCLUDED` (default) / `ONLY` / `INCLUDED`.
+
+## Transactions and hooks
+
+`create`/`update` accept an optional tx-scoped `Repository` — pass the one
+`dal.transaction(txRepo => …)` gives the callback (the BE's `runEntityWrite`
+envelope does exactly this when the write body carries
+`{entity, translations}` piggyback rows). Raw `PoolClient` is never part
+of the contract.
+`afterWrite` hooks fire **only outside a tx** — inside one, commit is
+the caller's job, so notifications can't precede the durable write.
+`beforeCreate`/`beforeUpdate` may rewrite the body before it reaches the
+repository.
+
+## Audit wiring
+
+`makeTableAuditPort(repo)` is the standard port: writes to
+`{table}_audit` via `repo.add` — actor, delta, version per change (the
+delta engine is in [audit trail](./audit-trail.mdx)). It deliberately
+omits the BE's Redis/NATS `entity-changed` markers — those are gateway
+collaboration infra, not persistence concern; a service that needs them
+wraps the port itself.
+
+`userEntity` enables the auditable display-name joins (`created_by_name`,
+`updated_by_name`, `deleted_by_name`) — without it audit rows carry the
+raw `changed_by` uuid.
+
+## What it deliberately does not do
+
+- **No env reads** — no `debugCode`-style toggles; env is bootstrap-only.
+- **No cache port** — feed a `withCache`-wrapped repository through the
+  `cfg.repo` seam instead (the BE binding does exactly this).
+- **No pool singletons** — the `Dal` gateway owns the pool AND the
+  repository; `dal.repository()` does not exist — the engine never leaves
+  the gateway's control.
+- **No permissions** — authorization lives in the router layer
+  (`deriveEntityActions`, `rbacHandler`), not here.

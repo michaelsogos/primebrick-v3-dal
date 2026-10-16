@@ -7,7 +7,9 @@ import {
   UnknownColumnError,
   ValidationError,
   RecordVanishedError,
-} from "../src/index.js";
+}
+from "../src/index.js";
+import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   getTestPool,
@@ -27,7 +29,7 @@ describe("Repository — negative / failure paths", () => {
   beforeAll(async () => {
     pool = getTestPool();
     await setupTestSchema();
-    repo = new Repository(pool);
+    repo = new Repository(pool, REPO_INTERNAL);
   });
 
   afterAll(async () => {
@@ -202,33 +204,30 @@ describe("Repository — negative / failure paths", () => {
 
   // ─── Silent failures (should NOT throw) ───────────────────────────
 
-  it("addMany: empty array returns empty array (silent, no error)", async () => {
-    const result = await repo.addMany(SimpleTestEntity, [], { actor: "test-user" });
-    expect(result).toEqual([]);
+  it("addMany: empty array is a silent no-op (returns void)", async () => {
+    await repo.addMany(SimpleTestEntity, [], { actor: "test-user" });
   });
 
-  it("upsertMany: empty array returns empty array (silent, no error)", async () => {
-    const result = await repo.upsertMany(SimpleTestEntity, [], {
-      actor: "test-user",
-      conflictTarget: "uuid",
-    });
-    expect(result).toEqual([]);
-  });
+  // upsertMany — COMMENTED OUT: method parked pending guarded/unguarded decision.
+  // it("upsertMany: empty array is a silent no-op (returns void)", async () => {
+  //   await repo.upsertMany(SimpleTestEntity, [], {
+  //     actor: "test-user",
+  //     conflictTarget: "uuid",
+  //   });
+  // });
 
-  it("deleteMany: empty array returns empty array (silent, no error)", async () => {
-    const result = await repo.deleteMany(SimpleTestEntity, [], {
-      actor: "test-user",
-      matchBy: "uuid",
-    });
-    expect(result).toEqual([]);
-  });
-
-  it("updateMany: empty array returns empty array (silent, no error)", async () => {
-    const result = await repo.updateMany(SimpleTestEntity, [], {
+  it("deleteMany: empty array is a silent no-op (returns void)", async () => {
+    await repo.deleteMany(SimpleTestEntity, [], {
       actor: "test-user",
       matchBy: "uuid",
     });
-    expect(result).toEqual([]);
+  });
+
+  it("updateMany: empty array is a silent no-op (returns void)", async () => {
+    await repo.updateMany(SimpleTestEntity, [], {
+      actor: "test-user",
+      matchBy: "uuid",
+    });
   });
 
   // ─── Error code stability ─────────────────────────────────────────

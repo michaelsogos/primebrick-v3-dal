@@ -10,6 +10,7 @@ import {
   AuditTrail,
   AuditableFieldType,
   DeletableFieldType,
+  type UUID,
 } from "../../src/index.js";
 
 /**
@@ -34,7 +35,7 @@ export class TypeTestEntity {
   id!: bigint;
 
   @Unique()
-  uuid!: string;
+  uuid!: UUID;
 
   // ── Primitive types ──────────────────────────────────────────────
   @Column({ pgType: "integer" })

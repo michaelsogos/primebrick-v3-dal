@@ -4,7 +4,7 @@ Complete method-by-method reference for the Dal gateway and Repository API.
 
 ## Table of contents
 
-0. [Dal gateway (getDal)](#dal-gateway-getdal)
+0. [Dal gateway (initDal/getDal)](#dal-gateway-getdal)
 1. [Finders](#finders)
 2. [Write operations](#write-operations)
 3. [Bulk operations](#bulk-operations)
@@ -16,32 +16,47 @@ Complete method-by-method reference for the Dal gateway and Repository API.
 
 ---
 
-## Dal gateway (getDal)
+## Dal gateway (initDal / getDal)
 
-The `Dal` class is the high-level gateway that owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults. It delegates all CRUD/bulk/finder methods to an internal `Repository(pool)` instance. Consumers should use `getDal()` (singleton) as the primary entry point.
+The `Dal` class is the high-level gateway that owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults. It delegates all CRUD/bulk/finder methods to an internal `Repository(pool)` instance. Consumers reach it through a two-step convention: `initDal()` once at bootstrap (inside the consumer's own `db/dal-gateway.ts` / `db/dal.ts`), `getDal()` as the accessor everywhere else.
 
-### `getDal(config?)` — singleton factory
+### `initDal()` → `getDal()` — the consumer bootstrap split
 
-Returns the process-wide singleton `Dal` instance. Creates it on first call.
+The library exports `getDal(config?)` (singleton factory). Consumers wrap
+it once in their own gateway module (`src/db/dal-gateway.ts` in the BE,
+`<service>/src/db/dal.ts` in microservices):
 
 ```typescript
+// src/db/dal.ts (consumer side) — bootstrap seam, called ONCE in index.ts
 import { getDal } from "@primebrick/dal-pg";
 
-// once at startup:
-const dal = getDal({
-  connectionString: process.env.DATABASE_URL!,
-  schema: "emailsender",
-  max: 10,
-  statementTimeoutMs: 30000,
-  applicationName: "primebrick-emailsender",
-});
+export function initDal(): void {
+  const { url, schemas } = assertDbEnv();
+  getDal({
+    connectionString: url,
+    schemas,
+    max: 10,
+    statementTimeoutMs: 30000,
+    applicationName: "primebrick-emailsender",
+  });
+}
+export { getDal } from "@primebrick/dal-pg";
+```
 
-// per request — no allocation, reuse the singleton:
+```typescript
+// application code — accessor only, never config:
+const dal = getDal();                       // singleton, zero allocation
 const config = await dal.find(EmailConfigEntity, null, { ... });
 
 // graceful shutdown (consumer calls this from signal handlers — see below):
 await dal.close(); // close(timeoutMs?) — default 10s timeout
 ```
+
+`getDal()` called before `initDal()` throws
+`"getDal: config is required on the first call"` — by design it fires at
+the **first real data access**, because services construct lazily
+(`DomainService` resolves `this.dal` on first method call), never at
+import or mount time.
 
 **DalConfig options:**
 
@@ -57,42 +72,42 @@ await dal.close(); // close(timeoutMs?) — default 10s timeout
 | `applicationName` | `"primebrick-dal"` | PG-side observability — shows up in `pg_stat_activity` |
 
 **Singleton rules:**
-- First call: requires `config`, creates the singleton.
+- First call (`initDal` inside the consumer gateway): requires `config`, creates the singleton.
 - Subsequent calls with no config: returns the existing instance.
 - Subsequent calls with same `connectionString`: returns the existing instance.
 - Subsequent calls with different `connectionString`: throws.
 - For multi-DB: use `new Dal(config)` directly (bypasses the singleton).
 - `resetDal()` closes and clears the singleton (for tests).
 
-### `dal.withClient(fn, options?)` — transactions & per-call timeout
+**Consumer rule:** `getDal(config)` belongs to the bootstrap seam only —
+services never pass config. In the BE, `getDal(`/`initDal(` calls outside
+the `.devin/check-standards.json` `dal-access` allowlist fail
+`check:standards`. Worker services extend `DomainService<TEntity>` and
+use `this.dal`/`this.svc` instead of importing `getDal` at all (see the
+`entity-service` dev-guide page).
 
-Acquires a dedicated client from the pool, optionally sets a per-connection `statement_timeout`, runs `fn(client)`, and releases the client (resetting the timeout).
+### `dal.transaction(fn, options?)` — atomic multi-statement work
+
+Acquires a dedicated client, emits `BEGIN`, runs `fn(txRepo)` with a tx-scoped
+`Repository`, then `COMMIT`s — or `ROLLBACK`s if `fn` throws. The callback
+never sees the raw `PoolClient`; every statement inside the tx goes through
+the entity/DSL surface (schema-domain guard, audit stamping, optimistic lock).
 
 ```typescript
-// Transaction:
-await dal.withClient(async (client) => {
-  await client.query("BEGIN");
-  // ... operations ...
-  await client.query("COMMIT");
+await dal.transaction(async (txRepo) => {
+  await txRepo.add(MyEntity, { ... }, { actor: "tx" });
+  await txRepo.update(OtherEntity, match, { ... }, { actor: "tx" });
+  // COMMIT on return, ROLLBACK on throw — never manual.
 });
 
-// Repository backed by the client (for tx-participating DAL ops):
-import { Repository } from "@primebrick/dal-pg";
-await dal.withClient(async (client) => {
-  const repo = new Repository(client);
-  await client.query("BEGIN");
-  await repo.add(MyEntity, { ... }, { actor: "tx" });
-  await client.query("COMMIT");
-});
-
-// Per-call timeout override (for ad-hoc long queries):
-await dal.withClient(
-  async (client) => {
-    await client.query("SELECT * FROM large_table");
-  },
-  { timeoutMs: 120000 }, // 2 minutes for this one query
-);
+// Timeout override (SET LOCAL — transaction-scoped, no leakage):
+await dal.transaction(async (txRepo) => { /* ... */ }, { timeoutMs: 120000 });
 ```
+
+`dal.withClient` (raw `PoolClient`) is now `private` to dal-pg internals —
+not a consumer API. `dal.serverVersion()` doubles as the connectivity probe
+(there is no `ping()`). Physical resets go through `dal.truncate(entity)` /
+`repo.truncate` (domain-guarded), never raw `TRUNCATE`.
 
 ### `dal.close(timeoutMs?)` — graceful shutdown
 
@@ -127,7 +142,7 @@ Exposes the underlying `pg.Pool` for tooling that needs raw access (e.g. schema 
 
 **Impact per operation:**
 - Normal CRUD: 30s is plenty.
-- Bulk ops (`addMany`, `upsertMany`, `updateMany`): use `options.timeoutMs` to override per-call (emits `SET LOCAL statement_timeout` inside the transaction).
+- Bulk ops (`addMany`, `updateMany`, `deleteMany`): use `options.timeoutMs` to override per-call (emits `SET LOCAL statement_timeout` inside the transaction).
 - `findAll` non-streamed on large sets: **HIGH risk** — the entire result is one statement. Use `stream: true` instead.
 - `findAll` streamed (`stream: true`): **safe** — cursor `FETCH` per batch, each bounded by the session default individually.
 
@@ -289,23 +304,13 @@ const inserted = await repo.add(
 
 ---
 
-### `upsert(entity, row, options)`
+### `upsert` — REMOVED
 
-Insert or update on conflict. Returns the full row.
-
-```typescript
-const result = await repo.upsert(
-  MyEntity,
-  { uuid: existingUuid, name: "Updated Name" },
-  { actor: "admin", conflictTarget: "uuid" }
-);
-```
-
-**Conflict behavior (audit-aware):**
-- `created_at` / `created_by` are **preserved** on conflict (not overwritten)
-- `updated_at` / `updated_by` are stamped with `now()` / `options.actor`
-- `version` is incremented by 1
-- The conflict target column itself is not updated
+Single-record upsert was removed by design: `ON CONFLICT … DO UPDATE`
+overwrote unconditionally, bypassing the optimistic `version` check.
+Never reintroduce it. The standard is: read (`findByUUID`/`find` —
+carries the observed `version`) then `add` or `update`. A stale `version`
+fails the write — that IS the concurrency guard.
 
 ---
 
@@ -392,23 +397,13 @@ const inserted = await repo.addMany(MyEntity, rows, { actor: "admin" });
 
 ---
 
-### `upsertMany(entity, rows, options)`
+### `upsertMany` — DISABLED (commented out in source)
 
-Bulk upsert with conflict handling. Returns all rows (inserted + updated).
-
-```typescript
-const result = await repo.upsertMany(
-  MyEntity,
-  rows,
-  { actor: "admin", conflictTarget: "uuid" }
-);
-```
-
-**Options:**
-- `conflictTarget` (default: `"uuid"`) — column name for ON CONFLICT
-- `batchSize` — override auto-batch size
-
-**Audit-aware ON CONFLICT:** Same rules as single `upsert` — `created_at`/`created_by` preserved, `updated_at`/`updated_by` stamped, `version` incremented.
+Parked pending a guarded-vs-sync-import design decision: its conflict
+branch overwrote rows without a `version` check — the same optimistic-lock
+bypass that killed single `upsert`. Do not call; if a legitimate bulk
+sync-import use case surfaces it must come back WITH a version guard or
+an explicitly unguarded (documented) mode.
 
 ---
 
@@ -569,10 +564,10 @@ Marks the primary key column. Only one per entity.
 
 ```typescript
 @Key()
-id!: number;
+id!: bigint;
 
 @Key({ generated: "manual" })
-custom_id!: number;
+custom_id!: bigint;
 ```
 
 ### `@Unique()`
@@ -581,7 +576,7 @@ Marks a column with a unique constraint.
 
 ```typescript
 @Unique()
-uuid!: string;
+uuid!: UUID;
 ```
 
 ### `@Column(options)`
@@ -589,14 +584,14 @@ uuid!: string;
 Overrides SQL name, PG type, nullability, length, precision, scale, default, or join cast.
 
 ```typescript
-@Column({ pgType: "varchar", length: 255 })
+@Column({ length: 255 })          // string + length → varchar(255)
 name!: string;
 
-@Column({ pgType: "numeric", precision: 15, scale: 2 })
-price!: number;
+@Column({ precision: 15, scale: 2 })  // Decimal + precision/scale → numeric(15,2)
+price!: Decimal;
 
-@Column({ pgType: "date })
-birth_date!: Date;
+@Column({ jsType: "isodate" })        // ISODate → date (plain "YYYY-MM-DD")
+birth_date!: ISODate;
 
 @Column({ sqlName: "short_name" })
 displayName!: string;
