@@ -1,3 +1,0 @@
-{
-  "pages": ["index", "getting-started", "architecture", "entities", "query-dsl", "repository", "repository-pattern", "connections", "audit-trail", "optimistic-lock", "clone", "changelog", "api-reference"]
-}

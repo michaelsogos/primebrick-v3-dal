@@ -1,0 +1,95 @@
+---
+title: Database Migrations
+description: "The migration engine + primebrick-db CLI — signed MANIFEST.json, per-schema patch registry, mandatory ordered patches, review/approval workflow, and the drift gate."
+---
+
+# Database migrations
+
+Each service owns its own schema's migrations under `db-meta/patches/`.
+The engine (`src/migrations/engine.ts` → `runMigrations`) runs them **at
+service startup, before any domain traffic is served** — a failed patch
+leaves the service degraded, not silently stale.
+
+Two artifacts travel with the patches:
+
+- **`db-meta/MANIFEST.json`** — Ed25519-signed map of
+  `patch_name → content_sha256`. The engine verifies the signature against
+  `db-meta/keys.json` before trusting the hashes; an unsigned or badly
+  signed manifest aborts the run (in `apply`/`check` mode).
+- **`<schema>.primebrick_database_patches`** — per-service registry table
+  (self-bootstrapped by the engine's DDL), the persisted provenance/order
+  record: `patch_name`, `content_sha256`, `status`, `attempts`,
+  `duration_ms`, `error`, `applied_by`, `resolved_by`, `atomic`.
+
+## Patch semantics
+
+- **Order** — filename-sorted (chronological `YYYYMMDDHHMMSS_<slug>.sql`).
+  Every patch is **mandatory**: after one fails, later patches in that
+  module do not execute.
+- **Immutability** — a filename already registered with a different sha256
+  is a security event, not a re-apply: never edit a shipped patch, ship a
+  new one.
+- **Pragmas** (header comments, first 40 lines):
+  `-- pb:requires-review` parks the patch at `pending_review` until an
+  admin approves it; `-- pb:no-transaction` opts a patch out of the
+  default per-patch transaction (for `CREATE INDEX CONCURRENTLY` etc.).
+- **Mode** is runtime config, not env: `<schema>.config_entries` key
+  `db_migration.mode` = `apply` | `check` | `off`. Re-read after each run —
+  a patch may change it. There is no "auto" guessing and nothing is
+  generated from git hooks.
+- **Advisory lock** — `pg_advisory_lock` keyed per schema serializes
+  concurrent runners (multi-instance boot); `lockWaitMs` bounds the wait.
+
+`runMigrations` returns `{ mode, nextMode?, degraded, applied[], failed[],
+pendingReview[], skipped[], securityEvents[] }` — the service maps
+`degraded`/`failed`/`pendingReview` onto its lifecycle state so the FE can
+surface migration health.
+
+## Admin remediation (the `db_patch` surface)
+
+`src/migrations/status.ts` backs the admin page actions — plain registry
+transitions the next run picks up:
+
+| Helper | Transition |
+|---|---|
+| `retryFailedPatches` | `failed → pending` (next run retries, in order) |
+| `approvePendingReview` | `pending_review → approved` (one named patch) |
+| `resolveManually` | `failed`/`pending`/`pending_review → resolved_manual` |
+| `registryStatus` | read all rows — the FE `db_patch` list |
+
+## `primebrick-db` CLI
+
+`bin/primebrick-db` (`src/cli/primebrick-db.ts`) wraps the engine and the
+schema-diff side for local/CI use:
+
+```bash
+primebrick-db compare --registry <module.ts> --url <pg-url> [--out db-meta]
+    # entity snapshot vs catalog → snapshots JSON + unsigned .sql patch +
+    # refreshed (UNSIGNED) MANIFEST.json entries
+primebrick-db apply   --schema <s> --url <pg-url> --patches <dir>
+    # run the engine once — same code path as service boot
+primebrick-db check   --registry <module.ts> --url <pg-url>
+    # drift gate — exit 1 when entity intent is not fully applied
+primebrick-db status  --schema <s> --url <pg-url>
+    # print the <schema>.primebrick_database_patches registry
+primebrick-db sign    --db-meta <dir> --key <b64|@file> --key-id <id>
+    # re-sign MANIFEST.json after adding a patch (dev key locally,
+    # release key only in CI)
+primebrick-db keygen  --key-id <id> --trust <release|dev> [--out db-meta]
+    # Ed25519 keypair; pubkey → keys.json, private key printed ONCE
+```
+
+Consumers wire it through their own scripts (`pnpm db:migrate`,
+`db:check`, …) so the CLI itself never hardcodes connection settings.
+
+**Signature trust:** `keys.json` entries carry `"release" | "dev"`;
+`allowedTrust` on the engine defaults to `["release"]` — dev-signed
+manifests run locally only when the service explicitly allows `dev`
+(typically gated by NODE_ENV/dev mode).
+
+## Fire-and-forget SQL
+
+`db-meta/fire-and-forget/` holds one-off operational SQL (seeds,
+backfills, manual fix-ups). It is **not** tracked by the manifest or the
+registry — idempotency is the author's responsibility
+(`ON CONFLICT`, `IF EXISTS`, existence guards).

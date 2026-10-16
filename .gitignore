@@ -30,3 +30,6 @@ test/.env.test
 
 # Excel temporary files
 ~$*
+
+# TypeScript incremental build info
+*.tsbuildinfo

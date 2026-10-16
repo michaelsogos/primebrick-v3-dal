@@ -34,7 +34,7 @@ trigger: always_on
 
 ### 5. No fake defaults for configuration data
 - AUTH CONFIG, IDP config, gateway config — these are NOT "nice to have". Either the value is in the DB or the system is misconfigured.
-- NEVER mix real config data with fake fallback defaults (`|| "ACME"`, `|| "x-gateway-secret"`). A fake config that looks valid but points to the wrong IDP is worse than a clear error.
+- NEVER mix real config data with fake fallback defaults (`|| "ACME"`, `|| "x-client-shield-secret"`). A fake config that looks valid but points to the wrong IDP is worse than a clear error.
 - Mandatory fields: validate in a check block before the return, throw if missing. Optional fields: stay `undefined` if missing.
 
 ## Enforcement
@@ -44,3 +44,7 @@ trigger: always_on
 - AI agent MUST NOT add fallback string-literal defaults (`|| "..."`, `?? ""`) for configuration data.
 - AI agent MUST spread raw DB results (`...settings`) instead of field-by-field rebuilding, unless a field needs a real type conversion.
 - When reviewing existing code, flag any camelCase field names in entity-shaped JSON responses as violations.
+
+## Deep dive
+
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/entities.mdx` — link, do not duplicate.

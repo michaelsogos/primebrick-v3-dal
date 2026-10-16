@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import { Repository } from "../../src/index.js";
+import { REPO_INTERNAL } from "../../src/repository/repository.js";
 import { BenchSimpleEntity } from "../entities/bench-simple.entity.js";
 import { BenchPrimitivesEntity } from "../entities/bench-primitives.entity.js";
 import {
@@ -18,7 +19,7 @@ let repo: Repository;
 beforeAll(async () => {
   pool = getTestPool();
   await setupTestSchema();
-  repo = new Repository(pool);
+  repo = new Repository(pool, REPO_INTERNAL);
 });
 
 afterAll(async () => {
@@ -125,6 +126,7 @@ describe("updateMany benchmark — simple table", () => {
   }
 });
 
+/* upsertMany parked — COMMENTED OUT pending guarded/unguarded decision.
 // ─── Benchmarks: upsertMany — simple table ────────────────────────────────────
 
 describe("upsertMany benchmark — simple table", () => {
@@ -159,6 +161,7 @@ describe("upsertMany benchmark — simple table", () => {
     });
   }
 });
+*/
 
 // ─── Benchmarks: updateMany — primitives table ────────────────────────────────
 
@@ -188,6 +191,7 @@ describe("updateMany benchmark — primitives table", () => {
 
 // ─── Benchmarks: upsertMany — primitives table ────────────────────────────────
 
+/* upsertMany parked — COMMENTED OUT pending guarded/unguarded decision.
 describe("upsertMany benchmark — primitives table", () => {
   for (const count of counts) {
     it(`upsertMany ${count.toLocaleString()} rows — primitives table (mixed insert+update)`, async () => {
@@ -210,3 +214,4 @@ describe("upsertMany benchmark — primitives table", () => {
     });
   }
 });
+*/

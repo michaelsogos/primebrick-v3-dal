@@ -1,7 +1,8 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal } from "../src/index.js";
+import { Dal, Filter } from "../src/index.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   setupTestSchema,
@@ -29,11 +30,11 @@ function parseTimeoutSetting(setting: string): number {
 
 /**
  * Integration tests for per-call statement_timeout override:
- * - Bulk ops (addMany, upsertMany, updateMany) with timeoutMs → SET LOCAL inside tx.
- * - withClient with timeoutMs → per-connection override + reset on release.
+ * - Bulk ops (addMany, updateMany) with timeoutMs → SET LOCAL inside tx.
+ * - transaction(fn, { timeoutMs }) → SET LOCAL after BEGIN, auto-reset at COMMIT.
  * - Verify SET LOCAL doesn't leak to other queries on the same connection.
  */
-describe("Dal timeout override — bulk ops + withClient", () => {
+describe("Dal timeout override — bulk ops + transaction", () => {
   let dal: Dal;
   let connectionString: string;
 
@@ -44,7 +45,7 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     }
     dal = new Dal({
       connectionString,
-      schema: "public",
+      schemas: ["public"],
       max: 5,
       statementTimeoutMs: 30000, // 30s default
       applicationName: "dal-timeout-test",
@@ -66,17 +67,18 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({
       name: `bulk-timeout-ok-${i}`,
     }));
-    const result = await dal.addMany(SimpleTestEntity, rows, {
+    // Bulk ops return void — verify via count
+    await dal.addMany(SimpleTestEntity, rows, {
       actor: "test",
       timeoutMs: 30000, // 30s — plenty for 10 rows
     });
-    expect(result.length).toBe(10);
+    expect(await dal.count(SimpleTestEntity)).toBe(10n);
   });
 
   it("addMany with timeoutMs: aborts when timeout is too short for a slow query", async () => {
     // Use a very short timeout (1ms) and a query that will take longer.
     // pg.sleep is available in the default distribution and takes >1ms.
-    // We test the timeout mechanism by using rawSql with a slow query inside
+    // We test the timeout mechanism by using a slow query inside
     // a transaction, since addMany with simple rows is too fast to trigger 1ms.
     // Instead, verify that SET LOCAL statement_timeout is actually emitted
     // by checking that a bulk op with a 1ms timeout against a deliberately
@@ -90,103 +92,112 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     const rows = Array.from({ length: 5 }, (_, i) => ({
       name: `bulk-timeout-smoke-${i}`,
     }));
-    const result = await dal.addMany(SimpleTestEntity, rows, {
+    await dal.addMany(SimpleTestEntity, rows, {
       actor: "test",
       timeoutMs: 10000,
     });
-    expect(result.length).toBe(5);
+    expect(await dal.count(SimpleTestEntity)).toBe(5n);
   });
 
-  it("upsertMany with timeoutMs: completes with generous timeout", async () => {
-    const rows = Array.from({ length: 5 }, (_, i) => ({
-      name: `upsert-timeout-${i}`,
-    }));
-    const result = await dal.upsertMany(SimpleTestEntity, rows, {
-      actor: "test",
-      timeoutMs: 30000,
-    });
-    expect(result.length).toBe(5);
-  });
+  // upsertMany — COMMENTED OUT: method parked pending guarded/unguarded decision.
+  // it("upsertMany with timeoutMs: completes with generous timeout", async () => {
+  //   const rows = Array.from({ length: 5 }, (_, i) => ({
+  //     name: `upsert-timeout-${i}`,
+  //   }));
+  //   await dal.upsertMany(SimpleTestEntity, rows, {
+  //     actor: "test",
+  //     timeoutMs: 30000,
+  //   });
+  //   expect(await dal.count(SimpleTestEntity)).toBe(5n);
+  // });
 
   it("updateMany with timeoutMs: completes with generous timeout", async () => {
-    // First insert some rows
-    const inserted = await dal.addMany(
+    // First insert some rows — caller-provided uuids so we can update by uuid
+    const uuids = Array.from({ length: 5 }, () => randomUUID());
+    await dal.addMany(
       SimpleTestEntity,
-      Array.from({ length: 5 }, (_, i) => ({ name: `update-timeout-${i}` })),
+      uuids.map((uuid, i) => ({ uuid, name: `update-timeout-${i}` })),
       { actor: "test" },
     );
     // Now update them with a timeout
-    const updates = inserted.map((row) => ({
-      uuid: (row as SimpleTestEntity).uuid,
-      name: `updated-${(row as SimpleTestEntity).uuid.slice(0, 8)}`,
+    const updates = uuids.map((uuid) => ({
+      uuid,
+      name: `updated-${uuid.slice(0, 8)}`,
+      version: 1,
     }));
-    const result = await dal.updateMany(SimpleTestEntity, updates, {
+    await dal.updateMany(SimpleTestEntity, updates, {
       actor: "test",
       timeoutMs: 30000,
       matchBy: "uuid",
     });
-    expect(result.length).toBe(5);
+    const updated = await dal.findByUUID(SimpleTestEntity, uuids[0]);
+    expect(updated!.name).toBe(`updated-${uuids[0].slice(0, 8)}`);
   });
 
-  // ─── withClient timeout override ─────────────────────────────────────
+  // ─── transaction timeout override ────────────────────────────────────
+  // Timeout is read back through the tx-scoped Repository via a
+  // `current_setting('statement_timeout')` expression projection — no raw
+  // client access needed. One row must exist or the projection emits nothing.
 
-  it("withClient with timeoutMs: sets statement_timeout for that client", async () => {
-    const result = await dal.withClient(
-      async (client) => {
-        const r = await client.query(
-          `SELECT current_setting('statement_timeout') AS setting`,
-        );
-        return r.rows[0].setting;
-      },
+  async function seedOne(): Promise<void> {
+    await dal.add(SimpleTestEntity, { name: "timeout-probe" }, { actor: "test" });
+  }
+
+  it("transaction with timeoutMs: sets statement_timeout (SET LOCAL) inside the tx", async () => {
+    await seedOne();
+    const rows = (await dal.transaction(
+      async (txRepo) =>
+        txRepo.findAll(SimpleTestEntity, [
+          { kind: "expr", expr: "current_setting('statement_timeout')", alias: "setting" },
+        ]),
       { timeoutMs: 5000 },
-    );
+    )) as { setting: string }[];
     // PG normalizes: 5000ms → "5s"
-    expect(parseTimeoutSetting(result)).toBe(5000);
+    expect(parseTimeoutSetting(rows[0].setting)).toBe(5000);
   });
 
-  it("withClient without timeoutMs: uses session default", async () => {
-    const result = await dal.withClient(async (client) => {
-      const r = await client.query(
-        `SELECT current_setting('statement_timeout') AS setting`,
-      );
-      return r.rows[0].setting;
-    });
-    expect(parseTimeoutSetting(result)).toBe(30000);
+  it("transaction without timeoutMs: uses session default", async () => {
+    await seedOne();
+    const rows = (await dal.transaction(async (txRepo) =>
+      txRepo.findAll(SimpleTestEntity, [
+        { kind: "expr", expr: "current_setting('statement_timeout')", alias: "setting" },
+      ]),
+    )) as { setting: string }[];
+    expect(parseTimeoutSetting(rows[0].setting)).toBe(30000);
   });
 
-  it("withClient with timeoutMs: resets to session default on release (no leakage)", async () => {
-    // 1. Use a client with a 1s timeout
-    await dal.withClient(
-      async (client) => {
-        const r = await client.query(
-          `SELECT current_setting('statement_timeout') AS setting`,
-        );
-        expect(parseTimeoutSetting(r.rows[0].setting)).toBe(1000);
-      },
-      { timeoutMs: 1000 },
-    );
+  it("transaction timeoutMs: SET LOCAL auto-resets at COMMIT (no leakage)", async () => {
+    await seedOne();
+    // 1. Tx with a 1s timeout — SET LOCAL is tx-scoped.
+    await dal.transaction(async (txRepo) => {
+      const rows = (await txRepo.findAll(SimpleTestEntity, [
+        { kind: "expr", expr: "current_setting('statement_timeout')", alias: "setting" },
+      ])) as { setting: string }[];
+      expect(parseTimeoutSetting(rows[0].setting)).toBe(1000);
+    }, { timeoutMs: 1000 });
 
-    // 2. Immediately acquire another client — it should see the session default
-    //    (30000), NOT the 1000 from the previous withClient call.
-    //    This verifies the timeout was reset before the client was released.
-    const result = await dal.withClient(async (client) => {
-      const r = await client.query(
-        `SELECT current_setting('statement_timeout') AS setting`,
-      );
-      return r.rows[0].setting;
-    });
-    expect(parseTimeoutSetting(result)).toBe(30000);
+    // 2. A subsequent tx sees the session default (30000), proving the
+    //    override did not leak past COMMIT.
+    const rows = (await dal.transaction(async (txRepo) =>
+      txRepo.findAll(SimpleTestEntity, [
+        { kind: "expr", expr: "current_setting('statement_timeout')", alias: "setting" },
+      ]),
+    )) as { setting: string }[];
+    expect(parseTimeoutSetting(rows[0].setting)).toBe(30000);
   });
 
-  it("withClient with timeoutMs: actually aborts a slow query", async () => {
-    // Use pg_sleep(2) with a 100ms timeout — should be killed.
-    // pg_sleep is available in PostgreSQL by default.
+  it("transaction with timeoutMs: actually aborts a slow statement", async () => {
+    await seedOne();
+    // pg_sleep(2) embedded in a filter expression with a 100ms tx timeout —
+    // the statement is killed mid-execution and the tx rejects.
     await expect(
-      dal.withClient(
-        async (client) => {
-          await client.query("SELECT pg_sleep(2)");
-          return "should-not-reach";
-        },
+      dal.transaction(
+        async (txRepo) =>
+          txRepo.findAll(SimpleTestEntity, null, {
+            filters: [
+              Filter.expr({ sql: "pg_sleep(2) IS NULL" }, "=", { sql: "false" }),
+            ],
+          }),
         { timeoutMs: 100 },
       ),
     ).rejects.toThrow(/canceling statement due to statement timeout/i);
@@ -205,9 +216,9 @@ describe("Dal timeout override — bulk ops + withClient", () => {
     // 2. Immediately run a normal query — it should see the session default
     //    (30000), NOT the 5000 from the bulk op. SET LOCAL is transaction-scoped
     //    and the transaction has been committed, so the setting is gone.
-    const result = await dal.rawSql<{ setting: string }>(
+    const result = (await dal.getPool().query<{ setting: string }>(
       `SELECT current_setting('statement_timeout') AS setting`,
-    );
+    )).rows;
     expect(parseTimeoutSetting(result[0].setting)).toBe(30000);
   });
 });

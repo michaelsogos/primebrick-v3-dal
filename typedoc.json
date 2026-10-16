@@ -1,7 +1,7 @@
 {
   "entryPoints": ["src/index.ts"],
   "tsconfig": "tsconfig.json",
-  "json": "docs/user-guide/_extracted/api.json",
+  "json": "docs/dev-guide/_extracted/api.json",
   "readme": "none",
   "excludePrivate": true,
   "excludeInternal": true,
