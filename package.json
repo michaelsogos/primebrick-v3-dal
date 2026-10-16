@@ -1,6 +1,6 @@
 {
   "name": "@primebrick/dal-pg",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Type-driven PostgreSQL Data Access Layer — metadata-based entity decorators, type-safe Repository, bulk ops with TEMP TABLE strategy. Part of the @primebrick/dal-* family (dal-pg, dal-mssql, dal-mariadb, ...).",
   "type": "module",
   "license": "MIT",
@@ -43,7 +43,7 @@
     "test:watch": "vitest",
     "test:benchmark": "vitest run --config test/benchmark.vitest.config.ts",
     "extract-docs": "node scripts/extract-api-docs.mjs",
-    "check:standards": "bun ../primebrick-v3-sdk/tools/check-standards.ts src --profile=lib"
+    "check:standards": "node tools/check-standards.ts src --profile=lib"
   },
   "publishConfig": {
     "access": "public",
@@ -51,7 +51,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
-    "@primebrick/decimal": "workspace:*",
+    "@primebrick/decimal": "^3.0.0",
     "pg": "8.22.0",
     "pg-query-stream": "4.16.0",
     "reflect-metadata": "0.2.2"
