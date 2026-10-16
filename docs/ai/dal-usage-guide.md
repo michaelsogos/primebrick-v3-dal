@@ -4,7 +4,7 @@ Complete method-by-method reference for the Dal gateway and Repository API.
 
 ## Table of contents
 
-0. [Dal gateway (getDal)](#dal-gateway-getdal)
+0. [Dal gateway (initDal/getDal)](#dal-gateway-getdal)
 1. [Finders](#finders)
 2. [Write operations](#write-operations)
 3. [Bulk operations](#bulk-operations)
@@ -16,32 +16,47 @@ Complete method-by-method reference for the Dal gateway and Repository API.
 
 ---
 
-## Dal gateway (getDal)
+## Dal gateway (initDal / getDal)
 
-The `Dal` class is the high-level gateway that owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults. It delegates all CRUD/bulk/finder methods to an internal `Repository(pool)` instance. Consumers should use `getDal()` (singleton) as the primary entry point.
+The `Dal` class is the high-level gateway that owns the `pg.Pool`, registers type parsers, and enforces best-practice pool defaults. It delegates all CRUD/bulk/finder methods to an internal `Repository(pool)` instance. Consumers reach it through a two-step convention: `initDal()` once at bootstrap (inside the consumer's own `db/dal-gateway.ts` / `db/dal.ts`), `getDal()` as the accessor everywhere else.
 
-### `getDal(config?)` — singleton factory
+### `initDal()` → `getDal()` — the consumer bootstrap split
 
-Returns the process-wide singleton `Dal` instance. Creates it on first call.
+The library exports `getDal(config?)` (singleton factory). Consumers wrap
+it once in their own gateway module (`src/db/dal-gateway.ts` in the BE,
+`<service>/src/db/dal.ts` in microservices):
 
 ```typescript
+// src/db/dal.ts (consumer side) — bootstrap seam, called ONCE in index.ts
 import { getDal } from "@primebrick/dal-pg";
 
-// once at startup:
-const dal = getDal({
-  connectionString: process.env.DATABASE_URL!,
-  schema: "emailsender",
-  max: 10,
-  statementTimeoutMs: 30000,
-  applicationName: "primebrick-emailsender",
-});
+export function initDal(): void {
+  const { url, schemas } = assertDbEnv();
+  getDal({
+    connectionString: url,
+    schemas,
+    max: 10,
+    statementTimeoutMs: 30000,
+    applicationName: "primebrick-emailsender",
+  });
+}
+export { getDal } from "@primebrick/dal-pg";
+```
 
-// per request — no allocation, reuse the singleton:
+```typescript
+// application code — accessor only, never config:
+const dal = getDal();                       // singleton, zero allocation
 const config = await dal.find(EmailConfigEntity, null, { ... });
 
 // graceful shutdown (consumer calls this from signal handlers — see below):
 await dal.close(); // close(timeoutMs?) — default 10s timeout
 ```
+
+`getDal()` called before `initDal()` throws
+`"getDal: config is required on the first call"` — by design it fires at
+the **first real data access**, because services construct lazily
+(`DomainService` resolves `this.dal` on first method call), never at
+import or mount time.
 
 **DalConfig options:**
 
@@ -57,12 +72,19 @@ await dal.close(); // close(timeoutMs?) — default 10s timeout
 | `applicationName` | `"primebrick-dal"` | PG-side observability — shows up in `pg_stat_activity` |
 
 **Singleton rules:**
-- First call: requires `config`, creates the singleton.
+- First call (`initDal` inside the consumer gateway): requires `config`, creates the singleton.
 - Subsequent calls with no config: returns the existing instance.
 - Subsequent calls with same `connectionString`: returns the existing instance.
 - Subsequent calls with different `connectionString`: throws.
 - For multi-DB: use `new Dal(config)` directly (bypasses the singleton).
 - `resetDal()` closes and clears the singleton (for tests).
+
+**Consumer rule:** `getDal(config)` belongs to the bootstrap seam only —
+services never pass config. In the BE, `getDal(`/`initDal(` calls outside
+the `.devin/check-standards.json` `dal-access` allowlist fail
+`check:standards`. Worker services extend `DomainService<TEntity>` and
+use `this.dal`/`this.svc` instead of importing `getDal` at all (see the
+`entity-service` dev-guide page).
 
 ### `dal.transaction(fn, options?)` — atomic multi-statement work
 

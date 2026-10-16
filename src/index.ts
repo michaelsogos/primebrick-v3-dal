@@ -241,6 +241,10 @@ export {
   type DuplicateResult,
   type AggregateDecl,
 } from "./entity/entity-service.js";
+
+// DomainService — the base class every worker service extends (owns one
+// entity's persistence + business logic; data access via this.dal only).
+export { DomainService } from "./entity/domain-service.js";
 export {
   findAuditPage,
   type AuditPageOptions,

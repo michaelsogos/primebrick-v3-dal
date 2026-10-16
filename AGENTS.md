@@ -44,6 +44,8 @@
 - **bigint via INT8_OID** — native `bigint`, not strings.
 - **Static-annotation type contract** — column types resolve from the TS annotation (`bigint`→int8, `number`→float8, `string`→text, `Date`→timestamptz, `UUID`→uuid, `Decimal`→numeric, `Vector`→vector, `T[]`→base[]), never from the property name or `design:type`. `@Column({ pgType })` is a whitelist-checked override; runtime io is driven by `jsType` markers + value shape. See `docs/dev-guide/column-types.mdx` and `.devin/rules/entity-type-contract.md`.
 - **Naming convention** — PG table = snake_case **plural** (collection of rows, e.g. `customers`). Entity class = PascalCase **singular** (one row schema, e.g. `CustomerEntity`). This is enforced by the `@Entity` decorator — the table name is plural, the class name is singular.
+- **Service layer** — `DomainService<TEntity>` (`src/entity/domain-service.ts`) is THE base class for consumer worker services: lazy `this.dal`/`this.svc` getters (ctor is I/O-free — `getDal()` fails fast at first use, never at construction), `buildConfig()` seam for consumer wiring (auditPort/actor/userEntity). Per-domain `*Dal`/`*Repo` wrapper classes are banned — custom queries live as methods on the owning service.
+- **Bootstrap split (consumer-side)** — consumers wrap `getDal(config)` in their own `initDal()` (once, in `index.ts`, before migrations); `getDal()` is the accessor everywhere else.
 
 ## GitFlow
 

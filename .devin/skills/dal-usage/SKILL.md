@@ -38,19 +38,31 @@
 
 ### Bootstrap the Dal gateway (singleton)
 
+Consumers split it: `initDal()` once at startup inside their own gateway
+module (`db/dal.ts` / `db/dal-gateway.ts`), `getDal()` as the accessor
+everywhere else — `getDal()` before bootstrap throws
+`"config is required on the first call"` by design (fail-fast at first
+data access, since services resolve lazily).
+
 ```typescript
+// src/db/dal.ts — the consumer's bootstrap seam (once, from index.ts):
 import { getDal } from "@primebrick/dal-pg";
 
-// once at startup:
-const dal = getDal({
-  connectionString: process.env.DATABASE_URL!,
-  schema: "myapp",
-  max: 10,
-  statementTimeoutMs: 30000,
-  applicationName: "my-app",
-});
+export function initDal(): void {
+  getDal({
+    connectionString: process.env.DATABASE_URL!,
+    schema: "myapp",
+    max: 10,
+    statementTimeoutMs: 30000,
+    applicationName: "my-app",
+  });
+}
+export { getDal } from "@primebrick/dal-pg";
 
-// graceful shutdown:
+// application code:
+const dal = getDal();   // accessor — never pass config here
+
+// graceful shutdown (consumer-side):
 process.on("SIGTERM", async () => { await dal.close(); process.exit(0); });
 ```
 

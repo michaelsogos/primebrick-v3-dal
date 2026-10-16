@@ -196,7 +196,7 @@ export interface EntityService<TEntity> {
 /**
  * `makeTableAuditPort` — writes audit log rows to `{tableName}_audit` via the
  * given repository. This is the service-side counterpart of the BE's
- * `BeAuditPortAdapter`, minus the Redis/NATS entity-changed markers (those
+ * `EntityAuditPort`, minus the Redis/NATS entity-changed markers (those
  * belong to gateway collaboration infra). The audit row write itself is
  * always performed.
  */

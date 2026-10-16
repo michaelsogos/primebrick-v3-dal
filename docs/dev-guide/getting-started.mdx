@@ -39,31 +39,29 @@ type parsers (`INT8`→`bigint`, `NUMERIC`→`string`, `DATE`→`string`), and s
 at process startup and reuse it for every request — zero per-request allocation.
 
 ```typescript
-// src/db.ts
+// src/db/dal.ts — the consumer's gateway module: initDal() is called ONCE
+// from index.ts (before migrations/first traffic); every other call site
+// uses the getDal() accessor with no config — it fails fast with
+// "config is required on the first call" if a method runs before bootstrap.
 import "reflect-metadata";
-import { getDal, type Dal } from "@primebrick/dal-pg";
+import { getDal } from "@primebrick/dal-pg";
 
-let _dal: Dal | undefined;
-
-export function getDb(): Dal {
-  if (!_dal) {
-    _dal = getDal({
-      connectionString: process.env.DATABASE_URL!,
-      schemas: ["myapp"],
-      max: 10,
-      statementTimeoutMs: 30_000,
-      connectionTimeoutMillis: 5_000,
-      applicationName: "my-service",
-    });
-  }
-  return _dal;
+export function initDal(): void {
+  getDal({
+    connectionString: process.env.DATABASE_URL!,
+    schemas: ["myapp"],
+    max: 10,
+    statementTimeoutMs: 30_000,
+    connectionTimeoutMillis: 5_000,
+    applicationName: "my-service",
+  });
 }
 
+export { getDal } from "@primebrick/dal-pg";
+
+// graceful shutdown — the consumer owns process lifecycle:
 export async function closeDb(): Promise<void> {
-  if (_dal) {
-    await _dal.close();
-    _dal = undefined;
-  }
+  await getDal().close();
 }
 ```
 

@@ -18,6 +18,12 @@ same config returns the same `Dal` instance; the pool is created once and
 reused for every request. Use `resetDal()` only in tests to tear down the
 singleton between cases.
 
+> Production consumers don't call `getDal(config)` inline — they wrap it in
+> their own `initDal()` (called once from `index.ts`, before migrations) and
+> use `getDal()` as the zero-arg accessor everywhere else. Calling `getDal()`
+> before bootstrap throws `"config is required on the first call"` — the
+> sanctioned fail-fast. See [getting started](./getting-started.mdx).
+
 ```typescript
 import "reflect-metadata";
 import { getDal, type Dal } from "@primebrick/dal-pg";

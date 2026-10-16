@@ -40,6 +40,45 @@ method delegates to — it requires `cfg.repo` explicitly and throws
 feeding a decorated repository (e.g. `withCache`-wrapped), never as the
 consumer path.
 
+## `DomainService<TEntity>` — the worker-service base class
+
+`DomainService` (in `src/entity/domain-service.ts`) is the sanctioned
+**base class** for every service that owns one entity — the shape behind
+the `CONTROLLER → WORKER SERVICE → DAL lib → DB` layer contract:
+
+```ts
+export class CustomersService extends DomainService<CustomerEntity> {
+  constructor() {
+    super({ entity: CustomerEntity });          // EntityServiceConfig
+  }
+  // domain queries are methods on the service itself — no *Dal/*Repo
+  // wrapper layer, no separate DTO:
+  async findByVat(vat: string) {
+    return this.dal.find(CustomerEntity, null, {
+      filters: [Filter.fieldValue(field(CustomerEntity, "vat"), "=", vat)],
+    });
+  }
+}
+```
+
+Three design guarantees make it the only legal shape:
+
+- **Lazy resolution** — the constructor takes NO data-access arguments and
+  does NO I/O. `this.dal` (the `getDal()` singleton) and `this.svc` (the
+  composed `EntityService`) resolve on first use, so importing or
+  instantiating a service at router-mount time is always safe; `getDal()`
+  still fails fast if a method runs before bootstrap (`initDal()`).
+- **IS an `EntityService`** — a subclass can be handed to an entity-router
+  unchanged; domain rules override whichever methods need them.
+- **`buildConfig()` seam** — override to inject extra `EntityServiceConfig`
+  fields (`auditPort`, `actor`, `userEntity`) at resolution time; it runs
+  inside the lazy path so it may itself use `this.dal`.
+
+Collaborator services may still be constructor-injected for tests; the DAL
+never is. Per-entity `*Dal`/`*Repo` wrapper classes are banned — custom
+queries are methods on the owning service, using the `this.dal.*` proxies
+(`find`, `add`, `update`, `findByPage`, `transaction`, …).
+
 ## The EntityService contract
 
 The returned object covers the full `EntityAction` surface:

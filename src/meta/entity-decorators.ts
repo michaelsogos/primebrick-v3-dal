@@ -920,7 +920,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (!reg.indexOpts) continue;
     const o = reg.indexOpts;
     const name = o.name ?? `${tableName}_${reg.sqlName}_idx`;
-    const g = indexGroups.get(name) ?? { cols: [], using: o.using ?? "btree" };
+    const g = indexGroups.get(name) ?? { cols: [], using: o.using ?? "btree", opclass: o.opclass, where: o.where };
     if (
       (o.using !== undefined && o.using !== g.using) ||
       (o.where !== undefined && o.where !== g.where) ||
