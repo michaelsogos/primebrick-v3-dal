@@ -219,7 +219,7 @@ it to `string` in your query (`SELECT my_col::text`) or handle it explicitly.
 `JSON.stringify` throws on `bigint` (`TypeError: Do not know how to serialize a
 BigInt`). When returning `bigint` values over HTTP, use `@primebrick/sdk`'s
 Ext-JSON middleware (which serializes `bigint` as a string with a `$n` tag), or
-cast with `Number(value)` when you know the value is < 2^53.
+cast with `Number(value)` when you know the value is below `2^53`.
 
 ## Pool sizing guidance
 

@@ -1,48 +1,15 @@
+<!-- AUTO-GENERATED:reference -->
 ---
-title: API reference
-description: Complete API reference for @primebrick/dal-pg — every exported symbol rendered from TypeDoc extraction.
+title: API Reference
+description: Complete API reference for @primebrick/dal-pg — every exported symbol.
 ---
 
-# API reference
+# API Reference
 
-&lt;!-- AUTO-GENERATED:reference --&gt;
+Every exported symbol from `@primebrick/dal-pg`, rendered mechanically from the
+TypeDoc extraction. This page is regenerated from `docs/dev-guide/_extracted/api.json`
+on every `pnpm extract-docs` run — do not edit by hand.
 
-&gt; This page is mechanically generated from `docs/dev-guide/_extracted/api.json`.
-&gt; Do not edit by hand — run `pnpm extract-docs` and re-render.
-
-## Enumerations
-
-### `AuditableFieldType`
-
-| Member | Value |
-|--------|-------|
-| `CREATED_AT` | "CREATED_AT" |
-| `CREATED_BY` | "CREATED_BY" |
-| `UPDATED_AT` | "UPDATED_AT" |
-| `UPDATED_BY` | "UPDATED_BY" |
-| `VERSION` | "VERSION" |
-### `DeletableFieldType`
-
-| Member | Value |
-|--------|-------|
-| `DELETED_AT` | "DELETED_AT" |
-| `DELETED_BY` | "DELETED_BY" |
-### `SynchronizableFieldType`
-
-| Member | Value |
-|--------|-------|
-| `LAST_SYNCED_AT` | "LAST_SYNCED_AT" |
-### `AuditAction`
-
-Audit action enum (mirrors BE's AuditAction).
-
-| Member | Value |
-|--------|-------|
-| `INSERT` | "INSERT" |
-| `UPDATE` | "UPDATE" |
-| `SOFT_DELETE` | "SOFT_DELETE" |
-| `HARD_DELETE` | "HARD_DELETE" |
-| `RESTORE` | "RESTORE" |
 ## Classes
 
 ### `AuditLogEntity`
@@ -50,7 +17,7 @@ Audit action enum (mirrors BE's AuditAction).
 AuditLogEntity — generic audit trail entity.
 
 Maps to any audit table (customers_audit, organizations_audit, user_profiles_audit, etc.)
-via the ``tableName`` override option on finders/writers.
+via the `tableName` override option on finders/writers.
 
 All audit tables share the same column structure:
   id          bigint identity PK
@@ -64,32 +31,100 @@ All audit tables share the same column structure:
 
 This entity has NO
 
-**Constructor**: `new AuditLogEntity()`
+| Property | Type | Description |
+|----------|------|-------------|
+| id | `bigint` |  |
+| entity_id | `bigint` |  |
+| entity_uuid | `string` |  |
+| action | `string` |  |
+| changed_at | `Date` |  |
+| changed_by | `string` |  |
+| version | `number` |  |
+| delta | `Record<string, { old: unknown; new: unknown }>` |  |
 
-| Property | Type | Flags |
-|----------|------|-------|
-| `id` | bigint |  |
-| `entity_id` | bigint |  |
-| `entity_uuid` | string |  |
-| `action` | string |  |
-| `changed_at` | Date |  |
-| `changed_by` | string |  |
-| `version` | number |  |
-| `delta` | Record&lt;string, &#123;   old: unknown;   new: unknown &#125;&gt; | optional |
+### `BulkTimeoutError`
+
+Thrown when a bulk write exceeds its wall-clock budget
+(`DalConfig.bulkTimeoutMs` or `BulkOptions.timeoutMs`). The surrounding
+transaction is rolled back — no partial writes survive.
+
+Code: `ERR06`. TS-originated (the JS deadline fires between
+statements; a slow single statement is bounded by `SET LOCAL
+statement_timeout` → PG `57014` query_canceled). HTTP 408.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR06"` |  |
+
+#### `BulkTimeoutError(message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+
+### `ConfigEntityBase`
+
+ConfigEntityBase — standard dictionary-style config table entity.
+
+Every Primebrick config table (BE `auth_configurations`, microservice `config`)
+extends this base class to get the standard column set without copy-paste.
+
+Columns:
+  key            varchar(100) NOT NULL UNIQUE — stable snake_case setting key
+  value          text nullable                 — raw TEXT; null = "not set"
+  type           varchar(50)  NOT NULL         — ConfigType (drives SDK coercion + FE widget)
+  type_config    text nullable                 — JSONB-text extra per-type config (badge values, list API URL, etc.)
+  label_key      varchar(100) nullable         — i18n key for the setting title
+  description_key varchar(100) nullable        — i18n key for the explanatory text
+  reserved       boolean NOT NULL DEFAULT false — if true: editable but not deletable
+  group_key      varchar(100) nullable         — UI grouping key (null/empty = ungrouped, top of list)
+
+Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by).
+
+The consumer creates a concrete subclass:
+  @Entity("config", "public")
+  export class ConfigEntryEntity extends ConfigEntityBase &#123;&#125;
+
+This class is DB-agnostic — it does NOT import from @primebrick/sdk.
+The SDK's IConfigEntity interface mirrors the field names for port-level use.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | `bigint` |  |
+| uuid | `string` |  |
+| key | `string` | Unique config key (e.g. "oidc_issuer_url", "enable_mfa"). Never renamed after release. |
+| value | `string \| null` | Raw TEXT value. null means "the row exists but the value is not set". |
+| type | `string` | Config value type — drives SDK coercion and FE widget selection. |
+| type_config | `string \| null` | JSONB-text extra per-type configuration (e.g. badge inline values, list API URL). |
+| label_key | `string` | i18n key for the setting title. |
+| description_key | `string` | i18n key for the explanatory description. |
+| reserved | `boolean` | If true, the row is system-critical: editable but not deletable. |
+| group_key | `string \| null` | Optional grouping key for UI display. null/empty = ungrouped (top of list). |
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
 
 ### `Dal`
 
-**Constructor**: `new Dal(config: DalConfig)`
+| Property | Type | Description |
+|----------|------|-------------|
+| config | `Required<Pick<DalConfig, "connectionString" \| "schemas" \| "max" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
 
-| Property | Type | Flags |
-|----------|------|-------|
-| `config` | Required&lt;Pick&lt;DalConfig, "connectionString" | "schemas" | "max" | "statementTimeoutMs" | "bulkTimeoutMs" | "connectionTimeoutMillis" | "idleTimeoutMillis" | "applicationName"&gt;&gt; & Pick&lt;DalConfig, "maxUses" | "sharedTables" | "repoDecorator"&gt; | readonly |
+#### `Dal(config)`
 
-#### `getPool(): Pool`
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| config | `DalConfig` |  |
+
+#### `Dal.getPool(): Pool`
 
 The underlying pg.Pool. Exposed for snapshot/migration tooling that needs raw access.
 
-#### `close(timeoutMs: number): Promise<void>`
+#### `Dal.close(timeoutMs): Promise<void>`
 
 Graceful shutdown — drains the pool with a timeout deadline.
 
@@ -101,703 +136,792 @@ Graceful shutdown — drains the pool with a timeout deadline.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `timeoutMs` | number | Maximum time to wait for pool.end() to complete. Default: 10000. |
+| timeoutMs | `number` | Maximum time to wait for pool.end() to complete. Default: 10000. |
 
-#### `findById(entity: EntityClass, id: string | bigint, options: FindByIdOptions): Promise<TResult | null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `id` | string | bigint |  |
-| `options` | FindByIdOptions |  |
-
-#### `findByUUID(entity: EntityClass, uuid: string, options: FindByUUIDOptions): Promise<TResult | null>`
+#### `Dal.findById(entity, id, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `uuid` | string |  |
-| `options` | FindByUUIDOptions |  |
+| entity | `EntityClass` |  |
+| id | `string \| bigint` |  |
+| options | `FindByIdOptions` |  |
 
-#### `find(entity: EntityClass, fields: FieldProjector[] | null, options: FindOptions): Promise<TResult | null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
-
-#### `findAll(entity: EntityClass, fields: FieldProjector[] | null, options: FindOptions): Promise<AsyncIterable<TResult, any, any> | TResult[]>`
+#### `Dal.findByUUID(entity, uuid, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
+| entity | `EntityClass` |  |
+| uuid | `string` |  |
+| options | `FindByUUIDOptions` |  |
 
-#### `findByPage(entity: EntityClass, page: number, recordsPerPage: number, fields: FieldProjector[] | null, options: FindOptions): Promise<PaginatedEntity<TResult>>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `page` | number |  |
-| `recordsPerPage` | number |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
-
-#### `count(entity: EntityClass): Promise<bigint>`
+#### `Dal.find(entity, fields, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
+| entity | `EntityClass` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
-#### `add(entity: EntityClass & () => TEntity, row: Partial<Record<any & string, unknown>>, options: AuditableWriteOptions): Promise<TEntity>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `row` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | AuditableWriteOptions |  |
-
-#### `upsert` — REMOVED
-
-Single-record upsert was removed by design: it bypassed optimistic-lock
-semantics (unconditional overwrite, no `version` check). The standard is an
-explicit read (`findByUUID`, `find`) followed by `add` or `update` — the write
-that carries the observed `version` is the concurrency guard.
-
-#### `update(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
+#### `Dal.findAll(entity, fields, options): Promise<AsyncIterable<TResult, any, any> \| TResult[]>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
-#### `delete(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
-
-#### `restore(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
+#### `Dal.findByPage(entity, page, recordsPerPage, fields, options): Promise<PaginatedEntity<TResult>>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass` |  |
+| page | `number` |  |
+| recordsPerPage | `number` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
-#### `hardDelete(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<void>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
-
-#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<BulkResult>`
-
-Returns `{ received, affected }`. Unique conflicts raise ERR04/ERR05 with ≤10 offending rows in `detail`.
+#### `Dal.count(entity): Promise<bigint>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions |  |
+| entity | `EntityClass` |  |
 
-#### `upsertMany` — DISABLED (commented out)
+#### `Dal.vectorSearch(entity, vectorField, queryVector, options): Promise<TResult & { similarity: number; distance: number }[]>`
 
-Parked pending guarded-vs-sync-import semantics; its conflict branch overwrote
-rows without a version check. Do not call.
-
-#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<BulkResult>`
-
-Atomic temp-table update. Auditable entities require `version` in every row
-(ERR02 missing / ERR01 stale / ERR03 vanished — atomic rollback, ≤10 offenders in `detail`).
+pgvector nearest-neighbour search — see `Repository.vectorSearch`.
+`ORDER BY <vectorField> <op> $n::vector LIMIT <topK>` with the query
+vector bound as a parameter (HNSW/ivfflat-safe). `similarity` score for
+cosine (`<=>`), raw `distance` for other operators.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | every row needs `version` on auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; & BulkOptions |  |
+| entity | `EntityClass` |  |
+| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| queryVector | `string \| number[]` |  |
+| options | `VectorSearchOptions<TEntity>` |  |
 
-#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
-
-Atomic temp-table soft-delete. Match objects carry `{ <matchBy>, version }`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
-
-#### `restoreMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
-
-Atomic temp-table restore — clears soft-delete fields, bumps `version`, stamps
-audit fields. Same version guard as `deleteMany`.
+#### `Dal.add(entity, row, options): Promise<TResult>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `AuditableWriteOptions<TEntity>` |  |
 
-#### `transaction(fn: (txRepo: Repository) => Promise<TResult>, options: TimeoutOverrideOptions): Promise<TResult>`
-
-Atomic multi-statement work: acquires a dedicated client, emits BEGIN, runs
-``fn(txRepo)`` with a tx-scoped ``Repository``, then COMMITs — or ROLLBACKs if
-``fn`` throws. The callback never sees the raw ``PoolClient``: every statement
-inside the transaction goes through the entity/DSL surface, so the
-schema-domain guard, audit stamping, and optimistic locking apply inside the
-tx exactly as outside.
-
-``options.timeoutMs`` emits ``SET LOCAL statement_timeout`` right after BEGIN —
-auto-reset at COMMIT/ROLLBACK, no session leakage.
-
-``dal.withClient`` — which used to expose the raw ``PoolClient`` — is now
-``private`` (it powers ``transaction`` and ``partitionMaintenance``).
+#### `Dal.update(entity, updates, options): Promise<TResult>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `fn` | (txRepo: Repository) =&gt; Promise&lt;TResult&gt; |  |
-| `options` | TimeoutOverrideOptions |  |
+| entity | `EntityClass & () => TEntity` |  |
+| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `beginTransaction(options?: TimeoutOverrideOptions): DeferredTransaction`
-
-Deferred fluent transaction — the preferred shape for straightforward
-dependent writes. `beginTransaction` returns a buffering handle; its
-``add``/``update``/``delete``/``restore``/``hardDelete`` (and reads) do
-NOT execute — they are appended to a buffer. ``commit()`` compiles the
-whole buffer into ONE data-modifying CTE statement
-(``WITH s0 AS (… RETURNING …), s1 AS (…), …``) and executes it: atomicity
-comes from the single-statement guarantee — there is no BEGIN/COMMIT/
-ROLLBACK code. Ops receive ``Deferred&lt;T&gt;`` handles; ``deferred.ref("col")``
-turns an earlier op's RETURNING field into a scalar subquery usable in
-later ops' values. Read ``Deferred.value`` only after ``commit()`` — it
-throws before. Prefer this over ``transaction(fn)`` when the flow does not
-need conditional TS logic on intermediate results (that is the one case
-``transaction(fn)`` remains for).
+#### `Dal.delete(entity, match, options): Promise<TResult>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `options` | TimeoutOverrideOptions | optional |
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `entityService<TEntity>(cfg: EntityServiceConfig<TEntity>): EntityService<TEntity>`
-
-The public path to the generic entity-service worker (see the
-[entity-service guide](./entity-service.mdx)). The gateway injects its own
-schema-domain-guarded ``Repository`` — consumers never see it; ``cfg.repo``
-is only a decorator seam (e.g. BE ``withCache``). Defaults ``auditPort`` to
-``makeTableAuditPort(repo)``.
+#### `Dal.restore(entity, match, options): Promise<TResult>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `cfg` | EntityServiceConfig&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `tableAuditPort(): AuditPort`
+#### `Dal.hardDelete(entity, match, options): Promise<TResult>`
 
-The standard ``{table}_audit`` writer port, bound to the gateway
-Repository. Use for adapters that need an ``AuditPort`` without exposing
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `Dal.addMany(entity, rows, options): Promise<BulkResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| rows | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & BulkOptions` |  |
+
+#### `Dal.hardDeleteMany(entity, matches, options): Promise<BulkResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+#### `Dal.restoreMany(entity, matches, options): Promise<BulkResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+#### `Dal.updateMany(entity, updates, options): Promise<BulkResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| updates | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+#### `Dal.deleteMany(entity, matches, options): Promise<BulkResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `Dal.entityService(cfg): EntityService<TEntity>`
+
+The public path to the generic entity-service worker. The gateway
+injects its own (schema-domain-guarded, pool-scoped) Repository — the
+consumer never sees it. `cfg.repo` exists only as a decorator seam
+(e.g. BE `withCache`): leave it unset for the standard wiring.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `EntityServiceConfig<TEntity>` |  |
+
+#### `Dal.tableAuditPort(): AuditPort`
+
+The standard `{table}_audit` writer port, bound to the gateway
+Repository. Use for adapters that need an AuditPort without exposing
 the Repository itself.
 
-#### `truncate(entity: EntityClass, options: {   restartIdentity?: boolean; cascade?: boolean }): Promise<void>`
+#### `Dal.serverVersion(): Promise<{ server_version: string; version: string }>`
 
-Physical table reset — entity-resolved and schema-domain guarded (rejects
-entities outside the service's declared schemas). For auditable tables prefer
-soft-delete; TRUNCATE is for caches, KB stores, and test teardown. Same op on
-``Repository``.
+Server version + connectivity probe in one call. A successful response
+already proves the connection is alive — there is deliberately no
+separate `ping()` (a dedicated `SELECT 1` would be a redundant round-trip).
+Throws on connectivity/timeout failure.
+
+#### `Dal.transaction(fn, options): Promise<TResult>`
+
+Atomic multi-statement work — `BEGIN`/`COMMIT`/`ROLLBACK` around a
+tx-scoped Repository. Use for cascades, multi-write units, and any
+sequence that must commit or fail as one. Post-commit side effects
+(cache invalidation, events) belong AFTER this resolves, never inside.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `options` | &#123;   restartIdentity?: boolean; cascade?: boolean &#125; |  |
+| fn | `(txRepo: Repository) => Promise<TResult>` |  |
+| options | `TimeoutOverrideOptions` |  |
 
-#### `serverVersion(): Promise<{   server_version: string; version: string }>`
+#### `Dal.beginTransaction(options): DeferredTransaction`
 
-Server version + connectivity probe in one call — a successful response IS the
-health probe (there is deliberately no ``ping()``; a dedicated ``SELECT 1``
-would be a redundant round-trip). Throws on connectivity/timeout failure.
+Deferred fluent transaction — buffer repository ops (`tx.add`, `tx.update`,
+`tx.find`, …) without executing, then `tx.commit()` compiles and runs them
+as ONE data-modifying CTE statement. Atomicity is PostgreSQL's
+single-statement guarantee — no BEGIN/COMMIT/ROLLBACK and no rollback
+path exist in this mode. Inter-op values flow via `Deferred.ref()`;
+conditional TS logic on mid-flow results stays in `transaction(fn)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `TimeoutOverrideOptions` |  |
+
+#### `Dal.truncate(entity, options): Promise<void>`
+
+Physical table reset — delegates to `Repository.truncate` (entity-resolved,
+schema-domain guarded). For auditable tables prefer soft-delete; TRUNCATE
+is for caches, KB stores, and test teardown.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| options | `{ restartIdentity: boolean; cascade: boolean }` |  |
+
+#### `Dal.partitionMaintenance(entities, options): Promise<PartitionMaintenanceReport>`
+
+pg_partman retention executor — metadata-driven, identical for every
+service. Purges `@PartitionChildOf` children of expired parents (before
+the partition drop), removes expired strays from the default partition,
+then runs `partman.run_maintenance_proc()`. Called by the service's
+`jobs.due.system.<svc>.partition-maintenance` consumer.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `typeOperator` | the service's entity registry (only `@PartitionField`
+  entities participate; everything else is ignored) |
+| options | `TimeoutOverrideOptions` |  |
 
 ### `DalError`
 
-Generic DAL error with a stable ``code`` field.
+Generic DAL error with a stable `code` field.
 
-**Constructor**: `new DalError(message: string)`
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `string` |  |
 
-| Property | Type | Flags |
-|----------|------|-------|
-| `code` | string | readonly |
-| `stackTraceLimit` | number | static |
-| `cause` | unknown | optional |
-| `name` | string |  |
-| `message` | string |  |
-| `stack` | string | optional |
-
-#### `captureStackTrace(targetObject: object, constructorOpt: Function): void`
-
-Creates a ``.stack`` property on ``targetObject``, which when accessed returns
-a string representing the location in the code at which
-``Error.captureStackTrace()`` was called.
-
-````js
-const myObject = {};
-Error.captureStackTrace(myObject);
-myObject.stack;  // Similar to `new Error().stack`
-````
-
-The first line of the trace will be prefixed with
-``$&#123;myObject.name&#125;: $&#123;myObject.message&#125;``.
-
-The optional ``constructorOpt`` argument accepts a function. If given, all frames
-above ``constructorOpt``, including ``constructorOpt``, will be omitted from the
-generated stack trace.
-
-The ``constructorOpt`` argument is useful for hiding implementation
-details of error generation from the user. For instance:
-
-````js
-function a() {
-  b();
-}
-
-function b() {
-  c();
-}
-
-function c() {
-  // Create an error without stack trace to avoid calculating the stack trace twice.
-  const { stackTraceLimit } = Error;
-  Error.stackTraceLimit = 0;
-  const error = new Error();
-  Error.stackTraceLimit = stackTraceLimit;
-
-  // Capture the stack trace above function b
-  Error.captureStackTrace(error, b); // Neither function c, nor b is included in the stack trace
-  throw error;
-}
-
-a();
-````
+#### `DalError(message)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `targetObject` | object |  |
-| `constructorOpt` | Function |  |
+| message | `string` |  |
 
-#### `prepareStackTrace(err: Error, stackTraces: CallSite[]): any`
+### `Decimal`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `err` | Error |  |
-| `stackTraces` | CallSite[] |  |
+### `Deferred`
 
-### `NotFoundError`
+Handle for a buffered operation's future result. NOT a Promise — awaiting
+it pre-commit would deadlock (commit is never reached), so it deliberately
+exposes no `then`. Read `.value` only after `await tx.commit()`.
 
-Thrown when a finder returns zero rows and ``throwIfNotFound`` is true (the default).
+#### `Deferred.ref(field): DeferredFieldRef<T[K]>`
 
-**Constructor**: `new NotFoundError(message: string)`
-
-| Property | Type | Flags |
-|----------|------|-------|
-| `code` | "NOT_FOUND" | readonly |
-| `stackTraceLimit` | number | static |
-| `cause` | unknown | optional |
-| `name` | string |  |
-| `message` | string |  |
-| `stack` | string | optional |
-
-#### `captureStackTrace(targetObject: object, constructorOpt: Function): void`
-
-Creates a ``.stack`` property on ``targetObject``, which when accessed returns
-a string representing the location in the code at which
-``Error.captureStackTrace()`` was called.
-
-````js
-const myObject = {};
-Error.captureStackTrace(myObject);
-myObject.stack;  // Similar to `new Error().stack`
-````
-
-The first line of the trace will be prefixed with
-``$&#123;myObject.name&#125;: $&#123;myObject.message&#125;``.
-
-The optional ``constructorOpt`` argument accepts a function. If given, all frames
-above ``constructorOpt``, including ``constructorOpt``, will be omitted from the
-generated stack trace.
-
-The ``constructorOpt`` argument is useful for hiding implementation
-details of error generation from the user. For instance:
-
-````js
-function a() {
-  b();
-}
-
-function b() {
-  c();
-}
-
-function c() {
-  // Create an error without stack trace to avoid calculating the stack trace twice.
-  const { stackTraceLimit } = Error;
-  Error.stackTraceLimit = 0;
-  const error = new Error();
-  Error.stackTraceLimit = stackTraceLimit;
-
-  // Capture the stack trace above function b
-  Error.captureStackTrace(error, b); // Neither function c, nor b is included in the stack trace
-  throw error;
-}
-
-a();
-````
+Reference a RETURNING/SELECT column of this op for use in a LATER op.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `targetObject` | object |  |
-| `constructorOpt` | Function |  |
+| field | `K` |  |
 
-#### `prepareStackTrace(err: Error, stackTraces: CallSite[]): any`
+### `DeferredFieldRef`
+
+Opaque marker produced by `Deferred.ref("field")` — embeddable in a later
+op's payload/match values. At compile time the `$n` it would occupy is
+rewritten to `(SELECT "field" FROM "__rN")` over the source op's RETURNING
+branch. Never a bound parameter — survives `jsValueToPgParam` untouched.
+
+### `DeferredTransaction`
+
+#### `DeferredTransaction.add(entity, row, options): Deferred<TResult>`
+
+Buffer an insert — see `Repository.add`. `options.audit` is rejected.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `err` | Error |  |
-| `stackTraces` | CallSite[] |  |
+| entity | `EntityClass & () => TEntity` |  |
+| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `AuditableWriteOptions<TEntity>` |  |
+
+#### `DeferredTransaction.update(entity, updates, options): Deferred<TResult>`
+
+Buffer an update — see `Repository.update`. `options.audit` is rejected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `DeferredTransaction.delete(entity, match, options): Deferred<TResult>`
+
+Buffer a soft-delete — see `Repository.delete`. `options.audit` is rejected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `DeferredTransaction.restore(entity, match, options): Deferred<TResult>`
+
+Buffer a restore — see `Repository.restore`. `options.audit` is rejected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `DeferredTransaction.hardDelete(entity, match, options): Deferred<TResult>`
+
+Buffer a hard delete — see `Repository.hardDelete`. `options.audit` is rejected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `DeferredTransaction.find(entity, fields, options): Deferred<TResult \| null>`
+
+Buffer a single-row find — see `Repository.find`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `DeferredTransaction.findByUUID(entity, uuid, options): Deferred<TResult \| null>`
+
+Buffer a find-by-uuid — see `Repository.findByUUID`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| uuid | `string` |  |
+| options | `FindByUUIDOptions` |  |
+
+#### `DeferredTransaction.findById(entity, id, options): Deferred<TResult \| null>`
+
+Buffer a find-by-id — see `Repository.findById`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| id | `string \| bigint` |  |
+| options | `FindByIdOptions` |  |
+
+#### `DeferredTransaction.findAll(entity, fields, options): Deferred<TResult[]>`
+
+Buffer a findAll — see `Repository.findAll` (`stream` rejected).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `DeferredTransaction.findByPage(entity, page, recordsPerPage, fields, options): Deferred<PaginatedEntity<TResult>>`
+
+Buffer a paged find — see `Repository.findByPage`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| page | `number` |  |
+| recordsPerPage | `number` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `DeferredTransaction.count(entity, options): Deferred<bigint>`
+
+Buffer a count — see `Repository.count`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| options | `{ tableName: string }` |  |
+
+#### `DeferredTransaction.vectorSearch(entity, vectorField, queryVector, options): Deferred<TResult & { similarity: number; distance: number }[]>`
+
+Buffer a pgvector search — see `Repository.vectorSearch`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| queryVector | `string \| number[]` |  |
+| options | `VectorSearchOptions<TEntity>` |  |
+
+#### `DeferredTransaction.commit(): Promise<void>`
+
+Compile every buffered op into ONE statement and execute it. Atomicity
+is the statement's own: a failure anywhere (constraint, pg_raise guard,
+abort branch, timeout) rolls back every branch — no rollback code exists
+because none is needed. Resolves when all `Deferred` handles are
+materialized; rejects with the first failure.
+
+#### `DeferredTransaction.discard()`
+
+Abandon the buffer without executing anything. Nothing has run yet by
+design — this simply invalidates the transaction and its Deferred handles.
+
+### `DeletedRecordConflictError`
+
+Unique-constraint conflict on a soft-deleted row — the row exists with
+`deleted_at` set and must be restored, never duplicated.
+
+PG-originated via `pg_raise('ERR05', ...)`; the existing row's `uuid`
+travels in the error `detail` so consumers can offer a direct restore.
+This class is provided for ergonomic `instanceof` checks.
+
+Code: `ERR05`. HTTP 409.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR05"` |  |
+
+#### `DeletedRecordConflictError(message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+
+### `DomainService`
+
+The contract every entity service must satisfy — enforced on the router.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| cfg | `EntityServiceConfig<TEntity>` |  |
+
+#### `DomainService(cfg)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `EntityServiceConfig<TEntity>` |  |
+
+#### `DomainService.buildConfig(): EntityServiceConfig<TEntity>`
+
+Subclass seam for config enrichment (auditPort / actor / userEntity
+injection). Runs once, inside the lazy `svc` resolution — `this.dal`
+is available here.
+
+#### `DomainService.list(query): Promise<EntityListResult<TEntity>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
+#### `DomainService.get(uuid): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+
+#### `DomainService.create(body, tx): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| body | `Record<string, unknown>` |  |
+| tx | `Repository` |  |
+
+#### `DomainService.update(uuid, body, tx): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| body | `Record<string, unknown> & { version: number }` |  |
+| tx | `Repository` |  |
+
+#### `DomainService.delete(uuid, version): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `DomainService.restore(uuid, version): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `DomainService.purge(uuid, version): Promise<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `DomainService.duplicate(uuids): Promise<DuplicateResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuids | `string[]` |  |
+
+#### `DomainService.bulkDelete(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `DomainService.bulkRestore(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `DomainService.audit(uuid, page, limit): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| page | `number` |  |
+| limit | `number` |  |
+
+#### `DomainService.stream(query): AsyncGenerator<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
+### `DuplicateRecordError`
+
+Unique-constraint conflict on a live row.
+
+Normally PG-originated: the `add()` conflict-reporting CTE calls
+`pg_raise('ERR04', ...)`, and node-postgres propagates it as a
+`DatabaseError` with `err.code === 'ERR04'` and a jsonb `err.detail`
+(`{ entity, table, uuid, constraint }`). The DAL throws this class only
+when the conflict cannot be attributed to any identifiable row (unique
+group whose attempted values are all DB-generated, e.g. a payload-less
+`uuid`). Provided in both cases for ergonomic `instanceof` checks.
+
+Code: `ERR04`. HTTP 409.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR04"` |  |
+
+#### `DuplicateRecordError(message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+
+### `ManifestError`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `string` |  |
+
+#### `ManifestError(code, message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| code | `string` |  |
+| message | `string` |  |
+
+### `MissingVersionError`
+
+Thrown when an auditable-entity write (update/upsert-ON-CONFLICT/delete/restore/hardDelete)
+is attempted without a `version` field in the payload.
+
+Code: `ERR02`. TS-originated. HTTP 400.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR02"` |  |
+| detail | `unknown` | Structured per-row detail for bulk ops (entity, table, missing count, rows[]). |
+
+#### `MissingVersionError(message, detail)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+| detail | `unknown` |  |
 
 ### `MultipleRowsError`
 
-Thrown when a single-row finder (``findById``, ``find``) returns more than one row.
+Thrown when a single-row finder (`findById`, `find`) returns more than one row.
 
-**Constructor**: `new MultipleRowsError(message: string)`
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"MULTIPLE_ROWS"` |  |
 
-| Property | Type | Flags |
-|----------|------|-------|
-| `code` | "MULTIPLE_ROWS" | readonly |
-| `stackTraceLimit` | number | static |
-| `cause` | unknown | optional |
-| `name` | string |  |
-| `message` | string |  |
-| `stack` | string | optional |
-
-#### `captureStackTrace(targetObject: object, constructorOpt: Function): void`
-
-Creates a ``.stack`` property on ``targetObject``, which when accessed returns
-a string representing the location in the code at which
-``Error.captureStackTrace()`` was called.
-
-````js
-const myObject = {};
-Error.captureStackTrace(myObject);
-myObject.stack;  // Similar to `new Error().stack`
-````
-
-The first line of the trace will be prefixed with
-``$&#123;myObject.name&#125;: $&#123;myObject.message&#125;``.
-
-The optional ``constructorOpt`` argument accepts a function. If given, all frames
-above ``constructorOpt``, including ``constructorOpt``, will be omitted from the
-generated stack trace.
-
-The ``constructorOpt`` argument is useful for hiding implementation
-details of error generation from the user. For instance:
-
-````js
-function a() {
-  b();
-}
-
-function b() {
-  c();
-}
-
-function c() {
-  // Create an error without stack trace to avoid calculating the stack trace twice.
-  const { stackTraceLimit } = Error;
-  Error.stackTraceLimit = 0;
-  const error = new Error();
-  Error.stackTraceLimit = stackTraceLimit;
-
-  // Capture the stack trace above function b
-  Error.captureStackTrace(error, b); // Neither function c, nor b is included in the stack trace
-  throw error;
-}
-
-a();
-````
+#### `MultipleRowsError(message)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `targetObject` | object |  |
-| `constructorOpt` | Function |  |
+| message | `string` |  |
 
-#### `prepareStackTrace(err: Error, stackTraces: CallSite[]): any`
+### `NotFoundError`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `err` | Error |  |
-| `stackTraces` | CallSite[] |  |
+Thrown when a finder returns zero rows and `throwIfNotFound` is true (the default).
 
-### `UnknownColumnError`
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"NOT_FOUND"` |  |
 
-Thrown when a write operation (add, update) receives a property not in entity metadata.
-
-**Constructor**: `new UnknownColumnError(message: string)`
-
-| Property | Type | Flags |
-|----------|------|-------|
-| `code` | "UNKNOWN_COLUMN" | readonly |
-| `stackTraceLimit` | number | static |
-| `cause` | unknown | optional |
-| `name` | string |  |
-| `message` | string |  |
-| `stack` | string | optional |
-
-#### `captureStackTrace(targetObject: object, constructorOpt: Function): void`
-
-Creates a ``.stack`` property on ``targetObject``, which when accessed returns
-a string representing the location in the code at which
-``Error.captureStackTrace()`` was called.
-
-````js
-const myObject = {};
-Error.captureStackTrace(myObject);
-myObject.stack;  // Similar to `new Error().stack`
-````
-
-The first line of the trace will be prefixed with
-``$&#123;myObject.name&#125;: $&#123;myObject.message&#125;``.
-
-The optional ``constructorOpt`` argument accepts a function. If given, all frames
-above ``constructorOpt``, including ``constructorOpt``, will be omitted from the
-generated stack trace.
-
-The ``constructorOpt`` argument is useful for hiding implementation
-details of error generation from the user. For instance:
-
-````js
-function a() {
-  b();
-}
-
-function b() {
-  c();
-}
-
-function c() {
-  // Create an error without stack trace to avoid calculating the stack trace twice.
-  const { stackTraceLimit } = Error;
-  Error.stackTraceLimit = 0;
-  const error = new Error();
-  Error.stackTraceLimit = stackTraceLimit;
-
-  // Capture the stack trace above function b
-  Error.captureStackTrace(error, b); // Neither function c, nor b is included in the stack trace
-  throw error;
-}
-
-a();
-````
+#### `NotFoundError(message)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `targetObject` | object |  |
-| `constructorOpt` | Function |  |
+| message | `string` |  |
 
-#### `prepareStackTrace(err: Error, stackTraces: CallSite[]): any`
+### `OptimisticLockError`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `err` | Error |  |
-| `stackTraces` | CallSite[] |  |
+TS wrapper for the PG-originated `ERR01` optimistic concurrency violation.
 
-### `ValidationError`
+The DAL does NOT throw this class in the happy/conflict path — PostgreSQL
+raises `RAISE EXCEPTION ... USING ERRCODE = 'ERR01'` and node-postgres
+propagates it as a `DatabaseError` with `err.code === 'ERR01'`. This class
+is provided only for ergonomic `instanceof` checks if a consumer wants to
+normalize PG errors into TS errors at a boundary.
 
-Thrown when a validation check fails (e.g. empty updates object, missing actor).
+Code: `ERR01`. PG-originated. HTTP 409.
 
-**Constructor**: `new ValidationError(message: string)`
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR01"` |  |
 
-| Property | Type | Flags |
-|----------|------|-------|
-| `code` | "VALIDATION" | readonly |
-| `stackTraceLimit` | number | static |
-| `cause` | unknown | optional |
-| `name` | string |  |
-| `message` | string |  |
-| `stack` | string | optional |
-
-#### `captureStackTrace(targetObject: object, constructorOpt: Function): void`
-
-Creates a ``.stack`` property on ``targetObject``, which when accessed returns
-a string representing the location in the code at which
-``Error.captureStackTrace()`` was called.
-
-````js
-const myObject = {};
-Error.captureStackTrace(myObject);
-myObject.stack;  // Similar to `new Error().stack`
-````
-
-The first line of the trace will be prefixed with
-``$&#123;myObject.name&#125;: $&#123;myObject.message&#125;``.
-
-The optional ``constructorOpt`` argument accepts a function. If given, all frames
-above ``constructorOpt``, including ``constructorOpt``, will be omitted from the
-generated stack trace.
-
-The ``constructorOpt`` argument is useful for hiding implementation
-details of error generation from the user. For instance:
-
-````js
-function a() {
-  b();
-}
-
-function b() {
-  c();
-}
-
-function c() {
-  // Create an error without stack trace to avoid calculating the stack trace twice.
-  const { stackTraceLimit } = Error;
-  Error.stackTraceLimit = 0;
-  const error = new Error();
-  Error.stackTraceLimit = stackTraceLimit;
-
-  // Capture the stack trace above function b
-  Error.captureStackTrace(error, b); // Neither function c, nor b is included in the stack trace
-  throw error;
-}
-
-a();
-````
+#### `OptimisticLockError(message)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `targetObject` | object |  |
-| `constructorOpt` | Function |  |
+| message | `string` |  |
 
-#### `prepareStackTrace(err: Error, stackTraces: CallSite[]): any`
+### `RecordVanishedError`
+
+Thrown when an auditable-entity write matches zero rows AND a disambiguation
+SELECT confirms the row no longer exists (was hard-deleted by another writer).
+
+Code: `ERR03`. TS-originated. HTTP 404.
+
+Distinct from `NotFoundError` (which is for finders): `ERR03` specifically
+means "the row existed when you read it but is now gone".
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"ERR03"` |  |
+
+#### `RecordVanishedError(message)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `err` | Error |  |
-| `stackTraces` | CallSite[] |  |
+| message | `string` |  |
 
 ### `Repository`
 
-**Construction**: `Repository` is NOT consumer-constructible — `new Repository(...)` requires an internal token unavailable outside dal-pg (compile-time + runtime sealed). Consumers get repo-equivalent access via `dal.*` entity proxies, `dal.entityService(cfg)`, `dal.tableAuditPort()`, and `dal.transaction(repo => …)`.
-
-#### `findById(entity: EntityClass, id: string | bigint, options: FindByIdOptions): Promise<TResult | null>`
+#### `Repository(db, token, bulkTimeoutMs)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `id` | string | bigint |  |
-| `options` | FindByIdOptions |  |
+| db | `Queryable` |  |
+| token | `typeof REPO_INTERNAL` |  |
+| bulkTimeoutMs | `number` | Whole-operation wall-clock budget (ms) for every
+  *Many method — the transaction must complete within this bound or it is
+  aborted and rolled back. `0`/`undefined` disables the budget.
+  Per-call override: `BulkOptions.timeoutMs`. |
 
-#### `findByUUID(entity: EntityClass, uuid: string, options: FindByUUIDOptions): Promise<TResult | null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `uuid` | string |  |
-| `options` | FindByUUIDOptions |  |
-
-#### `find(entity: EntityClass, fields: FieldProjector[] | null, options: FindOptions): Promise<TResult | null>`
+#### `Repository.findById(entity, id, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
+| entity | `EntityClass` |  |
+| id | `string \| bigint` |  |
+| options | `FindByIdOptions` |  |
 
-#### `findAll(entity: EntityClass, fields: FieldProjector[] | null, options: FindOptions): Promise<AsyncIterable<TResult, any, any> | TResult[]>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
-
-#### `findByPage(entity: EntityClass, page: number, recordsPerPage: number, fields: FieldProjector[] | null, options: FindOptions): Promise<PaginatedEntity<TResult>>`
+#### `Repository.findByUUID(entity, uuid, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `page` | number |  |
-| `recordsPerPage` | number |  |
-| `fields` | FieldProjector[] | null |  |
-| `options` | FindOptions |  |
+| entity | `EntityClass` |  |
+| uuid | `string` |  |
+| options | `FindByUUIDOptions` |  |
 
-#### `count(entity: EntityClass, options: {   tableName?: string }): Promise<bigint>`
+#### `Repository.find(entity, fields, options): Promise<TResult \| null>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `options` | &#123;   tableName?: string &#125; |  |
+| entity | `EntityClass` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
-#### `add(entity: EntityClass & () => TEntity, row: Partial<Record<any & string, unknown>>, options: AuditableWriteOptions): Promise<TEntity>`
+#### `Repository.findAll(entity, fields, options): Promise<AsyncIterable<TResult, any, any> \| TResult[]>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `Repository.vectorSearch(entity, vectorField, queryVector, options): Promise<TResult & { similarity: number; distance: number }[]>`
+
+pgvector nearest-neighbour search — the DAL-native replacement for raw
+`<=>`-style similarity queries.
+
+Emits `ORDER BY <vectorField> <op> $n::vector LIMIT <topK>` with the
+query vector always bound as a parameter (required for HNSW/ivfflat
+index usage — never interpolated). Entity-generic: schema, tableName
+override, filters, projections and soft-delete scoping behave exactly
+like `findAll`.
+
+The result carries a `similarity` score column when `distance` is the
+default `"<=>"` (cosine — `1 - distance`, higher = closer). For other
+operators the projected column is `distance` (raw distance, lower =
+closer).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| queryVector | `string \| number[]` |  |
+| options | `VectorSearchOptions<TEntity>` |  |
+
+#### `Repository.findByPage(entity, page, recordsPerPage, fields, options): Promise<PaginatedEntity<TResult>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| page | `number` |  |
+| recordsPerPage | `number` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `Repository.count(entity, options): Promise<bigint>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| options | `{ tableName: string }` |  |
+
+#### `Repository.truncate(entity, options): Promise<void>`
+
+Physical table reset — `TRUNCATE TABLE <schema>.<table>` resolved through
+entity metadata, like every other entity op: the schema-domain guard
+applies (entities outside the declared domain throw before any SQL).
+For auditable tables prefer soft-delete; TRUNCATE is for caches, KB
+stores, and test teardown.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| options | `{ restartIdentity: boolean; cascade: boolean }` |  |
+
+#### `Repository.add(entity, row, options): Promise<TResult>`
 
 Add — auditable entity (actor required).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `row` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | AuditableWriteOptions |  |
+| entity | `EntityClass & () => TEntity` |  |
+| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `AuditableWriteOptions<TEntity>` |  |
 
-#### `upsert(entity: EntityClass & () => TEntity, row: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & UpsertOptions): Promise<TEntity>`
-
-Upsert — auditable entity (actor required).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `row` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & UpsertOptions |  |
-
-#### `update(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
+#### `Repository.update(entity, updates, options): Promise<TResult>`
 
 Update — auditable entity (actor required).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `delete(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
+#### `Repository.delete(entity, match, options): Promise<TResult>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `restore(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<TEntity>`
+#### `Repository.restore(entity, match, options): Promise<TResult>`
 
 Restore — auditable+deletable entity (actor required).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `hardDelete(entity: EntityClass & () => TEntity, match: Partial<Record<any & string, unknown>>, options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<void>`
+#### `Repository.hardDelete(entity, match, options): Promise<TResult>`
 
 Hard-delete — auditable entity (actor required for audit log).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `match` | Partial&lt;Record&lt;any & string, unknown&gt;&gt; |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
-#### `clone(entity: EntityClass & () => TEntity, sourceUuid: string, options: AuditableWriteOptions): Promise<TEntity>`
+#### `Repository.clone(entity, sourceUuid, options): Promise<TEntity>`
 
 Clone an entity record by UUID.
 
@@ -808,58 +932,242 @@ Fetches the source record (including soft-deleted), builds a new row with:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `sourceUuid` | string |  |
-| `options` | AuditableWriteOptions |  |
+| entity | `EntityClass & () => TEntity` |  |
+| sourceUuid | `string` |  |
+| options | `AuditableWriteOptions` |  |
 
-#### `addMany(entity: EntityClass & () => TEntity, rows: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & BulkOptions): Promise<BulkResult>`
+#### `Repository.addMany(entity, rows, options): Promise<BulkResult>`
 
-Bulk add — auditable entity (actor required). Returns `{ received, affected }`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `rows` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] |  |
-| `options` | WriteOptions & &#123;   actor: string &#125; & BulkOptions |  |
-
-#### `upsertMany` — DISABLED (commented out)
-
-Bulk upsert parked pending guarded-vs-sync-import semantics. Do not call.
-
-#### `deleteMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
-
-Bulk soft-delete — auditable+deletable entity (actor required). Match objects
-carry `{ <matchBy>, version }`; atomic rollback with ERR01/02/03 per-row detail.
+Bulk add — auditable entity (actor required).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
+| entity | `EntityClass & () => TEntity` |  |
+| rows | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & BulkOptions` |  |
 
-#### `restoreMany(entity: EntityClass & () => TEntity, matches: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity>): Promise<BulkResult>`
+#### `Repository.deleteMany(entity, matches, options): Promise<BulkResult>`
 
-Bulk restore — clears soft-delete fields, bumps `version`, stamps audit fields.
-Same atomic version-guard semantics as `deleteMany`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `matches` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | `{ uuid, version }` for auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; |  |
-
-#### `updateMany(entity: EntityClass & () => TEntity, updates: Partial<Record<any & string, unknown>>[], options: WriteOptions & {   actor: string } & MatchByOptions<TEntity> & BulkOptions): Promise<BulkResult>`
-
-Bulk update — auditable entity (actor required). Every row needs its
-caller-observed `version`; atomic rollback with ERR01/02/03 per-row detail.
+Bulk soft-delete — auditable+deletable entity (actor required).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass & () =&gt; TEntity |  |
-| `updates` | Partial&lt;Record&lt;any & string, unknown&gt;&gt;[] | every row needs `version` on auditable entities |
-| `options` | WriteOptions & &#123;   actor: string &#125; & MatchByOptions&lt;TEntity&gt; & BulkOptions |  |
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
+
+#### `Repository.hardDeleteMany(entity, matches, options): Promise<BulkResult>`
+
+Bulk hard-delete — auditable entity (actor required for audit).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+#### `Repository.restoreMany(entity, matches, options): Promise<BulkResult>`
+
+Bulk restore — auditable+deletable entity (actor required).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+#### `Repository.updateMany(entity, updates, options): Promise<BulkResult>`
+
+Bulk update — auditable entity (actor required).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => TEntity` |  |
+| updates | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
+
+### `SchemaDomainViolationError`
+
+Schema sovereignty domain — the set of PostgreSQL schemas a service is
+allowed to touch, declared via `DATABASE_SCHEMA` and pushed here by the
+`Dal` constructor (`getDal({ schemas })`).
+
+Enforcement points:
+- boot: `assertEntitySchemaDomain` (schema-domain-assert.ts) — every
+  registered
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"SCHEMA_DOMAIN_VIOLATION"` |  |
+| details | `{ entity: string; schema: string; allowed: string[] }` |  |
+
+#### `SchemaDomainViolationError(message, details)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+| details | `{ entity: string; schema: string; allowed: string[] }` |  |
+
+### `TranslationEntityBase`
+
+TranslationEntityBase — standard i18n translations table entity.
+
+Schema = module boundary. Each module creates a concrete subclass with its
+own schema. The DAL's Repository resolves the schema natively via
+getQualifiedTableName(entity) — no raw SQL, no string interpolation.
+
+BE creates entity classes for all modules it manages:
+  @Entity("translations", "public")
+  export class AppTranslationEntity extends TranslationEntityBase &#123;&#125;
+
+  @Entity("translations", "system")
+  export class SystemTranslationEntity extends TranslationEntityBase &#123;&#125;
+
+  @Entity("translations", "emailsender")
+  export class EmailsenderTranslationEntity extends TranslationEntityBase &#123;&#125;
+
+The BE's central CRUD handler maps module code → entity class → Repository.
+US microservices do NOT create entity classes — the BE manages their schemas.
+
+Columns:
+  key       varchar(255) NOT NULL — full dot-path (e.g. 'app.auth.login.title')
+  language  varchar(10)  NOT NULL — BCP 47 tag (e.g. 'it-IT')
+  value     text         NOT NULL — translated string
+
+Composite unique: (key, language) — non-partial index: a soft-deleted row
+still reserves the key; recreating it surfaces a conflict (ERR05 → restore),
+never a deleted+live duplicate.
+
+Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by).
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | `bigint` |  |
+| uuid | `string` |  |
+| key | `string` | Full dot-path translation key (e.g. 'app.auth.login.title'). |
+| language | `string` | BCP 47 language tag (e.g. 'it-IT', 'en-GB'). |
+| value | `string` | Translated string value. |
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+
+### `UnknownColumnError`
+
+Thrown when a write operation (add, update) receives a property not in entity metadata.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"UNKNOWN_COLUMN"` |  |
+
+#### `UnknownColumnError(message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+
+### `ValidationError`
+
+Thrown when a validation check fails (e.g. empty updates object, missing actor).
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"VALIDATION"` |  |
+
+#### `ValidationError(message)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+
+### `Vector`
+
+`Vector` — runtime-identifiable `number[]` for pgvector `vector(N)` columns.
+
+A real class (not a brand) so the DAL can detect it with `instanceof` —
+array subclasses ARE `number[]`-assignable but carry runtime identity.
+That identity is load-bearing: `vector` params bind as the `'[v1,v2,…]'`
+literal, while plain `number[]` binds as a Postgres array `'{v1,v2,…}'`.
+
+In entities, `embedding: Vector` maps to `vector`; `@Column({ length: N })`
+sets the dimension (`vector(N)`).
+
+#### `Vector.toString(): string`
+
+`'[1,2,3]'` — the pgvector text input/output literal.
+
+#### `Vector.from(v): Vector`
+
+Parse the pgvector literal `'[v1,v2,…]'` (or a plain number array).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string \| typeOperator \| Vector` |  |
+
+#### `Vector.fromNumbers(v): Vector`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `typeOperator` |  |
 
 ## Interfaces
+
+### `AggregateDecl`
+
+Declarative aggregate rollup projected into list rows.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name | `string` | Output column name, e.g. "user_count". |
+| expr | `string` | Aggregate SQL expression over the join alias, e.g. "COUNT(u.id)". |
+| cast | `string` | Optional result cast — emitted as `CAST(<expr> [FILTER...] AS <cast>)`. |
+| join | `{ entity: EntityClass; alias: string; base: string; joined: string; extra: string }` | LEFT join feeding the aggregate. |
+
+### `AuditPageOptions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| tableName | `string` | e.g. "customers_audit" — the partition parent table name. |
+| entityUuid | `string` |  |
+| page | `number` |  |
+| limit | `number` |  |
+
+### `AuditPageResult`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| data | `AuditRow[]` |  |
+| pagination | `{ page: number; limit: number; total: bigint; hasMore: boolean }` |  |
+
+### `AuditPort`
+
+Audit port — consumers inject their own audit writer.
+The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
+
+### `AuditRow`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | `bigint` |  |
+| entity_id | `bigint` |  |
+| entity_uuid | `string` |  |
+| action | `string` |  |
+| changed_at | `string` |  |
+| changed_by | `string` |  |
+| changed_by_display_name | `string \| null` |  |
+| changed_by_idp_code | `string \| null` |  |
+| version | `number` |  |
+| delta | `Record<string, unknown>` |  |
+
+### `BulkItem`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
 
 ### `DalConfig`
 
@@ -867,48 +1175,96 @@ Configuration for the Dal gateway.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `connectionString` | string | PostgreSQL connection string. Required. |
-| `schemas` | string[] | Declared schema domain — the ONLY PostgreSQL schemas this service may touch (`schemas[0]` is the owned/primary schema). Required. |
-| `sharedTables?` | string[] | Shared table names exempt from the schema-domain check (today only `translations`). |
-| `repoDecorator?` | (repo: Repository) =&gt; Repository | Optional decorator applied to the internal root Repository at construction — the governed seam for cross-cutting behavior (e.g. BE `withCache`). Tx-scoped repositories are NOT decorated. |
-| `max?` | number | Maximum pool size. Default: 10.
+| connectionString | `string` | PostgreSQL connection string. Required. |
+| schemas | `string[]` | Declared schema domain — the ONLY PostgreSQL schemas this service may
+touch (from `DATABASE_SCHEMA`). `schemas[0]` is the owned/primary schema
+(patch registry, config_entries live here). Entity operations resolving
+outside this set throw SchemaDomainViolationError. Required. |
+| sharedTables | `string[]` | Shared table names exempt from the schema-domain check — governed
+cross-schema table contracts where every module schema carries the
+same table and a designated manager reaches all of them. Today only
+`translations` (the BE i18n gateway manages `<module>.translations`
+for every registered module). The entity's schema pin still applies —
+only the domain check is bypassed, for that table name only. |
+| max | `number` | Maximum pool size. Default: 10.
  Formula: max ≤ (PG max_connections − reserved) / service_instances.
  The lib cannot pick this for you, but it documents it. |
-| `statementTimeoutMs?` | number | Per-statement timeout in ms, set via SET statement_timeout on every connection.
+| statementTimeoutMs | `number` | Per-statement timeout in ms, set via SET statement_timeout on every connection.
  Default: 30000. Set to 0 to disable.
  This is the full wall-clock (command arrival → server completion → all rows transmitted). |
-| `connectionTimeoutMillis?` | number | Time to wait when acquiring a connection from the pool before erroring.
+| bulkTimeoutMs | `number` | Maximum wall-clock budget in ms for a single *Many operation
+ (addMany/upsertMany/updateMany/deleteMany). The whole transaction must
+ complete within this budget — on expiry the work is aborted and the
+ transaction rolled back (no partial writes).
+ Default: 1800000 (30 min). Per-call override: `BulkOptions.timeoutMs`.
+ Set to 0 to disable. |
+| connectionTimeoutMillis | `number` | Time to wait when acquiring a connection from the pool before erroring.
  Default: 5000. Fail fast when pool exhausted — don't let requests queue forever. |
-| `idleTimeoutMillis?` | number | How long an idle connection is kept before closing. Default: 30000 (pg default). |
-| `maxUses?` | number | Optional: recycle connections after N uses to clear per-session state.
+| idleTimeoutMillis | `number` | How long an idle connection is kept before closing. Default: 30000 (pg default). |
+| maxUses | `number` | Optional: recycle connections after N uses to clear per-session state.
  Default: undefined (off). |
-| `applicationName?` | string | Optional application_name for PG logging/observability. Default: "primebrick-dal". |
+| applicationName | `string` | Optional application_name for PG logging/observability. Default: "primebrick-dal". |
+| repoDecorator | `(repo: Repository) => Repository` | Optional decorator applied to the Dal's internal root Repository at
+construction — the governed seam for cross-cutting behavior such as
+entity caching (`withCache`). The decorated repo backs `dal.entityService`,
+`dal.tableAuditPort`, and every entity proxy on this instance, so the
+decoration applies uniformly without consumers building their own
+repositories. Tx-scoped repositories handed to `dal.transaction(fn)`
+callbacks are NOT decorated — writes inside an open transaction must
+not trigger cache writes/invalidation before commit. |
 
-### `TimeoutOverrideOptions`
-
-Per-operation statement_timeout override for dedicated-client work
-(``transaction``, ``partitionMaintenance``).
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `timeoutMs?` | number | Transaction-scoped for `transaction` (SET LOCAL, auto-resets); connection-scoped with session-default restore for `partitionMaintenance`. |
-
-### `IExposableEntity`
-
-Entity has a public UUID safe to expose outside the system.
+### `DuplicateResult`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `uuid` | string |  |
+| uuids | `string[]` |  |
+| errors | `{ uuid: string; error: string }[]` |  |
 
-### `IDeletableEntity`
-
-Entity supports soft-delete (deleted_at / deleted_by).
+### `EntityListQuery`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `deleted_at?` | Date |  |
-| `deleted_by?` | string |  |
+| search | `string` |  |
+| search_in | `string[]` |  |
+| sort_key | `string` |  |
+| sort_dir | `"asc" \| "desc"` |  |
+| page | `number` |  |
+| page_size | `number` |  |
+| filters | `ListFilterCondition[]` |  |
+| connector | `"AND" \| "OR"` |  |
+| deleted_records | `"EXCLUDED" \| "ONLY" \| "INCLUDED"` |  |
+
+### `EntityListResult`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| rows | `TEntity[]` |  |
+| page | `number` |  |
+| page_size | `number` |  |
+| total | `bigint` |  |
+
+### `EntityService`
+
+The contract every entity service must satisfy — enforced on the router.
+
+### `EntityServiceConfig`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| entity | `EntityClass & () => object` | Newable entity class (DB row shape). |
+| repo | `Repository` | Repository — INTERNAL injection point only. `dal.entityService(cfg)`
+ supplies the gateway-owned instance; callers of the free
+ `makeEntityService` (tests, decorators such as BE `withCache`) must
+ pass one explicitly. Consumer configs MUST NOT set it — a missing
+ `repo` is a hard error, not a fallback. |
+| auditPort | `AuditPort` | Audit port — defaults to `makeTableAuditPort(repo)` (the standard
+ `{table}_audit` writer). Override only for ports with extra side
+ effects (e.g. the BE entity-changed marker publisher). |
+| actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
+| userEntity | `EntityClass` | Optional auditable display-name join target (BE: UserProfileEntity). |
+| auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
+| list | `{ searchableKeys: typeOperator; filterableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `IAuditableEntity`
 
@@ -916,13 +1272,13 @@ Entity has full audit trail (created_at/by, updated_at/by, version) + soft-delet
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `deleted_at?` | Date |  |
-| `deleted_by?` | string |  |
-| `created_at` | Date |  |
-| `created_by` | string |  |
-| `updated_at` | Date |  |
-| `updated_by` | string |  |
-| `version` | number |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
 
 ### `IClonableEntity`
 
@@ -930,194 +1286,592 @@ Entity supports cloning (cloned_from stores UUID of source record).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cloned_from?` | string |  |
+| cloned_from | `string` |  |
 
-### `AuditPort`
+### `IDeletableEntity`
 
-Audit port — consumers inject their own audit writer.
-The DAL calls ``writeAudit`` fire-and-forget (``.catch(logger?.error ?? noop)``).
+Entity supports soft-delete (deleted_at / deleted_by).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+
+### `IExposableEntity`
+
+Entity has a public UUID safe to expose outside the system.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| uuid | `string` |  |
 
 ### `LoggerPort`
 
 Logger port — consumers inject their own logger.
 
-## Type Aliases
+### `PartitionMaintenanceReport`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| parents | `PartitionParentReport[]` |  |
+| maintenance_ran | `boolean` | Whether `partman.run_maintenance_proc()` ran. |
+
+### `PartitionParentReport`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| table | `string` | `"schema"."table"` of the partitioned parent. |
+| partition_column | `string` |  |
+| retention | `string \| null` | Effective retention interval actually applied (part_config wins). |
+| children_purged | `Record<string, number>` | `"schema"."child"` → rows deleted for expired parents. |
+| strays_deleted | `number` | Expired rows removed from the default partition (never dropped). |
+| partitions_before | `number` | Live partition count before/after `run_maintenance_proc()`. |
+| partitions_after | `number` |  |
+| skipped | `string` | Set when the parent was skipped — reason string. |
+
+### `SnapshotQueryable`
+
+Minimal queryable shape — pg.Pool, pg.PoolClient, or any adapter.
+
+### `TimeoutOverrideOptions`
+
+Per-operation timeout override for dedicated-client work
+ (`transaction`, `partitionMaintenance`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| timeoutMs | `number` | Override statement_timeout (ms). Transaction-scoped for `transaction`
+ (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
+ session-default restore for `partitionMaintenance`. |
+
+## Types & Enums
+
+### `AuditableFieldType`
+
+| Member | Value |
+|--------|-------|
+| CREATED_AT | "CREATED_AT" |
+| CREATED_BY | "CREATED_BY" |
+| UPDATED_AT | "UPDATED_AT" |
+| UPDATED_BY | "UPDATED_BY" |
+| VERSION | "VERSION" |
+
+### `AuditAction`
+
+Audit action enum (mirrors BE's AuditAction).
+
+| Member | Value |
+|--------|-------|
+| INSERT | "INSERT" |
+| UPDATE | "UPDATE" |
+| SOFT_DELETE | "SOFT_DELETE" |
+| HARD_DELETE | "HARD_DELETE" |
+| RESTORE | "RESTORE" |
+| CLONE | "CLONE" |
+
+### `DeletableFieldType`
+
+| Member | Value |
+|--------|-------|
+| DELETED_AT | "DELETED_AT" |
+| DELETED_BY | "DELETED_BY" |
+
+### `SynchronizableFieldType`
+
+| Member | Value |
+|--------|-------|
+| LAST_SYNCED_AT | "LAST_SYNCED_AT" |
+
+### `AuditableWriteOptions`
+
+Write options for auditable entities — actor is required.
+
+**Type:** `WriteOptions<TEntity> & { actor: string }`
+
+### `AuditParams`
+
+Parameters passed to `AuditPort.writeAudit`.
+
+### `BulkOptions`
+
+Bulk operation options (batch size, timeout).
+
+### `BulkResult`
+
+Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany).
+
+### `ColumnOptions`
+
+### `ColumnPgPersistenceHints`
+
+### `DalErrorCode`
+
+**Type:** `typeof DalErrorCodes[typeOperator]`
+
+### `EntityAction`
+
+**Type:** `"meta" \| "list" \| "export" \| "create" \| "duplicate" \| "bulkDelete" \| "bulkRestore" \| "get" \| "update" \| "delete" \| "purge" \| "restore" \| "audit"`
+
+### `EntityAnnotationInfo`
+
+Per-property type facts extracted from source.
+
+### `EntityAnnotationMap`
+
+Result of `extractEntityAnnotations` — keyed by class name.
+
+### `EntityClass`
+
+Entity metadata via legacy TypeScript decorators (WeakMap "reflection").
+
+**Convention:** every "data" property on the class `prototype` is a SQL column
+with a name equal to the property name (snake_case). `@Column()` is only needed
+for: `sqlName` / `pgType` / `nullable`, or a short alias for the column name.
+
+- `@Entity()` — table name; optional argument if different from class name.
+- `@Key()` — primary key (one column only).
+- `@Unique()` — unique index (DDL patch).
+- `@IsNotColumn()` — excludes the property from persistence meta & DAL queries.
+- `@AuditableField(type)` — marks a field as audit (created_at, created_by, etc.).
+- `@DeletableField(type)` — marks a field as soft-delete (deleted_at, deleted_by).
+- `@CloneField()` — marks a field as clone tracking (cloned_from).
+- `@AuditTrail()` — marks the entity as having an audit trail table.
+
+**Type:** `(args: any[]) => object`
+
+### `EntityColumnTypeHints`
+
+### `EntityPersistenceMeta`
+
+Serializable persistence metadata (for JSON compare with DB introspection).
+
+### `EntityTypeWarning`
+
+Advisory warning — never fails a build, printed by `primebrick-db`.
+
+### `ExprOperand`
+
+A parameterized SQL operand for `Filter.expr` — `?` markers inside `sql`
+are replaced by `$n` bound parameters in order of appearance.
+
+`sql` is a trusted literal (never interpolated user input); `params`
+carries the only dynamic data. Example:
+  `{ sql: "to_tsvector(?, d.content)", params: ["simple"] }`
+
+### `FieldProjector`
+
+**Type:** `{ kind: "field"; field: FieldRef<any, any>; alias: string } \| { kind: "expr"; expr: string; alias: string; params: unknown[] }`
+
+### `FieldRef`
+
+### `FilterExpr`
+
+**Type:** `{ kind: "field_value"; left: FieldRef<any, any>; op: SqlOperator; right: unknown; operand: SqlExpressionOperand } \| { kind: "field_field"; left: FieldRef<any, any>; op: SqlOperator; right: FieldRef<any, any>; operand: SqlExpressionOperand } \| { kind: "raw"; left: string; op: SqlOperator; right: string; operand: SqlExpressionOperand } \| { kind: "expr"; left: ExprOperand; op: SqlOperator; right: ExprOperand; operand: SqlExpressionOperand } \| { kind: "group"; filters: FilterExpr[]; operand: SqlExpressionOperand; connector: SqlExpressionOperand }`
+
+### `FindByIdOptions`
+
+Options for `findById`.
+
+### `FindByUUIDOptions`
+
+Options for `findByUUID`.
+
+### `FindOptions`
+
+Options for `find`, `findAll`, `findByPage`.
+
+### `ForeignKeyAction`
+
+**Type:** `"restrict" \| "cascade" \| "set_null" \| "set_default" \| "no_action"`
+
+### `ForeignKeyOptions`
+
+Options for `@ForeignKey()` — REFERENCES target entity column.
+
+### `GroupByOperand`
+
+GROUP BY operand — either an entity field reference or a parameterized
+SQL expression (`?` markers bind `params` in order). Expressions are
+required for grouping over computed values like `date_trunc(?, created_at)`.
+Non-aggregate `field` projections are auto-added to GROUP BY by the
+builder; expression projections must be listed here explicitly when they
+are the grouping key.
+
+**Type:** `FieldRef<any, any> \| { kind: "expr"; sql: string; params: unknown[] }`
+
+### `IndexMethod`
+
+**Type:** `"btree" \| "hash" \| "gin" \| "gist" \| "spgist" \| "brin" \| "hnsw"`
+
+### `IndexOptions`
+
+Options for `@Index()` — plain (non-unique) secondary indexes of any PG access method.
+
+### `ISODate`
+
+**Type:** `string & { [isoDateBrand]: "ISODate" }`
+
+### `ISOTime`
+
+**Type:** `string & { [isoTimeBrand]: "ISOTime" }`
+
+### `JoinExpr`
+
+### `KeyOptions`
+
+### `LikelyRename`
+
+### `ListFilterCondition`
+
+### `ListFilterOptions`
+
+### `MatchByOptions`
+
+Options for match-by operations (update, delete, restore, hardDelete, *Many).
+
+### `MigrationEngineOptions`
+
+Migration engine — apply side. Generation side lives in schema-diff/.
+
+### `MigrationMode`
+
+Migration engine — apply side. Generation side lives in schema-diff/.
+
+**Type:** `"apply" \| "check" \| "off"`
+
+### `MigrationRunResult`
+
+Migration engine — apply side. Generation side lives in schema-diff/.
+
+### `OnConflictMode`
+
+Insert conflict semantics for `add()`.
+
+**Type:** `"raise" \| "ignore"`
+
+### `PaginatedEntity`
+
+Paginated result wrapper.
+
+### `PartitionChildOfOptions`
+
+Options for `@PartitionChildOf()` — declares membership in a partitioned
+ parent's atomic delete/retention unit.
+
+### `PartitionFieldOptions`
+
+Options for `@PartitionField()` — the RANGE partition key declaration.
+
+### `PatchManifest`
+
+### `PatchRegistryRow`
+
+### `PatchSegment`
+
+### `PatchStatus`
+
+**Type:** `"pending" \| "applied" \| "failed" \| "pending_review" \| "approved" \| "resolved_manual"`
+
+### `PgColumnType`
+
+`pgType` values legal in `@Column({ pgType })`.
+
+**Type:** `PgScalarType \| templateLiteral \| templateLiteral \| "vector"`
+
+### `PgScalarType`
+
+`PgColumnType` — the canonical PostgreSQL column type vocabulary for
+`@Column({ pgType })` and the entity type contract.
+
+A closed union, not a free `string`: aliases like
+`"timestamp with time zone"` (write `timestamptz`) or `"character varying"`
+(write `varchar`) are compile errors, so the diff/snapshot pipeline never
+sees spelling variants.
+
+Type modifiers are NEVER written inside `pgType`: `varchar(N)` comes from
+`length`, `numeric(p,s)` from `precision`/`scale`, `vector(N)` from
+`length` on a `Vector` prop. `pgType` carries the BASE name only
+(`vector(N)` literal is allowed for readability but `length` wins).
+
+**Type:** `"text" \| "varchar" \| "char" \| "citext" \| "uuid" \| "smallint" \| "int2" \| "integer" \| "int" \| "int4" \| "bigint" \| "int8" \| "real" \| "float4" \| "double precision" \| "float8" \| "numeric" \| "decimal" \| "boolean" \| "bool" \| "date" \| "time" \| "timetz" \| "timestamp" \| "timestamptz" \| "interval" \| "inet" \| "cidr" \| "macaddr" \| "macaddr8" \| "json" \| "jsonb" \| "bytea" \| "xml" \| "tsvector"`
+
+### `RenameAmbiguity`
+
+### `RenameHeuristicResult`
+
+### `SchemaColumnMeta`
+
+Shared shapes for entity vs database schema snapshots (used by compare + heuristics).
+
+### `SchemaDomain`
+
+### `SchemaMetaDiffV1`
+
+**Type:** `SchemaMetaDiffV2`
+
+### `SchemaMetaDiffV2`
+
+### `SchemaSnapshot`
+
+Schema-diff: canonical entity-vs-database snapshot machinery.
+Generation side of the migration engine (migrations/ is the apply side).
+
+### `SchemaTableMeta`
+
+Schema-diff: canonical entity-vs-database snapshot machinery.
+Generation side of the migration engine (migrations/ is the apply side).
+
+### `SelectQueryInput`
+
+### `SortingExpr`
+
+**Type:** `{ field: FieldRef<any, any>; dir: SqlSortDirection } \| { kind: "alias"; alias: string; dir: SqlSortDirection } \| { kind: "expr"; sql: string; params: unknown[]; dir: SqlSortDirection }`
+
+### `SqlExpressionOperand`
+
+**Type:** `"AND" \| "OR"`
+
+### `SqlJoinType`
+
+**Type:** `"INNER" \| "LEFT" \| "RIGHT"`
+
+### `SqlOperator`
+
+**Type:** `"=" \| "!=" \| "<>" \| "<" \| "<=" \| ">" \| ">=" \| "ILIKE" \| "LIKE" \| "IN" \| "NOT IN" \| "BETWEEN" \| "IS" \| "IS NOT" \| "<=>" \| "<->" \| "<#>" \| "<+>" \| "<~>" \| "<%>" \| "@@"`
+
+### `SqlQuery`
+
+### `SqlSortDirection`
+
+**Type:** `"ASC" \| "DESC"`
+
+### `TrustedKey`
+
+### `UniqueOptions`
+
+Unique constraint options for composite unique indexes.
+
+### `UpsertOptions`
+
+Upsert-specific options.
+
+### `UUID`
+
+**Type:** `string & { [uuidBrand]: "UUID" }`
+
+### `VectorDistanceOp`
+
+pgvector distance operator for `vectorSearch` — `<=>` cosine, `<->` L2, `<#>` inner product, `<+>` L1.
+
+**Type:** `"<=>" \| "<->" \| "<#>" \| "<+>"`
+
+### `VectorHybridInput`
+
+### `VectorSearchOptions`
+
+Options for `Repository.vectorSearch` — entity-generic like `FindOptions`.
 
 ### `WithAuditableDisplayNames`
 
 Adds display name fields to a row type for auditable entities.
 Use this to type the result of queries that include auditable joins.
 
-```typescript
-type WithAuditableDisplayNames = T & {   created_by_name?: string;   updated_by_name?: string;   deleted_by_name?: string };
-```
+**Type:** `T & { created_by_name: string; updated_by_name: string; deleted_by_name: string }`
 
 ### `WithCreatorDisplayName`
 
 Adds only creator display name (for cases where you only need created_by).
 
-```typescript
-type WithCreatorDisplayName = T & {   created_by_name?: string };
-```
-
-### `WithUpdaterDisplayName`
-
-Adds only updater display name (for cases where you only need updated_by).
-
-```typescript
-type WithUpdaterDisplayName = T & {   updated_by_name?: string };
-```
-
-### `ColumnPgPersistenceHints`
-
-### `EntityClass`
-
-Entity metadata via legacy TypeScript decorators (WeakMap "reflection").
-
-**Convention:** every "data" property on the class ``prototype`` is a SQL column
-with a name equal to the property name (snake_case). ``@Column()`` is only needed
-for: ``sqlName`` / ``pgType`` / ``nullable``, or a short alias for the column name.
-
-- ``@Entity()`` — table name; optional argument if different from class name.
-- ``@Key()`` — primary key (one column only).
-- ``@Unique()`` — unique index (DDL patch).
-- ``@IsNotColumn()`` — excludes the property from persistence meta & DAL queries.
-- ``@AuditableField(type)`` — marks a field as audit (created_at, created_by, etc.).
-- ``@DeletableField(type)`` — marks a field as soft-delete (deleted_at, deleted_by).
-- ``@CloneField()`` — marks a field as clone tracking (cloned_from).
-- ``@AuditTrail()`` — marks the entity as having an audit trail table.
-
-```typescript
-type EntityClass = (args: any[]) => object;
-```
-
-### `ColumnOptions`
-
-### `KeyOptions`
-
-### `EntityPersistenceMeta`
-
-Serializable persistence metadata (for JSON compare with DB introspection).
-
-### `SqlOperator`
-
-```typescript
-type SqlOperator = "=" | "!=" | "<>" | "<" | "<=" | ">" | ">=" | "ILIKE" | "LIKE" | "IN" | "NOT IN" | "BETWEEN" | "IS" | "IS NOT";
-```
-
-### `SqlSortDirection`
-
-```typescript
-type SqlSortDirection = "ASC" | "DESC";
-```
-
-### `SqlJoinType`
-
-```typescript
-type SqlJoinType = "INNER" | "LEFT" | "RIGHT";
-```
-
-### `SqlExpressionOperand`
-
-```typescript
-type SqlExpressionOperand = "AND" | "OR";
-```
-
-### `FieldRef`
-
-### `FilterExpr`
-
-```typescript
-type FilterExpr = {   kind: "field_value";   left: FieldRef<any, any>;   op: SqlOperator;   right: unknown;   operand: SqlExpressionOperand } | {   kind: "field_field";   left: FieldRef<any, any>;   op: SqlOperator;   right: FieldRef<any, any>;   operand: SqlExpressionOperand } | {   kind: "raw";   left: string;   op: SqlOperator;   right: string;   operand: SqlExpressionOperand } | {   kind: "group";   filters: FilterExpr[];   operand: SqlExpressionOperand };
-```
-
-### `SortingExpr`
-
-### `JoinExpr`
-
-### `FieldProjector`
-
-```typescript
-type FieldProjector = {   kind: "field";   field: FieldRef<any, any>;   alias?: string } | {   kind: "expr";   expr: string;   alias: string };
-```
-
-### `SqlQuery`
-
-### `SelectQueryInput`
+**Type:** `T & { created_by_name: string }`
 
 ### `WithDeletedRecords`
 
 Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders.
 
-```typescript
-type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
-```
+**Type:** `"EXCLUDED" \| "ONLY" \| "INCLUDED"`
 
-### `FindByIdOptions`
+### `WithUpdaterDisplayName`
 
-Options for ``findById``.
+Adds only updater display name (for cases where you only need updated_by).
 
-### `FindOptions`
-
-Options for ``find``, ``findAll``, ``findByPage``.
-
-### `FindByUUIDOptions`
-
-Options for ``findByUUID``.
-
-### `PaginatedEntity`
-
-Paginated result wrapper.
+**Type:** `T & { updated_by_name: string }`
 
 ### `WriteOptions`
 
 Base write options — no actor (for non-auditable entities).
 
-### `AuditableWriteOptions`
+## Constants
 
-Write options for auditable entities — actor is required.
+### `DalErrorCodes`
 
-```typescript
-type AuditableWriteOptions = WriteOptions & {   actor: string };
-```
+Stable error codes for DAL optimistic concurrency control.
 
-### `MatchByOptions`
+These codes are used as PostgreSQL SQLSTATE values (via `RAISE EXCEPTION
+USING ERRCODE = 'ERR01'`) and as TS `DalError.code` values. Consumers (BE,
+US, FE) branch on the string literal (e.g. `err.code === 'ERR01'`) so that
+PG-originated errors and TS-originated errors share the same code.
 
-Options for match-by operations (update, delete, restore, hardDelete).
+Convention: `ERR` + 2 digits. The `ER` class is outside the SQL-standard
+SQLSTATE classes (`00`–`99`), so PostgreSQL accepts it as a custom code.
 
-### `BulkOptions`
+**Type:** `{ ERR01: "ERR01"; ERR02: "ERR02"; ERR03: "ERR03"; ERR04: "ERR04"; ERR05: "ERR05"; ERR06: "ERR06"; ERR07: "ERR07"; ERR08: "ERR08"; ERR09: "ERR09"; ERR10: "ERR10" }`
 
-Bulk operation options (batch size, timeout).
+| Field | Value |
+|-------|-------|
+| ERR01 | "ERR01" |
+| ERR02 | "ERR02" |
+| ERR03 | "ERR03" |
+| ERR04 | "ERR04" |
+| ERR05 | "ERR05" |
+| ERR06 | "ERR06" |
+| ERR07 | "ERR07" |
+| ERR08 | "ERR08" |
+| ERR09 | "ERR09" |
+| ERR10 | "ERR10" |
 
-### `UpsertOptions`
+### `decimalFromPG`
 
-Upsert-specific options.
+Alias of `dec()` — parse a PostgreSQL `numeric`/`decimal` text value.
 
-### `AuditParams`
-
-Parameters passed to ``AuditPort.writeAudit``.
-
-## Variables
+**Type:** `typeof dec`
 
 ### `Filter`
 
-**Type**: &#123;   fieldValue: any;   fieldField: any;   raw: any;   group: any &#125;
+**Type:** `{ fieldValue: ; fieldField: ; raw: ; expr: ; group:  }`
 
-### `Sort`
+| Field | Value |
+|-------|-------|
+| fieldValue | "" |
+| fieldField | "" |
+| raw | "" |
+| expr | "" |
+| group | "" |
 
-**Type**: &#123;   by: any &#125;
+### `GroupBy`
+
+**Type:** `{ expr:  }`
+
+| Field | Value |
+|-------|-------|
+| expr | "" |
 
 ### `Join`
 
-**Type**: &#123;   on: any &#125;
+**Type:** `{ on:  }`
+
+| Field | Value |
+|-------|-------|
+| on | "" |
+
+### `KEYS_FILENAME`
+
+**Type:** `"keys.json"`
+
+### `MANIFEST_FILENAME`
+
+**Type:** `"MANIFEST.json"`
+
+### `PATCH_REGISTRY_TABLE`
+
+Per-service-schema patch registry (v2).
+
+Each service owns `<svc_schema>.primebrick_database_patches` — the registry is
+domain data of the owning microservice, not a shared global table.
+The DDL is self-bootstrapping: the engine runs it unconditionally before any
+read, so an empty database upgrades itself.
+
+**Type:** `"primebrick_database_patches"`
 
 ### `Project`
 
-**Type**: &#123;   field: any;   expr: any &#125;
+**Type:** `{ field: ; expr:  }`
+
+| Field | Value |
+|-------|-------|
+| field | "" |
+| expr | "" |
+
+### `RENAME_HEURISTIC_AGENT_INSTRUCTION`
+
+**Type:** `"renameHeuristicUserReviewRequired is true: ambiguous rename candidates were detected. You MUST ask the user which renames (if any) to apply before running suggested ALTER ... RENAME COLUMN or generating migrations from likelyRenames."`
+
+### `RENAME_MATCH_RULE_LABELS`
+
+Ordered strict → loose; documented for consumers of `diff-entities-vs-database.json`.
+
+**Type:** `typeOperator`
+
+### `Sort`
+
+**Type:** `{ by: ; byAlias: ; byExpr:  }`
+
+| Field | Value |
+|-------|-------|
+| by | "" |
+| byAlias | "" |
+| byExpr | "" |
 
 ## Functions
 
-### `buildAuditableJoins(entity: EntityClass, userEntity: EntityClass): JoinExpr[]`
+### `approvePendingReview(pool, schema, patchName, actor, note): Promise<boolean>`
+
+pending_review → approved for ONE named patch: the engine treats an
+`approved` row as review-cleared and applies the file on the next run.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pool | `Pool` |  |
+| schema | `string` |  |
+| patchName | `string` |  |
+| actor | `string` |  |
+| note | `string` |  |
+
+### `assertEntitySchemaDomain(entities, schemas, sharedTables): void`
+
+Boot-time check: every registered entity must resolve inside `schemas`
+(an explicit
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `typeOperator` |  |
+| schemas | `typeOperator` |  |
+| sharedTables | `typeOperator` |  |
+
+### `assertPgTypeCompatible(annotation, explicitPgType, propertyKey): void`
+
+Throws when an explicit `pgType` is incompatible with the declared TS
+annotation family (e.g. `UUID` + `pgType:"text"`, `number` + `pgType:
+"int8"`). Unmappable families pass — the explicit type is their contract.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| annotation | `EntityAnnotationInfo` |  |
+| explicitPgType | `string` |  |
+| propertyKey | `string` |  |
+
+### `AuditableField(what): PropertyDecorator`
+
+Marks a field as auditable (created_at, created_by, updated_at, updated_by, version).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| what | `AuditableFieldType` |  |
+
+### `AuditTrail(): ClassDecorator`
+
+Marks an entity as having an audit trail table.
+
+### `AuditTrailEntity(options): ClassDecorator`
+
+Marks a class as BEING an audit trail entity (e.g., AuditLogEntity).
+Distinct from @AuditTrail() which marks an entity as HAVING an audit trail.
+The changedByColumn specifies which property holds the actor (default: "changed_by").
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `{ changedByColumn: string }` |  |
+
+### `buildAuditableJoins(entity, userEntity): JoinExpr[]`
 
 Standard join configuration for auditable entities.
 Automatically adds LEFT JOINs to the user entity table for created_by, updated_by, deleted_by fields.
@@ -1127,302 +1881,884 @@ This prevents errors when the field contains non-UUID values like "system".
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass | The entity class implementing IAuditableEntity |
-| `userEntity` | EntityClass | The user entity class (e.g. UserProfileEntity) that has a ``uuid`` and ``display_name`` column |
+| entity | `EntityClass` | The entity class implementing IAuditableEntity |
+| userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) that has a `uuid` and `display_name` column |
 
-### `buildAuditableJoinsSelective(entity: EntityClass, userEntity: EntityClass, options: {   includeCreator?: boolean;   includeUpdater?: boolean;   includeDeleter?: boolean }): JoinExpr[]`
+### `buildAuditableJoinsSelective(entity, userEntity, options): JoinExpr[]`
 
 Enhanced version that allows selective joins (e.g., only creator and updater).
 Useful when you only need specific audit fields to reduce query overhead.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `entity` | EntityClass | The entity class implementing IAuditableEntity |
-| `userEntity` | EntityClass | The user entity class (e.g. UserProfileEntity) |
-| `options` | &#123;   includeCreator?: boolean;   includeUpdater?: boolean;   includeDeleter?: boolean &#125; | Configuration for which joins to include |
+| entity | `EntityClass` | The entity class implementing IAuditableEntity |
+| userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) |
+| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean }` | Configuration for which joins to include |
 
-### `buildAuditTrailJoins(auditEntity: EntityClass, userEntity: EntityClass): {   joins: JoinExpr[];   projections: FieldProjector[] }`
+### `buildAuditTrailJoins(auditEntity, userEntity): { joins: JoinExpr[]; projections: FieldProjector[] }`
 
 Build LEFT JOIN + projections for audit trail entities (AuditLogEntity).
 
-Audit trail entities have a single ``changed_by`` column (not created_by/updated_by/deleted_by).
-This function joins the user entity to resolve ``changed_by`` into ``display_name`` and ``idp_code``.
+Audit trail entities have a single `changed_by` column (not created_by/updated_by/deleted_by).
+This function joins the user entity to resolve `changed_by` into `display_name` and `idp_code`.
 
-Uses ``castRightTo: "uuid"`` + ``castLeftTo: "uuid"`` to trigger the regex guardrail
-(``changed_by ~ '^[0-9a-fA-F-]&#123;36&#125;$'``) automatically in renderJoins().
-This prevents errors when ``changed_by`` contains non-UUID values like "system".
+Uses `castRightTo: "uuid"` + `castLeftTo: "uuid"` to trigger the regex guardrail
+(`changed_by ~ '^[0-9a-fA-F-]{36}$'`) automatically in renderJoins().
+This prevents errors when `changed_by` contains non-UUID values like "system".
 
 Distinct from buildAuditableJoins() which uses castRightTo: "text" (no guardrail, text = text).
 buildAuditTrailJoins() uses castRightTo: "uuid" + castLeftTo: "uuid" (guardrail + uuid = uuid).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `auditEntity` | EntityClass | The audit trail entity class (e.g., AuditLogEntity) |
-| `userEntity` | EntityClass | The user entity class (e.g., UserProfileEntity) with uuid, display_name, idp_code columns |
+| auditEntity | `EntityClass` | The audit trail entity class (e.g., AuditLogEntity) |
+| userEntity | `EntityClass` | The user entity class (e.g., UserProfileEntity) with uuid, display_name, idp_code columns |
 
-### `calculateDelta(oldEntity: Record<string, unknown>, newEntity: Record<string, unknown>): Record<string, {   old: unknown;   new: unknown }>`
+### `buildDatabaseSnapshot(db, tables, generatedAt): Promise<SchemaSnapshot>`
+
+Introspect given tables into the same SchemaSnapshot shape as entities.
+Uses `pg_attribute` / `pg_type` / `format_type` (pg-diff-api CatalogApi style) so PostGIS
+and other UDTs surface with real `typname` / `typcategory`, not only `information_schema.data_type`.
+
+The caller owns the connection: pass a Pool (read-only fan-out) or a reserved client.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| db | `SnapshotQueryable` |  |
+| tables | `{ schema: string; name: string }[]` |  |
+| generatedAt | `string` |  |
+
+### `buildEntitySnapshot(registry, opts, generatedAt): SchemaSnapshot`
+
+Canonical entity-intent snapshot for a service's entity registry.
+Parameterized on the registry — no service-specific imports live here.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| registry | `typeOperator` |  |
+| opts | `BuildEntitySnapshotOptions` |  |
+| generatedAt | `string` |  |
+
+### `buildPatchFilename(diff, d): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| diff | `SchemaMetaDiffV2` |  |
+| d | `Date` |  |
+
+### `buildSelectQuery(input): SqlQuery`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| input | `SelectQueryInput` |  |
+
+### `buildSqlPatchFromMetaDiff(entitySnap, diff): string`
+
+Best-effort SQL to move **TARGET database** toward **entity** intent.
+Destructive changes (DROP) are never emitted — DB-only objects are WARN comments.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entitySnap | `SchemaSnapshot` |  |
+| diff | `SchemaMetaDiffV2` |  |
+
+### `buildVectorSearchQuery(input): SqlQuery`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| input | `VectorHybridInput` |  |
+
+### `calculateDelta(oldEntity, newEntity): Record<string, { old: unknown; new: unknown }>`
 
 Calculate delta between old and new records for audit.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `oldEntity` | Record&lt;string, unknown&gt; |  |
-| `newEntity` | Record&lt;string, unknown&gt; |  |
+| oldEntity | `Record<string, unknown>` |  |
+| newEntity | `Record<string, unknown>` |  |
 
-### `calculateDeltaWithForcedFields(oldEntity: Record<string, unknown>, newEntity: Record<string, unknown>, forceFields: string[]): Record<string, {   old: unknown;   new: unknown }>`
+### `calculateDeltaWithForcedFields(oldEntity, newEntity, forceFields): Record<string, { old: unknown; new: unknown }>`
 
 Calculate delta and force include specific fields even when unchanged.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `oldEntity` | Record&lt;string, unknown&gt; |  |
-| `newEntity` | Record&lt;string, unknown&gt; |  |
-| `forceFields` | string[] |  |
+| oldEntity | `Record<string, unknown>` |  |
+| newEntity | `Record<string, unknown>` |  |
+| forceFields | `string[]` |  |
 
-### `getDal(config: DalConfig): Dal`
+### `canonicalJson(value): string`
 
-Returns the process-wide singleton Dal instance. Creates it on first call.
-
-- First call: requires ``config``, creates the singleton.
-- Subsequent calls with NO config: returns the existing instance.
-- Subsequent calls with the SAME connectionString: returns the existing instance.
-- Subsequent calls with a DIFFERENT connectionString: throws (prevents accidental
-  double-init with wrong params).
-
-For multi-DB: construct ``new Dal(config)`` directly (bypasses the singleton).
+Stable JSON: object keys sorted recursively so signatures are deterministic.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `config` | DalConfig |  |
+| value | `unknown` |  |
 
-### `resetDal(): Promise<void>`
+### `canonicalPgType(t): string`
 
-Resets the singleton. Closes the existing instance if any.
-Intended for tests — call in afterAll to release the pool.
-
-### `columnHintsFromMetaColumn(col: {   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   uniqueIndexName?: string;   uniqueIndexOrder?: number;   nullable?: boolean;   pgType?: string;   jsType?: "instant" | "decimal" | "vector";   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string;   isPartition?: boolean;   partitionOpts?: PartitionOpts }): ColumnPgPersistenceHints`
+Fold alias spellings to canonical names (`integer` → `int4`, …).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `col` | &#123;   propertyKey: string;   sqlName: string;   isKey: boolean;   isUnique: boolean;   uniqueIndexName?: string;   uniqueIndexOrder?: number;   nullable?: boolean;   pgType?: string;   jsType?: "instant" &#124; "decimal" &#124; "vector";   defaultSql?: string;   length?: number;   precision?: number;   scale?: number;   inferredPgType: string;   usePostgresIdentity: boolean;   isAuditable?: boolean;   auditableType?: AuditableFieldType;   isDeletable?: boolean;   deletableType?: DeletableFieldType;   isSynchronizable?: boolean;   synchronizableType?: SynchronizableFieldType;   isClone?: boolean;   castInJoin?: string;   isPartition?: boolean;   partitionOpts?: PartitionOpts &#125; |  |
+| t | `string` |  |
 
-### `effectivePgStorageType(h: ColumnPgPersistenceHints): string`
-
-Effective storage type in PostgreSQL (explicit ``pgType`` wins over inference).
+### `checkDrift(registry, db, opts): Promise<SchemaMetaDiffV2>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `h` | ColumnPgPersistenceHints |  |
+| registry | `typeOperator` |  |
+| db | `SnapshotQueryable` |  |
+| opts | `BuildEntitySnapshotOptions` |  |
 
-### `isLogicalJsDateColumn(h: ColumnPgPersistenceHints): boolean`
+### `classifyRenamePair(eMeta, dMeta): { matchTier: number; reasons: string[] } \| null`
 
-Column represents an instant / calendar point stored via ``Date`` in the entity.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `h` | ColumnPgPersistenceHints |  |
-
-### `jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): unknown`
-
-Value to pass to ``node-pg`` query parameters (or similar drivers).
-``Date`` → ``timestamptz`` / ``timestamp`` as ``Date``; SQL ``date`` as ``YYYY-MM-DD`` string.
+Assigns the single strictest tier that applies, or `null` if no rule matches.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `value` | unknown |  |
-| `h` | ColumnPgPersistenceHints |  |
+| eMeta | `SchemaColumnMeta` |  |
+| dMeta | `SchemaColumnMeta` |  |
 
-### `pgValueToJsValue(value: unknown, h: ColumnPgPersistenceHints): unknown`
+### `CloneField(): PropertyDecorator`
 
-Normalise a driver value (often ISO string) into ``Date`` on the entity when the column is date-like.
+Marks a field as clone tracking (cloned_from). Stores UUID of the source record.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `value` | unknown |  |
-| `h` | ColumnPgPersistenceHints |  |
+### `collectEntityTypeWarnings(registry, annotations): EntityTypeWarning[]`
 
-### `entityDateToApiIso(value: Date): string`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `value` | Date |  |
-
-### `hydrateEntityDateFieldsFromJson(instance: T, meta: EntityPersistenceMeta): void`
-
-After ``Object.assign`` from JSON, coerce ISO strings into ``Date`` for date-like columns.
+Advisory authoring warnings across a registry — `*_uuid` columns that do
+not resolve to `uuid`, and `pgType` declarations that restate the inferred
+default. Requires the static annotation map; warnings never fail a gate.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `instance` | T |  |
-| `meta` | EntityPersistenceMeta |  |
+| registry | `typeOperator` |  |
+| annotations | `EntityAnnotationMap` |  |
 
-### `syncImplicitEntityColumns(ctor: Function): void`
+### `Column(sqlName): PropertyDecorator`
 
-Registers every implicit column not already claimed by decorators — `NOT NULL` by default; nullability comes from explicit `@Column({ nullable })` or implying decorators, never from `design:type`.
+Override SQL name / `pgType` / `nullable` only; otherwise the property is already a column by convention.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ctor` | Function |  |
+| sqlName | `string` |  |
 
-### `Entity(tableName: string, schema: string): (ctor: T) => T`
+### `columnHintsFromMetaColumn(col): ColumnPgPersistenceHints`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; nullable: boolean; pgType: string; jsType: "vector" \| "decimal" \| "instant"; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+
+### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
+
+Authoring warnings for one column:
+- `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
+  The name SAYS uuid; either the column should be `uuid` (retype the prop
+  to `UUID` or set `pgType:"uuid"`) or the name lies.
+- `redundant-pgType` — explicit `pgType` equal to what the annotation
+  already infers; drop it (we never spell out the default).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entityName | `string` |  |
+| h | `EntityColumnTypeHints` |  |
+| resolved | `string` |  |
+
+### `comparablePgType(meta): string`
+
+Build a stable string for equality checks across entity hints and catalog introspection.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `Pick<SchemaColumnMeta, "typname" \| "typcategory" \| "dataType" \| "formatType">` |  |
+
+### `compareSnapshots(entitySnap, dbSnap): SchemaMetaDiffV2`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entitySnap | `SchemaSnapshot` |  |
+| dbSnap | `SchemaSnapshot` |  |
+
+### `configureSchemaDomain(schemas, sharedTables): SchemaDomain`
+
+Called once by the Dal constructor. Re-calls replace the domain (tests).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schemas | `string[]` |  |
+| sharedTables | `string[]` |  |
+
+### `createStream(db, text, values): AsyncIterable<TResult>`
+
+Creates an AsyncIterable from a SQL query using pg-query-stream.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| db | `Queryable` | The pg Pool or PoolClient |
+| text | `string` | SQL query text |
+| values | `unknown[]` | Parameter values |
+
+### `dec(input): Decimal`
+
+`Decimal` — pass-through. `string` — parsed (PG text form or `"…d"` wire form). `number` — via shortest round-trip `toString` so `0.1` stays `"0.1"`. `bigint` — scale 0.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| input | `DecimalInput` |  |
+
+### `decimalToPG(d): string`
+
+PostgreSQL parameter form — plain canonical decimal string, no `d` suffix.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
+### `DeletableField(what): PropertyDecorator`
+
+Marks a field as deletable (deleted_at, deleted_by).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| what | `DeletableFieldType` |  |
+
+### `effectivePgStorageType(h): string`
+
+Effective storage type in PostgreSQL (explicit `pgType` wins over inference).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| h | `ColumnPgPersistenceHints` |  |
+
+### `Entity(tableName, schema): (ctor: T) => T`
 
 Maps the class to a DB table. Optional argument overrides the table name;
 if omitted, the table name equals the class name.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `tableName` | string |  |
-| `schema` | string |  |
+| tableName | `string` |  |
+| schema | `string` |  |
 
-### `Column(sqlName: string): PropertyDecorator`
-
-Override SQL name / ``pgType`` / ``nullable`` only; otherwise the property is already a column by convention.
+### `entityDateToApiIso(value): string`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `sqlName` | string |  |
+| value | `Date` |  |
 
-### `IsNotColumn(): PropertyDecorator`
+### `extractEntityAnnotations(entryFile): Promise<EntityAnnotationMap>`
 
-Excludes the property from meta schema / migration and from future DAL queries.
-
-### `Unique(): PropertyDecorator`
-
-Unique constraint (PostgreSQL®: unique index in generated patches).
-
-### `Key(): PropertyDecorator`
-
-Marks the single-column primary key.
-
-### `AuditableField(what: AuditableFieldType): PropertyDecorator`
-
-Marks a field as auditable (created_at, created_by, updated_at, updated_by, version).
+Build the annotation map for every class reachable from `entryFile`
+(usually the entity registry module). `compilerOptions` are taken from the
+nearest `tsconfig.json` so path aliases resolve correctly.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `what` | AuditableFieldType |  |
+| entryFile | `string` |  |
 
-### `DeletableField(what: DeletableFieldType): PropertyDecorator`
-
-Marks a field as deletable (deleted_at, deleted_by).
+### `field(entity, key): FieldRef<TEntity, K>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `what` | DeletableFieldType |  |
+| entity | `EntityClass` |  |
+| key | `K` |  |
 
-### `SynchronizableField(what: SynchronizableFieldType): PropertyDecorator`
+### `findAuditPage(repo, opts): Promise<AuditPageResult>`
 
-Marks a field as synchronizable (last_synced_at).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `what` | SynchronizableFieldType |  |
-
-### `CloneField(): PropertyDecorator`
-
-Marks a field as clone tracking (cloned_from). Stores UUID of the source record.
-
-### `AuditTrail(): ClassDecorator`
-
-Marks an entity as having an audit trail table.
-
-### `AuditTrailEntity(options: {   changedByColumn?: string }): ClassDecorator`
-
-Marks a class as BEING an audit trail entity (e.g., AuditLogEntity).
-Distinct from @AuditTrail() which marks an entity as HAVING an audit trail.
-The changedByColumn specifies which property holds the actor (default: "changed_by").
+Page through an entity audit table, newest first.
+`userEntity` — optional auditable-display-name join target (BE:
+`UserProfileEntity`). Without it, display-name columns are null.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `options` | &#123;   changedByColumn?: string &#125; |  |
+| repo | `AuditQueryable` |  |
+| opts | `AuditPageOptions & { userEntity: EntityClass }` |  |
 
-### `isEntityClass(value: unknown): value is EntityClass`
+### `findLikelyRenames(schema, table, entityOnly, databaseOnly, entityColumns, databaseColumns): RenameHeuristicResult`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `value` | unknown |  |
-
-### `getTableName(ctor: EntityClass): string`
+Greedy 1:1 matching: process tiers 0→n, within each tier stable order, no floats.
+Uses ordinal indexing to avoid scanning all DB-only columns for every entity-only column.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ctor` | EntityClass |  |
+| schema | `string` |  |
+| table | `string` |  |
+| entityOnly | `string[]` |  |
+| databaseOnly | `string[]` |  |
+| entityColumns | `Record<string, SchemaColumnMeta>` |  |
+| databaseColumns | `Record<string, SchemaColumnMeta>` |  |
 
-### `getQualifiedTableName(ctor: EntityClass): string`
+### `ForeignKey(target, opts): PropertyDecorator`
 
-Returns a schema-qualified table reference for SQL generation.
-When the entity has an explicit @Entity("table", "schema") override,
-returns ``"schema"."table"``. Otherwise returns just ``"table"`` (relies on search_path).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctor` | EntityClass |  |
-
-### `getEntityName(ctor: EntityClass): string`
-
-Logical entity name: the class name (e.g. ``CustomerEntity``).
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctor` | EntityClass |  |
-
-### `getColumnName(ctor: EntityClass, propertyKey: string | symbol): string`
+Declares a FOREIGN KEY constraint referencing another entity's column.
+`target` is a lazy thunk (`() => CustomerEntity`) so circular entity
+references resolve at meta-read time, not class-eval time.
+Minimal form `@ForeignKey(() => CustomerEntity)` references the target's
+`@Key()` column with `ON DELETE RESTRICT` / `ON UPDATE NO ACTION` —
+the zero-option path is the safest behavior.
+Note: a partitioned parent (`@PartitionField`) cannot be a plain FK target
+unless the referenced unique constraint includes the partition key —
+meta validation throws and points to `@PartitionChildOf` for that shape.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ctor` | EntityClass |  |
-| `propertyKey` | string | symbol |  |
+| target | `() => EntityClass` |  |
+| opts | `ForeignKeyOptions` |  |
 
-### `getPrimaryKeyColumn(ctor: EntityClass): string`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ctor` | EntityClass |  |
-
-### `listEntityPersistencePropertyKeys(ctor: EntityClass): string[]`
-
-Property keys that map to SQL columns (implicit + decorated).
+### `getColumnName(ctor, propertyKey): string`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ctor` | EntityClass |  |
+| ctor | `EntityClass` |  |
+| propertyKey | `string \| symbol` |  |
 
-### `getEntityPersistenceMeta(ctor: EntityClass, tableSchema: string): EntityPersistenceMeta`
+### `getDal(config): Dal`
+
+Returns the process-wide singleton Dal instance. Creates it on first call.
+
+- First call: requires `config`, creates the singleton.
+- Subsequent calls with NO config: returns the existing instance.
+- Subsequent calls with the SAME connectionString: returns the existing instance.
+- Subsequent calls with a DIFFERENT connectionString: throws (prevents accidental
+  double-init with wrong params).
+
+For multi-DB: construct `new Dal(config)` directly (bypasses the singleton).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| config | `DalConfig` |  |
+
+### `getEntityName(ctor): string`
+
+Logical entity name: the class name (e.g. `CustomerEntity`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
+### `getEntityPersistenceMeta(ctor, tableSchema): EntityPersistenceMeta`
 
 Snapshot fragment for one
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ctor` | EntityClass |  |
-| `tableSchema` | string |  |
+| ctor | `EntityClass` |  |
+| tableSchema | `string` |  |
 
-### `field(entity: EntityClass, key: K): FieldRef<TEntity, K>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `entity` | EntityClass |  |
-| `key` | K |  |
-
-### `quoteIdent(ident: string): string`
+### `getPrimaryKeyColumn(ctor): string`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `ident` | string |  |
+| ctor | `EntityClass` |  |
 
-### `buildSelectQuery(input: SelectQueryInput): SqlQuery`
+### `getQualifiedTableName(ctor): string`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `input` | SelectQueryInput |  |
-
-### `createStream(db: Queryable, text: string, values: unknown[]): AsyncIterable<TResult>`
-
-Creates an AsyncIterable from a SQL query using pg-query-stream.
+Returns a schema-qualified table reference for SQL generation.
+When the entity has an explicit @Entity("table", "schema") override,
+returns `"schema"."table"`. Otherwise returns just `"table"` (relies on search_path).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `db` | Queryable | The pg Pool or PoolClient |
-| `text` | string | SQL query text |
-| `values` | unknown[] | Parameter values |
+| ctor | `EntityClass` |  |
 
-&lt;!-- END --&gt;
+### `getSchemaDomain(): SchemaDomain \| null`
+
+### `getTableName(ctor): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
+### `hydrateEntityDateFieldsFromJson(instance, meta): void`
+
+After `Object.assign` from JSON, restore column-typed values on the
+entity: `instant` → `Date`, `decimal` → `Decimal` (wire `"N.Nd"` or a
+bare numeric string), `vector` → `Vector`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| instance | `T` |  |
+| meta | `EntityPersistenceMeta` |  |
+
+### `Index(): PropertyDecorator`
+
+Declares a secondary (non-unique) index. Bare `@Index()` → single-column
+btree auto-named `<table>_<col>_idx`. Same `name` on multiple columns →
+composite index ordered by `order`. Supports every PG access method:
+`@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
+`@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
+Unique indexes stay on `@Unique()`.
+
+### `isDecimal(v): v is Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
+### `isDriftClean(diff): boolean`
+
+True when the diff contains only database-only objects (extras we never
+drop) — i.e. no unapplied entity intent remains.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| diff | `SchemaMetaDiffV2` |  |
+
+### `isEntityClass(value): value is EntityClass`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| value | `unknown` |  |
+
+### `isISODate(v): v is ISODate`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
+### `isISOTime(v): v is ISOTime`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
+### `isLogicalJsDateColumn(h): boolean`
+
+Column carries a `Date`-valued property — an audit/deletable/sync `*_AT`
+field, an `instant` codec hint, or an explicit timestamptz/timestamp
+pgType. `date`/`time`/`timetz` columns are `ISODate`/`ISOTime` strings —
+NOT Dates — by contract.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| h | `ColumnPgPersistenceHints` |  |
+
+### `IsNotColumn(): PropertyDecorator`
+
+Excludes the property from meta schema / migration and from future DAL queries.
+
+### `isoDateFromUTCDate(d): ISODate`
+
+`Date` → `ISODate` using the date's UTC calendar day.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `Date` |  |
+
+### `isPeriodic(d): boolean`
+
+`true` when the value was produced by a truncated non-terminating division.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
+### `isUUID(v): v is UUID`
+
+Type guard — validates RFC 4122 layout (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, hex).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
+### `jsValueToPgParam(value, h): unknown`
+
+Value to pass to `node-pg` query parameters.
+`Date` → passthrough (timestamptz) or `YYYY-MM-DD` (SQL `date`);
+`Decimal` → plain numeric string; `Vector`/`number[]` → `'[…]'` literal;
+jsonb payloads → JSON string (nested bigint → number — jsonb numerics are
+doubles anyway and BigInt breaks JSON.stringify).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| value | `unknown` |  |
+| h | `ColumnPgPersistenceHints` |  |
+
+### `Key(): PropertyDecorator`
+
+Marks the single-column primary key.
+
+### `listEntityPersistencePropertyKeys(ctor): string[]`
+
+Property keys that map to SQL columns (implicit + decorated).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
+### `loadKeyring(keysPath): TrustedKey[]`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| keysPath | `string` |  |
+
+### `loadManifest(manifestPath): PatchManifest \| null`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| manifestPath | `string` |  |
+
+### `lookupEntityAnnotation(map, className, prop): EntityAnnotationInfo \| undefined`
+
+Walk the `extends` chain (subclass first — wins on conflicts, matching the
+decorator-merge semantics of `getEntityPersistenceMeta`). Returns the
+annotation info for `prop` on `className`, or `undefined` when the chain
+declares no such property.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| map | `EntityAnnotationMap` |  |
+| className | `string` |  |
+| prop | `string` |  |
+
+### `makeEntityService(cfg): EntityService<TEntity>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `EntityServiceConfig<TEntity>` |  |
+
+### `makeTableAuditPort(repo): AuditPort`
+
+`makeTableAuditPort` — writes audit log rows to `{tableName}_audit` via the
+given repository. This is the service-side counterpart of the BE's
+`EntityAuditPort`, minus the Redis/NATS entity-changed markers (those
+belong to gateway collaboration infra). The audit row write itself is
+always performed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| repo | `Repository` |  |
+
+### `manifestPaths(dbMetaDir): { manifestPath: string; keysPath: string }`
+
+Resolve manifest + keyring paths for a service's db-meta dir.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| dbMetaDir | `string` |  |
+
+### `normalizePatchEol(body): string`
+
+Patch integrity hashes are EOL-insensitive: a Windows checkout may
+materialize CRLF while the committed blob and the signed MANIFEST are LF.
+Normalize before hashing so manifest verification and the patch registry
+are platform-stable.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| body | `string` |  |
+
+### `parsePatchPragmas(raw): { requiresReview: boolean; noTransaction: boolean }`
+
+Parse the `-- pb:*` pragma header of a patch file.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `string` |  |
+
+### `parsePatchSegments(raw): PatchSegment[]`
+
+Split a patch file into execution segments. Default content is transactional
+(`tx`); statements inside `-- pb:begin-no-transaction` … `-- pb:end-no-transaction`
+run per-statement in autocommit (for CREATE INDEX CONCURRENTLY & friends).
+Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `string` |  |
+
+### `PartitionChildOf(opts): ClassDecorator`
+
+Declares this entity a logical child of a `@PartitionField`-partitioned
+parent: it joins the parent's atomic delete and retention purge unit.
+Needed because a partitioned parent cannot host a plain FOREIGN KEY
+(unique constraints must contain the partition key) — the relationship
+is application-level, enforced by the repository cascade and the
+partition-maintenance purge. Entities that merely REFERENCE a parent
+(telemetry, logs) simply don't declare this.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `PartitionChildOfOptions` |  |
+
+### `PartitionField(opts): PropertyDecorator`
+
+Marks a column as the RANGE partition key of the table (pg_partman,
+monthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and
+date/timestamptz-typed; every unique group and the primary key emitted in
+DDL must include it (PostgreSQL requirement) — `getEntityPersistenceMeta`
+validates this and throws otherwise, so a partitioned entity can never
+produce an invalid table definition.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `PartitionFieldOptions` |  |
+
+### `patchNameFromFilename(filename): string`
+
+The registry identity of a patch is its filename minus the `.sql` extension.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| filename | `string` |  |
+
+### `patchRegistryDdl(schema): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `string` |  |
+
+### `patchSlugFromDiff(diff): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| diff | `SchemaMetaDiffV2` |  |
+
+### `pgTypeFromAnnotation(a): string \| null`
+
+Annotation → base pg type. Returns `null` for unmappable annotations —
+the caller decides whether that's an error (schema pipeline) or a
+non-authoritative runtime hint.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `EntityAnnotationInfo` |  |
+
+### `pgValueToJsValue(value, h): unknown`
+
+Normalise a driver value into the entity-side type: `Date` for date-like
+columns, `Decimal` for numeric columns, `Vector` for vector columns.
+Driver-native shapes (pg already returns `Date`/`bigint`/arrays) pass
+through unchanged.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| value | `unknown` |  |
+| h | `ColumnPgPersistenceHints` |  |
+
+### `quoteIdent(ident): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ident | `string` |  |
+
+### `registryStatus(pool, schema): Promise<PatchRegistryRow[]>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pool | `Pool` |  |
+| schema | `string` |  |
+
+### `resetDal(): Promise<void>`
+
+Resets the singleton. Closes the existing instance if any.
+Intended for tests — call in afterAll to release the pool.
+
+### `resetSchemaDomain(): void`
+
+Test hook — clears the configured domain.
+
+### `resolveEntitySchema(meta, fallback): string`
+
+Resolve the effective schema of an entity: the explicit
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `{ tableSchema: string; tableName: string }` |  |
+| fallback | `string` |  |
+
+### `resolveManually(pool, schema, patchName, actor, note): Promise<boolean>`
+
+Operator escape hatch: mark a failed/pending patch as manually resolved.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pool | `Pool` |  |
+| schema | `string` |  |
+| patchName | `string` |  |
+| actor | `string` |  |
+| note | `string` |  |
+
+### `resolvePgTypeForSchema(h): string`
+
+Authoritative resolve for the schema pipeline: explicit `pgType`, else
+semantic decorator pin, else annotation inference. Throws when none can
+produce a type — an unmappable entity property must never silently
+become `text`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| h | `EntityColumnTypeHints` |  |
+
+### `retryFailedPatches(pool, schema, actor): Promise<number>`
+
+failed → pending: next runMigrations retries them (and past them, in order).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pool | `Pool` |  |
+| schema | `string` |  |
+| actor | `string` |  |
+
+### `runMigrations(opts): Promise<MigrationRunResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `MigrationEngineOptions` |  |
+
+### `runPartitionMaintenance(client, entities): Promise<PartitionMaintenanceReport>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| client | `PoolClient` |  |
+| entities | `typeOperator` |  |
+
+### `sha256Hex(body): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| body | `string` |  |
+
+### `signManifest(manifest, privateKeyB64): PatchManifest`
+
+Sign a manifest body (entries already updated) with a PEM/DER private key.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| manifest | `Omit<PatchManifest, "signature">` |  |
+| privateKeyB64 | `string` |  |
+
+### `slugifyPatchSegment(s): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| s | `string` |  |
+
+### `splitSqlStatements(sql): string[]`
+
+Top-level SQL statement splitter for `-- pb:no-transaction` segments.
+
+Needed because node-pg's simple query protocol executes a multi-statement
+string in a single implicit transaction — to get per-statement autocommit
+(required for CREATE INDEX CONCURRENTLY etc.) statements must be sent
+separately. Handles: single/double-quoted strings, dollar-quoted bodies
+($$…$$, $tag$…$tag$), line comments, block comments.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| sql | `string` |  |
+
+### `SynchronizableField(what): PropertyDecorator`
+
+Marks a field as synchronizable (last_synced_at).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| what | `SynchronizableFieldType` |  |
+
+### `syncImplicitEntityColumns(ctor): void`
+
+Registers every implicit column + `design:type` / nullability when not already set by decorators.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `Function` |  |
+
+### `tableKey(schema, name): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `string` |  |
+| name | `string` |  |
+
+### `toISODate(v): ISODate`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `toISOTime(v): ISOTime`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `toUUID(v): UUID`
+
+Validating constructor — throws on malformed input. Use at system boundaries (request bodies, env, user input).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `translateFilterConditions(entity, conditions, options): FilterExpr[] \| null`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
+| conditions | `ListFilterCondition[] \| null \| undefined` |  |
+| options | `ListFilterOptions` |  |
+
+### `trustedISODate(v): ISODate`
+
+Zero-cost cast for trusted sources (DB rows).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `trustedISOTime(v): ISOTime`
+
+Zero-cost cast for trusted sources (DB rows).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `trustedUUID(v): UUID`
+
+Zero-cost cast for trusted sources (DB rows, values already validated upstream). Named explicitly so reviews can spot it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `typesCompatibleForRename(a, b): boolean`
+
+True if two metas are “same enough” for rename pairing (not for strict migration).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `SchemaColumnMeta` |  |
+| b | `SchemaColumnMeta` |  |
+
+### `Unique(): PropertyDecorator`
+
+Unique constraint (PostgreSQL: unique index in generated patches).
+
+### `utcTimestampForFilename(d): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `Date` |  |
+
+### `verifyManifest(manifest, keyring, allowedTrust): TrustedKey`
+
+Verify manifest signature against the keyring (filtered by allowed trust levels).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| manifest | `PatchManifest` |  |
+| keyring | `TrustedKey[]` |  |
+| allowedTrust | `typeOperator` |  |
+
+### `writeManifest(manifestPath, manifest): void`
+
+Write manifest (used by compare/sign tooling).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| manifestPath | `string` |  |
+| manifest | `PatchManifest` |  |
+
+<!-- END -->
