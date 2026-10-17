@@ -36,13 +36,13 @@
   },
   "scripts": {
     "version:auto": "node scripts/version-sync.mjs",
-    "prebuild": "node scripts/version-sync.mjs && pnpm check:standards",
+    "prebuild": "node scripts/version-sync.mjs && pnpm check:standards && pnpm extract-docs",
     "build": "tsc",
     "prepare": "tsc",
     "test": "pnpm check:standards && vitest run",
     "test:watch": "vitest",
     "test:benchmark": "vitest run --config test/benchmark.vitest.config.ts",
-    "extract-docs": "node scripts/extract-api-docs.mjs",
+    "extract-docs": "node scripts/extract-api-docs.mjs && node scripts/render-api-reference.mjs",
     "check:standards": "node tools/check-standards.ts src --profile=lib"
   },
   "publishConfig": {
@@ -51,7 +51,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
-    "@primebrick/decimal": "^3.0.0",
+    "@primebrick/decimal": "3.0.0",
     "pg": "8.22.0",
     "pg-query-stream": "4.16.0",
     "reflect-metadata": "0.2.2"
