@@ -38,6 +38,16 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Docs freshness check
+        # `pnpm build` already regenerated docs/ via prebuild+extract-docs —
+        # a dirty docs/ tree here means the committed extraction is stale.
+        run: |
+          if [ -n "$(git status --porcelain -- docs/)" ]; then
+            echo "::error::docs/ is stale — run 'pnpm extract-docs' and commit the result"
+            git status --porcelain -- docs/
+            exit 1
+          fi
+
       - name: Publish to NPM (OIDC Trusted Publishing)
         # No NPM_TOKEN env var — OIDC handles authentication.
         # Requires Trusted Publisher configured on npmjs.com:

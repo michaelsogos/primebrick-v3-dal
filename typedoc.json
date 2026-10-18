@@ -7,6 +7,7 @@
   "excludeInternal": true,
   "excludeProtected": false,
   "includeVersion": true,
+  "gitRevision": "main",
   "name": "@primebrick/dal-pg API Reference",
   "sort": ["source-order"]
 }
