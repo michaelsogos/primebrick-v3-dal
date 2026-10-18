@@ -277,26 +277,16 @@ import "reflect-metadata";
 import {
   getDal, Repository, AuditLogEntity,
   Entity, Column, Key, Unique, AuditTrail,
-  AuditableField, AuditableFieldType,
-  DeletableField, DeletableFieldType,
+  EntityBase, Auditable, Deletable,
   type AuditPort,
 } from "@primebrick/dal-pg";
 
 @Entity("customers")
 @AuditTrail()
-export class CustomerEntity {
+export class CustomerEntity extends Deletable(Auditable(EntityBase)) {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
   @Column() name!: string;
-
-  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION)    version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ nullable: true }) deleted_at?: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ nullable: true }) deleted_by?: string | null;
 }
 
 const dal = getDal({ connectionString: process.env.DATABASE_URL!, schema: "myapp" });

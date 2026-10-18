@@ -5,13 +5,9 @@ import {
   Column,
   Key,
   Unique,
-  AuditableField,
-  AuditableFieldType,
-  DeletableField,
-  DeletableFieldType,
   AuditTrail,
 } from "../meta/entity-decorators.js";
-import type { IAuditableEntity } from "../types/entities.js";
+import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 
 /**
  * TranslationEntityBase — standard i18n translations table entity.
@@ -46,7 +42,8 @@ import type { IAuditableEntity } from "../types/entities.js";
  */
 @Entity("translations")
 @AuditTrail()
-export abstract class TranslationEntityBase implements IAuditableEntity {
+export abstract class TranslationEntityBase
+  extends Deletable(Auditable(EntityBase)) {
   @Key()
   @Column({ pgType: "bigint" })
   id!: bigint;
@@ -68,25 +65,4 @@ export abstract class TranslationEntityBase implements IAuditableEntity {
   /** Translated string value. */
   @Column({ nullable: false })
   value!: string;
-
-  @AuditableField(AuditableFieldType.CREATED_AT)
-  created_at!: Date;
-
-  @AuditableField(AuditableFieldType.CREATED_BY)
-  created_by!: string;
-
-  @AuditableField(AuditableFieldType.UPDATED_AT)
-  updated_at!: Date;
-
-  @AuditableField(AuditableFieldType.UPDATED_BY)
-  updated_by!: string;
-
-  @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT)
-  deleted_at?: Date;
-
-  @DeletableField(DeletableFieldType.DELETED_BY)
-  deleted_by?: string;
 }

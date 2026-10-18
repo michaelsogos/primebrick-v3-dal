@@ -276,27 +276,59 @@ import type {
 |-----------|-------|---------|
 | `IExposableEntity` | `uuid: string` | Entity has a public UUID safe to expose outside the system |
 | `IDeletableEntity` | `deleted_at?: Date; deleted_by?: string` | Entity supports soft delete |
-| `IAuditableEntity` | extends `IDeletableEntity` + `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Entity has full audit trail + soft delete |
+| `IAuditableEntity` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Entity has audit stamps + optimistic-lock version |
 | `IClonableEntity` | `cloned_from?: string` | Entity supports cloning |
+
+`IAuditableEntity` and `IDeletableEntity` are **independent** capabilities —
+an entity can be audited but hard-deleted (`api_keys`), deletable but not
+audited, both, or neither. Compose them with `&` where a signature needs
+both (the Dal write-path already does: `TEntity extends IAuditableEntity &
+IDeletableEntity` for `delete`/`restore`).
+
+## Capability mixins — declare shared columns once
+
+`@AuditableField` and `@DeletableField` are the underlying machinery, but
+standard entities **never apply them by hand** — the same five audit columns
+and two delete markers would be copy-pasted into every entity. The library
+exports mixin factories that own the field set in a single declaration:
+
+```typescript
+import {
+  EntityBase, Auditable, Deletable,
+} from "@primebrick/dal-pg";
+```
+
+| Composition | Columns added | Use when |
+|-------------|---------------|----------|
+| `Auditable(EntityBase)` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Every audited entity |
+| `Deletable(EntityBase)` | `deleted_at`, `deleted_by` | Soft-delete entities |
+| `Deletable(Auditable(EntityBase))` | all seven | The common case |
+| `EntityBase` alone | none | Plain tables (logs, telemetry) |
+
+Each mixin is a real class in the prototype chain — the persistence layer
+merges decorated columns from every ancestor, so the subclass only declares
+its domain columns. Extra type-level capabilities keep their `implements`
+on the concrete class (`IExposableEntity`, `IClonableEntity`, …).
 
 ## A complete entity
 
 Putting it all together — an entity with PK, UUID, business fields, audit
-fields, soft delete, and clone tracking:
+columns, soft delete, and clone tracking:
 
 ```typescript
 import "reflect-metadata";
 import {
   Entity, Column, Key, Unique,
-  AuditableField, AuditableFieldType,
-  DeletableField, DeletableFieldType,
   CloneField, AuditTrail,
+  EntityBase, Auditable, Deletable,
 } from "@primebrick/dal-pg";
-import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@primebrick/dal-pg";
+import type { IClonableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
 @AuditTrail()
-export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
+export class CustomerEntity
+  extends Deletable(Auditable(EntityBase))
+  implements IClonableEntity {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
 
@@ -304,16 +336,18 @@ export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClon
   @Column({ nullable: false }) email!: string;
   @Column({ nullable: false, defaultSql: "false" }) is_active!: boolean;
 
-  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION)    version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) deleted_by?: string | null;
-
   @CloneField() cloned_from?: UUID | null;
+}
+```
+
+A hard-delete audited entity simply drops `Deletable`:
+
+```typescript
+@Entity("api_keys")
+export class ApiKeyEntity extends Auditable(EntityBase) {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ nullable: false }) key_hash!: string;
 }
 ```
 

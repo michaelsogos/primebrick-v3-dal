@@ -673,6 +673,10 @@ Code: `ERR04`. HTTP 409.
 |-----------|------|-------------|
 | message | `string` |  |
 
+### `EntityBase`
+
+Composition root — empty on purpose. `extends Mixin(EntityBase)`.
+
 ### `ManifestError`
 
 | Property | Type | Description |
@@ -1042,11 +1046,6 @@ Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/b
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | `bigint` |  |
-| uuid | `string` |  |
-| key | `string` | Full dot-path translation key (e.g. 'app.auth.login.title'). |
-| language | `string` | BCP 47 language tag (e.g. 'it-IT', 'en-GB'). |
-| value | `string` | Translated string value. |
 | created_at | `Date` |  |
 | created_by | `string` |  |
 | updated_at | `Date` |  |
@@ -1054,6 +1053,11 @@ Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/b
 | version | `number` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
+| id | `bigint` |  |
+| uuid | `string` |  |
+| key | `string` | Full dot-path translation key (e.g. 'app.auth.login.title'). |
+| language | `string` | BCP 47 language tag (e.g. 'it-IT', 'en-GB'). |
+| value | `string` | Translated string value. |
 
 ### `UnknownColumnError`
 
@@ -1268,12 +1272,13 @@ The contract every entity service must satisfy — enforced on the router.
 
 ### `IAuditableEntity`
 
-Entity has full audit trail (created_at/by, updated_at/by, version) + soft-delete.
+Entity has audit stamps (created_at/by, updated_at/by, version).
+Does NOT imply soft-delete — auditable and deletable are independent
+capabilities; compose with `IAuditableEntity & IDeletableEntity` where
+both are required (the Dal write-path signatures already do this).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| deleted_at | `Date` |  |
-| deleted_by | `string` |  |
 | created_at | `Date` |  |
 | created_by | `string` |  |
 | updated_at | `Date` |  |
@@ -1440,6 +1445,29 @@ for: `sqlName` / `pgType` / `nullable`, or a short alias for the column name.
 **Type:** `(args: any[]) => object`
 
 ### `EntityColumnTypeHints`
+
+### `EntityCtor`
+
+Entity capability mixins — declare shared audit/deletable columns ONCE,
+compose them per-entity instead of copy-pasting decorated fields.
+
+Auditable and deletable are ORTHOGONAL capabilities:
+  - audit-only  (hard delete): `class ApiKey extends Auditable(EntityBase)`
+  - delete-only:               `class Tag extends Deletable(EntityBase)`
+  - both (soft delete):        `class Customer extends Deletable(Auditable(EntityBase))`
+  - neither:                   `class Telemetry extends EntityBase`
+
+The concrete entity still owns `@Entity(table)` and the opt-in
+`@AuditTrail()` (audit-log table — separate decision from audit columns).
+Field decorators on each anonymous mixin class register on that
+constructor; `getEntityPersistenceMeta` merges the whole prototype chain
+parent-first (see collectMetaChain), so subclass fields always win.
+
+Extra per-entity capabilities (`IExposableEntity`, `IClonableEntity`, …)
+keep their `implements` on the concrete class — they are pure type
+contracts, not column sets.
+
+**Type:** `(args: any[]) => object`
 
 ### `EntityPersistenceMeta`
 
@@ -1849,6 +1877,16 @@ annotation family (e.g. `UUID` + `pgType:"text"`, `number` + `pgType:
 | explicitPgType | `string` |  |
 | propertyKey | `string` |  |
 
+### `Auditable(Base): { prototype: AuditableEntity<any> } & TBase`
+
+Adds created_at / created_by / updated_at / updated_by / version
+(optimistic-lock column). Does NOT add soft-delete — compose `Deletable`
+when the entity needs it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| Base | `TBase` |  |
+
 ### `AuditableField(what): PropertyDecorator`
 
 Marks a field as auditable (created_at, created_by, updated_at, updated_by, version).
@@ -2113,6 +2151,14 @@ PostgreSQL parameter form — plain canonical decimal string, no `d` suffix.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `Deletable(Base): { prototype: DeletableEntity<any> } & TBase`
+
+Adds deleted_at / deleted_by — soft-delete markers.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| Base | `TBase` |  |
 
 ### `DeletableField(what): PropertyDecorator`
 
