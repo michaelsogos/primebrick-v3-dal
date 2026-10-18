@@ -57,24 +57,17 @@ The entity must implement `IAuditableEntity` and `IClonableEntity`, and have at
 least one `@CloneField` column:
 
 ```typescript
-import { Entity, Column, Key, Unique, AuditableField, DeletableField, CloneField } from "@primebrick/dal-pg";
-import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "@primebrick/dal-pg";
+import { Entity, Column, Key, Unique, CloneField, EntityBase, Auditable, Deletable } from "@primebrick/dal-pg";
+import type { IClonableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
-export class CustomerEntity implements IAuditableEntity, IDeletableEntity, IClonableEntity {
+export class CustomerEntity
+  extends Deletable(Auditable(EntityBase))
+  implements IClonableEntity {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
   @Column() name!: string;
   @Column() email!: string;
-
-  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION) version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT) @Column({ nullable: true }) deleted_at?: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) @Column({ nullable: true }) deleted_by?: string | null;
 
   @CloneField() @Column({ nullable: true }) cloned_from?: UUID | null;
 }

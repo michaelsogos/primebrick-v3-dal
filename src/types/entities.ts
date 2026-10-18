@@ -9,8 +9,13 @@ export interface IDeletableEntity {
   deleted_by?: string;
 }
 
-/** Entity has full audit trail (created_at/by, updated_at/by, version) + soft-delete. */
-export interface IAuditableEntity extends IDeletableEntity {
+/**
+ * Entity has audit stamps (created_at/by, updated_at/by, version).
+ * Does NOT imply soft-delete — auditable and deletable are independent
+ * capabilities; compose with `IAuditableEntity & IDeletableEntity` where
+ * both are required (the Dal write-path signatures already do this).
+ */
+export interface IAuditableEntity {
   created_at: Date;
   created_by: string;
   updated_at: Date;

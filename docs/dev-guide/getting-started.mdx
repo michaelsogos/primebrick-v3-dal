@@ -81,40 +81,41 @@ process.on("SIGTERM", async () => {
 
 ## 3. Define your first entity
 
-Entities are plain TypeScript classes decorated with `@Entity`, `@Key`,
-`@Column`, and `@AuditableField`. The class maps to a table; each decorated
-property maps to a column. snake_case is used everywhere — DB column, TS
-property, JSON response.
+Entities are plain TypeScript classes decorated with `@Entity`, `@Key`, and
+`@Column`. The class maps to a table; each decorated property maps to a
+column. snake_case is used everywhere — DB column, TS property, JSON
+response.
+
+Shared capability columns (audit stamps, soft-delete markers) are **never
+declared by hand** — compose them once via the `Auditable` / `Deletable`
+mixin factories on `EntityBase`:
 
 ```typescript
 // src/entities/customer.entity.ts
 import {
   Entity, Column, Key, Unique,
-  AuditableField, AuditableFieldType,
-  DeletableField, DeletableFieldType,
+  EntityBase, Auditable, Deletable,
 } from "@primebrick/dal-pg";
-import type { IAuditableEntity, IDeletableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
-export class CustomerEntity implements IAuditableEntity, IDeletableEntity {
+export class CustomerEntity extends Deletable(Auditable(EntityBase)) {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
   @Column({ nullable: false }) name!: string;
   @Column({ nullable: false }) email!: string;
-
-  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
-  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
-  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
-  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
-  @AuditableField(AuditableFieldType.VERSION) version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date | null;
-  @DeletableField(DeletableFieldType.DELETED_BY) deleted_by?: string | null;
 }
 ```
 
-The `@AuditableField(AuditableFieldType.VERSION)` column is what powers
-optimistic locking — see [Optimistic locking](./optimistic-lock).
+`Auditable(EntityBase)` adds `created_at`, `created_by`, `updated_at`,
+`updated_by`, `version`; `Deletable(...)` adds `deleted_at`, `deleted_by`.
+They are independent capabilities — an entity audited but hard-deleted uses
+`extends Auditable(EntityBase)` alone (e.g. `api_keys`, `role_mappings`), a
+deletable-but-not-audited entity uses `extends Deletable(EntityBase)`.
+Never redeclare these fields on the concrete class — the mixin owns the
+column metadata and the field type in one declaration.
+
+The `version` column provided by `Auditable` is what powers optimistic
+locking — see [Optimistic locking](./optimistic-lock).
 
 ## 4. Run your first query
 

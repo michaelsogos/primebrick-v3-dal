@@ -48,7 +48,11 @@ export type EntityAnnotationInfo = {
 
 type ClassEntry = {
   props: Map<string, EntityAnnotationInfo>;
-  extendsName?: string;
+  /** Base class names, nearest-first, transitively resolved via the type
+   *  checker — mixin compositions (`Deletable(Auditable(EntityBase))`) are
+   *  call expressions and generic `extends Base` params, so only the
+   *  resolved base-type symbols reveal the real ancestor classes. */
+  extendsNames: string[];
 };
 
 /** Result of `extractEntityAnnotations` — keyed by class name. */
@@ -69,14 +73,16 @@ export function lookupEntityAnnotation(
   className: string,
   prop: string,
 ): EntityAnnotationInfo | undefined {
-  let cursor: string | undefined = className;
+  const queue: string[] = [className];
   const seen = new Set<string>();
-  while (cursor && !seen.has(cursor)) {
+  while (queue.length) {
+    const cursor = queue.shift()!;
+    if (seen.has(cursor)) continue;
     seen.add(cursor);
     const entry = map.classes.get(cursor);
     const hit = entry?.props.get(prop);
     if (hit) return hit;
-    cursor = entry?.extendsName;
+    if (entry) queue.push(...entry.extendsNames);
   }
   return undefined;
 }
@@ -114,9 +120,29 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
     ts.forEachChild(sf, function visit(node) {
       if (ts.isClassDeclaration(node) && node.name) {
         const className = node.name.getText(sf);
-        const extendsClause = node.heritageClauses
-          ?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)
-          ?.types[0]?.expression.getText(sf);
+        // Resolve base classes transitively via the type checker — the
+        // `extends` clause may be a plain identifier, a mixin call
+        // expression (`Deletable(Auditable(EntityBase))`), or a generic
+        // param (`extends Base`). getBaseTypes on the declared instance
+        // type yields the real ancestor chain in declaration order.
+        const extendsNames: string[] = [];
+        const classSym = checker.getTypeAtLocation(node.name).getSymbol()
+          ?? checker.getSymbolAtLocation(node.name);
+        if (classSym) {
+          const instType = checker.getDeclaredTypeOfSymbol(classSym);
+          const visitBase = (t: ts.Type) => {
+            const bases = (t as ts.InterfaceType).getBaseTypes?.() ?? [];
+            for (const b of bases) {
+              for (const cand of (b.isIntersection?.() ? b.types : [b])) {
+                const n = cand.getSymbol()?.getName()
+                  ?? (cand as { aliasSymbol?: ts.Symbol }).aliasSymbol?.getName();
+                if (n && n !== className && !extendsNames.includes(n)) extendsNames.push(n);
+                visitBase(cand);
+              }
+            }
+          };
+          visitBase(instType);
+        }
         const props = new Map<string, EntityAnnotationInfo>();
         for (const m of node.members) {
           if (!ts.isPropertyDeclaration(m) || !m.name || !ts.isIdentifier(m.name)) continue;
@@ -191,9 +217,11 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
         if (existing) {
           // First declaration wins for extends; merge props (later wins).
           for (const [k, v] of props) existing.props.set(k, v);
-          if (!existing.extendsName && extendsClause) existing.extendsName = extendsClause;
+          for (const n of extendsNames) {
+            if (!existing.extendsNames.includes(n)) existing.extendsNames.push(n);
+          }
         } else {
-          classes.set(className, { props, extendsName: extendsClause });
+          classes.set(className, { props, extendsNames });
         }
       }
       ts.forEachChild(node, visit);

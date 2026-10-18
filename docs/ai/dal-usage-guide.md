@@ -599,6 +599,11 @@ displayName!: string;
 
 ### `@AuditableField(type)`
 
+**Prefer the capability mixins** — `Auditable(EntityBase)` adds all five audit
+columns and `Deletable(EntityBase)` adds both soft-delete markers in a single
+inherited declaration (`extends Deletable(Auditable(EntityBase))`). Apply the
+field decorators by hand only for non-standard single fields.
+
 Marks a field as an audit column. Types: `CREATED_AT`, `CREATED_BY`, `UPDATED_AT`, `UPDATED_BY`, `VERSION`.
 
 ```typescript
