@@ -19,6 +19,7 @@
  * pipeline never pay for it.
  */
 import path from "node:path";
+import type * as ts from "typescript";
 
 /** Per-property type facts extracted from source. */
 export type EntityAnnotationInfo = {
@@ -128,8 +129,8 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
         const extendsNames: string[] = [];
         const classSym = checker.getTypeAtLocation(node.name).getSymbol()
           ?? checker.getSymbolAtLocation(node.name);
-        if (classSym) {
-          const instType = checker.getDeclaredTypeOfSymbol(classSym);
+        const instType = classSym ? checker.getDeclaredTypeOfSymbol(classSym) : undefined;
+        if (classSym && instType) {
           const visitBase = (t: ts.Type) => {
             const bases = (t as ts.InterfaceType).getBaseTypes?.() ?? [];
             for (const b of bases) {
@@ -143,12 +144,11 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
           };
           visitBase(instType);
         }
-        const props = new Map<string, EntityAnnotationInfo>();
-        for (const m of node.members) {
-          if (!ts.isPropertyDeclaration(m) || !m.name || !ts.isIdentifier(m.name)) continue;
-          const propDecos = ts.getDecorators(m) ?? [];
-          if (propDecos.some((d) => NON_COLUMN_DECORATOR_RE.test(d.expression.getText(sf)))) continue;
-          const prop = m.name.getText(sf);
+        const extractProp = (m: ts.PropertyDeclaration | ts.PropertySignature, mSf: ts.SourceFile): [string, EntityAnnotationInfo] | undefined => {
+          if (!m.name || !ts.isIdentifier(m.name)) return undefined;
+          const propDecos = ts.isPropertyDeclaration(m) ? (ts.getDecorators(m) ?? []) : [];
+          if (propDecos.some((d) => NON_COLUMN_DECORATOR_RE.test(d.expression.getText(mSf)))) return undefined;
+          const prop = m.name.getText(mSf);
           try {
             let t = checker.getTypeAtLocation(m.name);
             // strip null/undefined union members — nullability tracked separately
@@ -177,7 +177,7 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
             } else if (
               m.type &&
               ts.isTypeReferenceNode(m.type) &&
-              m.type.typeName.getText(sf) === "Array"
+              m.type.typeName.getText(mSf) === "Array"
             ) {
               isArray = true;
               const arg = m.type.typeArguments?.[0];
@@ -196,9 +196,9 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
               !!(t.flags & (ts.TypeFlags.ESSymbol | ts.TypeFlags.UniqueESSymbol)) ||
               (t.isUnion() && !isStringLiteralUnion) ||
               (t.isIntersection() && !isObjectLike);
-            props.set(prop, {
+            return [prop, {
               prop,
-              annotation: m.type ? m.type.getText(sf) : "(none)",
+              annotation: m.type ? m.type.getText(mSf) : "(none)",
               typeName: checker.typeToString(t),
               optional: !!m.questionToken,
               nullableUnion,
@@ -207,10 +207,29 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
               isStringLiteralUnion,
               isObjectLike,
               isUnmappable,
-              file: sf.fileName,
-            });
+              file: mSf.fileName,
+            }];
           } catch {
             /* unresolvable type — prop skipped; typecheck surfaces the cause */
+            return undefined;
+          }
+        };
+        const props = new Map<string, EntityAnnotationInfo>();
+        for (const m of node.members) {
+          if (!ts.isPropertyDeclaration(m)) continue;
+          const ex = extractProp(m, sf);
+          if (ex) props.set(ex[0], ex[1]);
+        }
+        // Inherited members (base classes + mixin class expressions, possibly
+        // anonymous and living in .d.ts): the checker's flattened property
+        // list resolves every ancestor; subclass declarations always win.
+        if (instType) {
+          for (const sym of checker.getPropertiesOfType(instType)) {
+            if (props.has(sym.name)) continue;
+            const vd = sym.valueDeclaration ?? sym.declarations?.[0];
+            if (!vd || !(ts.isPropertyDeclaration(vd) || ts.isPropertySignature(vd))) continue;
+            const ex = extractProp(vd, vd.getSourceFile());
+            if (ex) props.set(ex[0], ex[1]);
           }
         }
         const existing = classes.get(className);
