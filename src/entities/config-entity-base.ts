@@ -5,13 +5,9 @@ import {
   Column,
   Key,
   Unique,
-  AuditableField,
-  AuditableFieldType,
-  DeletableField,
-  DeletableFieldType,
   AuditTrail,
 } from "../meta/entity-decorators.js";
-import type { IAuditableEntity } from "../types/entities.js";
+import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 
 /**
  * ConfigEntityBase — standard dictionary-style config table entity.
@@ -40,7 +36,8 @@ import type { IAuditableEntity } from "../types/entities.js";
  */
 @Entity("config")
 @AuditTrail()
-export abstract class ConfigEntityBase implements IAuditableEntity {
+export abstract class ConfigEntityBase
+  extends Deletable(Auditable(EntityBase)) {
   @Key()
   @Column({ pgType: "bigint" })
   id!: bigint;
@@ -81,25 +78,4 @@ export abstract class ConfigEntityBase implements IAuditableEntity {
   /** Optional grouping key for UI display. null/empty = ungrouped (top of list). */
   @Column({ length: 100, nullable: true })
   group_key?: string | null;
-
-  @AuditableField(AuditableFieldType.CREATED_AT)
-  created_at!: Date;
-
-  @AuditableField(AuditableFieldType.CREATED_BY)
-  created_by!: string;
-
-  @AuditableField(AuditableFieldType.UPDATED_AT)
-  updated_at!: Date;
-
-  @AuditableField(AuditableFieldType.UPDATED_BY)
-  updated_by!: string;
-
-  @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
-
-  @DeletableField(DeletableFieldType.DELETED_AT)
-  deleted_at?: Date;
-
-  @DeletableField(DeletableFieldType.DELETED_BY)
-  deleted_by?: string;
 }

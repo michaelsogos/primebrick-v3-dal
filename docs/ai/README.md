@@ -13,15 +13,13 @@ This directory contains AI-first documentation for the Primebrick Data Access La
 The DAL provides a `Repository` class that reads entity metadata at runtime to generate parameterized SQL. Entities are plain TS classes decorated with `@Entity`, `@Column`, `@Key`, `@Unique`, `@AuditableField`, `@DeletableField`.
 
 ```typescript
-import { Entity, Key, Unique, Column, AuditableField, DeletableField, AuditableFieldType, DeletableFieldType } from "@primebrick/dal-pg";
+import { Entity, Key, Unique, Column, EntityBase, Auditable, Deletable } from "@primebrick/dal-pg";
 
 @Entity("my_table")
-class MyEntity {
+class MyEntity extends Deletable(Auditable(EntityBase)) {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
   @Column({ length: 255 }) name!: string;
-  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
-  @DeletableField(DeletableFieldType.DELETED_AT) deleted_at?: Date;
 }
 
 const row = await dal.add(MyEntity, { name: "test" }, { actor: "user1" });

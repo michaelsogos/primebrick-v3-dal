@@ -205,6 +205,15 @@ export { calculateDelta, calculateDeltaWithForcedFields } from "./audit/delta-ca
 
 export { AuditLogEntity } from "./audit/audit-log-entity.js";
 
+// Entity capability mixins — declare shared audit/deletable columns once,
+// compose per-entity: `class E extends Deletable(Auditable(EntityBase))`
+export {
+  EntityBase,
+  Auditable,
+  Deletable,
+  type EntityCtor,
+} from "./entities/entity-base.js";
+
 // Config entity base — standard dictionary-style config table entity
 export { ConfigEntityBase } from "./entities/config-entity-base.js";
 
