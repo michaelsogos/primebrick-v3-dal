@@ -370,6 +370,10 @@ Generic DAL error with a stable `code` field.
 
 ### `Decimal`
 
+### `DecimalError`
+
+Errors raised by @primebrick/decimal.
+
 ### `Deferred`
 
 Handle for a buffered operation's future result. NOT a Promise — awaiting
@@ -1119,6 +1123,17 @@ Parse the pgvector literal `'[v1,v2,…]'` (or a plain number array).
 
 ## Interfaces
 
+### `AdvancedFilter`
+
+One advanced-filter entry (filters sheet / `filters[i][...]` URL params).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | `string` |  |
+| field | `string` |  |
+| operator | `FilterOperator` |  |
+| value | `unknown` |  |
+
 ### `AggregateDecl`
 
 Declarative aggregate rollup projected into list rows.
@@ -1173,6 +1188,15 @@ The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
 | uuid | `string` |  |
 | version | `number` |  |
 
+### `CollaborationMeta`
+
+Collaboration fragment injected by `assembleMeta` at serve time.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| enabled | `boolean` |  |
+| expose_editing_value | `boolean` |  |
+
 ### `DalConfig`
 
 Configuration for the Dal gateway.
@@ -1224,6 +1248,17 @@ not trigger cache writes/invalidation before commit. |
 | uuids | `string[]` |  |
 | errors | `{ uuid: string; error: string }[]` |  |
 
+### `EntityActionEndpoint`
+
+Backing route of an `EntityAction` — emitted by the BE route scan.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| method | `string` | HTTP method of the backing route (`GET`, `POST`, `PUT`, `DELETE`, ...). |
+| path | `string` | Full registered API path with `:param` placeholders verbatim
+ (e.g. `/api/v1/auth/users/:uuid/restore`). Consumers substitute
+ placeholders from the row (`:uuid` ← `meta.uid`). |
+
 ### `EntityListQuery`
 
 | Field | Type | Description |
@@ -1246,6 +1281,37 @@ not trigger cache writes/invalidation before commit. |
 | page | `number` |  |
 | page_size | `number` |  |
 | total | `bigint` |  |
+
+### `EntityMeta`
+
+Static entity meta — the shape every `*.meta.ts` file MUST satisfy.
+The schema is CLOSED for authored metas: undeclared properties are
+compile errors, so new meta props require extending this type first.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| entity | `string` | Entity name, snake_case singular (e.g. `user_profile`). |
+| translation_key | `string` | i18n prefix, snake_case singular — used to build dynamic keys. |
+| title_key | `string` | Optional i18n key overriding the canonical page title.
+When absent, list/create/edit titles are built from the generic
+`system.entities.page_title.{list|create|edit}` templates interpolated
+with `system.entities.<translation_key>.{plural|singular}`.
+Set only for custom pages needing a bespoke title — CRUD entity metas
+must not declare it. |
+| uid | `string` | Field key holding the entity primary key (usually `uuid`). |
+| display_field | `string` | Canonical display field — the column key identifying the entity's
+ human-readable label. Drives first-column/sticky table identity and
+ default display resolution. |
+| display_name | `string` | Display expression template (`${field}` syntax, dot-paths allowed).
+OPTIONAL here: `assembleMeta` materializes it as
+`"${" + display_field + "}"` when absent — it is always present in the
+served response. Used automatically for edit-page titles; reusable for
+comboboxes, lists, chips. |
+| actions_overrides | `ActionsOverrides` | Per-op enable overrides — may ONLY toggle `enabled` on route-backed
+ ops; a missing route already produces `enabled: false`. |
+| columns | `MetaColumn[]` | Entity field dictionary (root-level, transversal). |
+| table | `TableMeta` | Table options — omit when the entity has no table page
+ (e.g. a self-service form meta). |
 
 ### `EntityService`
 
@@ -1310,6 +1376,19 @@ Entity has a public UUID safe to expose outside the system.
 |-------|------|-------------|
 | uuid | `string` |  |
 
+### `ListResponse`
+
+The paged list response returned by every entity list endpoint.
+`total` is a `bigint` — parse JSON responses with a bigint-aware parser
+(`extJsonParse` from `@primebrick/sdk`), never `JSON.parse`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| rows | `TRow[]` |  |
+| page | `number` |  |
+| page_size | `number` |  |
+| total | `bigint` |  |
+
 ### `LoggerPort`
 
 Logger port — consumers inject their own logger.
@@ -1334,9 +1413,38 @@ Logger port — consumers inject their own logger.
 | partitions_after | `number` |  |
 | skipped | `string` | Set when the parent was skipped — reason string. |
 
+### `RowCustomAction`
+
+UI configuration for a non-standard row CTA (route-backed bare op).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| action_name | `string` | Action/op name — matches the bare op derived from the route
+ (e.g. `change_password`). |
+| translation_key | `string` | i18n key for the CTA label. |
+| icon | `string` | Icon name (Lucide in the reference FE). |
+| text_color | `string` | Optional CSS color class for the label. |
+| disabled_when_deleted | `boolean` | Disable the CTA on soft-deleted rows. |
+| required_permission | `string \| string[]` | Permission required to see/use the action (filtered client-side
+ against the user's permission set). |
+
 ### `SnapshotQueryable`
 
 Minimal queryable shape — pg.Pool, pg.PoolClient, or any adapter.
+
+### `TableMeta`
+
+Table options — present only on entities with a table page.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| default_view | `ViewName` | Initial view (default "table"). |
+| default_sort | `{ key: string; dir: SortDir }` |  |
+| default_page_size | `number` |  |
+| page_size_options | `number[]` |  |
+| row_custom_actions | `RowCustomAction[]` | UI config for non-standard row actions (e.g. change password).
+ Standard ops (edit/delete/duplicate/preview) are derived from
+ `meta.actions` — never declared here. |
 
 ### `TimeoutOverrideOptions`
 
@@ -1387,6 +1495,12 @@ Audit action enum (mirrors BE's AuditAction).
 |--------|-------|
 | LAST_SYNCED_AT | "LAST_SYNCED_AT" |
 
+### `ActionsOverrides`
+
+Per-op enable overrides — may ONLY toggle `enabled` on route-backed ops.
+
+**Type:** `Record<string, { enabled: boolean }>`
+
 ### `AuditableWriteOptions`
 
 Write options for auditable entities — actor is required.
@@ -1413,9 +1527,31 @@ Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany).
 
 **Type:** `typeof DalErrorCodes[typeOperator]`
 
+### `DecimalInput`
+
+Anything coercion functions accept: Decimal, native number, bigint, or a decimal string.
+
+**Type:** `Decimal \| number \| bigint \| string`
+
+### `DeletionFilterMode`
+
+Soft-deletion visibility mode — maps to the `deleted_records` list param
+on the wire (`non_deleted` → `EXCLUDED`, `deleted` → `ONLY`,
+`all` → `INCLUDED`; absent param means the BE default, currently
+`EXCLUDED`).
+
+**Type:** `"non_deleted" \| "deleted" \| "all"`
+
 ### `EntityAction`
 
 **Type:** `"meta" \| "list" \| "export" \| "create" \| "duplicate" \| "bulkDelete" \| "bulkRestore" \| "get" \| "update" \| "delete" \| "purge" \| "restore" \| "audit"`
+
+### `EntityActionSentinel`
+
+Sentinel gates a route may declare instead of concrete permissions.
+Values mirror the `Permission` enum in `@primebrick/sdk`.
+
+**Type:** `"_public" \| "_authenticated_user" \| "_authenticated_admin"`
 
 ### `EntityAnnotationInfo`
 
@@ -1469,6 +1605,13 @@ contracts, not column sets.
 
 **Type:** `(args: any[]) => object`
 
+### `EntityMetaResponse`
+
+The served `GET /api/v1/entities/{entity}/meta` response:
+static meta + runtime-injected `display_name`, `actions`, `collaboration`.
+
+**Type:** `EntityMeta & { display_name: string; actions: EntityAction[]; collaboration: CollaborationMeta }`
+
 ### `EntityPersistenceMeta`
 
 Serializable persistence metadata (for JSON compare with DB introspection).
@@ -1495,6 +1638,12 @@ carries the only dynamic data. Example:
 ### `FilterExpr`
 
 **Type:** `{ kind: "field_value"; left: FieldRef<any, any>; op: SqlOperator; right: unknown; operand: SqlExpressionOperand } \| { kind: "field_field"; left: FieldRef<any, any>; op: SqlOperator; right: FieldRef<any, any>; operand: SqlExpressionOperand } \| { kind: "raw"; left: string; op: SqlOperator; right: string; operand: SqlExpressionOperand } \| { kind: "expr"; left: ExprOperand; op: SqlOperator; right: ExprOperand; operand: SqlExpressionOperand } \| { kind: "group"; filters: FilterExpr[]; operand: SqlExpressionOperand; connector: SqlExpressionOperand }`
+
+### `FilterOperator`
+
+Filter operators available for advanced filters.
+
+**Type:** `"=" \| "!=" \| ">" \| "<" \| ">=" \| "<=" \| "contains" \| "startsWith" \| "endsWith" \| "BETWEEN"`
 
 ### `FindByIdOptions`
 
@@ -1549,6 +1698,12 @@ Options for `@Index()` — plain (non-unique) secondary indexes of any PG access
 
 ### `LikelyRename`
 
+### `ListConnector`
+
+Global connector joining the advanced-filter group.
+
+**Type:** `"AND" \| "OR"`
+
 ### `ListFilterCondition`
 
 ### `ListFilterOptions`
@@ -1556,6 +1711,23 @@ Options for `@Index()` — plain (non-unique) secondary indexes of any PG access
 ### `MatchByOptions`
 
 Options for match-by operations (update, delete, restore, hardDelete, *Many).
+
+### `MetaColumn`
+
+Entity field descriptor — the root-level `columns` dictionary.
+Transversal to every page type: table cells, form tooltips, labels.
+
+Declared as a type alias (not interface): object literal types get an
+implicit index signature, keeping `MetaColumn` assignable to
+`Record<string, unknown>` — host/remotes pass columns through generic
+cell-snippet args typed as `Record<string, unknown>`.
+
+### `MetaColumnType`
+
+UI column renderer type. NOTE: this is the UI type, not the DB type —
+ e.g. `roles` is `"text"` here but `jsonb` on disk (never ILIKE-searchable).
+
+**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number"`
 
 ### `MigrationEngineOptions`
 
@@ -1627,6 +1799,10 @@ Type modifiers are NEVER written inside `pgType`: `varchar(N)` comes from
 
 ### `RenameHeuristicResult`
 
+### `RoundingMode`
+
+**Type:** `"UP" \| "DOWN" \| "CEILING" \| "FLOOR" \| "HALF_UP" \| "HALF_DOWN" \| "HALF_EVEN"`
+
 ### `SchemaColumnMeta`
 
 Shared shapes for entity vs database schema snapshots (used by compare + heuristics).
@@ -1651,6 +1827,24 @@ Generation side of the migration engine (migrations/ is the apply side).
 
 ### `SelectQueryInput`
 
+### `SnakeCaseSingular`
+
+Branded type that enforces snake_case singular (no uppercase letters).
+Used for `translation_key` in entity meta — the i18n key prefix.
+
+The brand is applied via `asSnakeCaseSingular()`, which performs a
+runtime check rejecting strings containing A-Z. This catches camelCase
+(`userProfile`), PascalCase (`RoleMapping`), and UPPER_CASE
+(`USER_PROFILE`) at both compile time and runtime.
+
+**Type:** `string & { __snakeCaseSingularBrand: typeOperator }`
+
+### `SortDir`
+
+Sort direction for server-side list queries and header UI.
+
+**Type:** `"asc" \| "desc"`
+
 ### `SortingExpr`
 
 **Type:** `{ field: FieldRef<any, any>; dir: SqlSortDirection } \| { kind: "alias"; alias: string; dir: SqlSortDirection } \| { kind: "expr"; sql: string; params: unknown[]; dir: SqlSortDirection }`
@@ -1672,6 +1866,17 @@ Generation side of the migration engine (migrations/ is the apply side).
 ### `SqlSortDirection`
 
 **Type:** `"ASC" \| "DESC"`
+
+### `StandardOp`
+
+**Type:** `typeof STANDARD_OPS[number]`
+
+### `TooltipPriority`
+
+Tooltip visual severity — drives icon and title color in priority
+ tooltip renderers.
+
+**Type:** `"INFORMATION" \| "WARNING" \| "ERROR" \| "QUESTION" \| "HINT" \| "SUCCESS"`
 
 ### `TrustedKey`
 
@@ -1698,6 +1903,12 @@ pgvector distance operator for `vectorSearch` — `<=>` cosine, `<->` L2, `<#>` 
 ### `VectorSearchOptions`
 
 Options for `Repository.vectorSearch` — entity-generic like `FindOptions`.
+
+### `ViewName`
+
+Table view names supported by entity list pages.
+
+**Type:** `"table" \| "cards" \| "cards_list"`
 
 ### `WithAuditableDisplayNames`
 
@@ -1775,6 +1986,16 @@ Alias of `dec()` — parse a PostgreSQL `numeric`/`decimal` text value.
 | expr | "" |
 | group | "" |
 
+### `fromString`
+
+**Type:** `typeof dec`
+
+### `fromWire`
+
+Alias of `dec()` — tolerates the `"…d"` wire suffix.
+
+**Type:** `typeof dec`
+
 ### `GroupBy`
 
 **Type:** `{ expr:  }`
@@ -1798,6 +2019,17 @@ Alias of `dec()` — parse a PostgreSQL `numeric`/`decimal` text value.
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
+
+### `NUMERIC_MIN_SIG_DIGITS`
+
+Minimum significant digits preserved by automatic `div` scale — mirrors
+PostgreSQL `NUMERIC_MIN_SIG_DIGITS` (16). See `pgDivScale`.
+
+**Type:** `16`
+
+### `ONE`
+
+**Type:** `Decimal`
 
 ### `PATCH_REGISTRY_TABLE`
 
@@ -1839,7 +2071,36 @@ Ordered strict → loose; documented for consumers of `diff-entities-vs-database
 | byAlias | "" |
 | byExpr | "" |
 
+### `STANDARD_OPS`
+
+The canonical vocabulary of standard entity ops. Every op is always
+present in `meta.actions` — ops whose route is not registered are emitted
+with `enabled: false` (explicitly unavailable) instead of being omitted.
+
+**Type:** `typeOperator`
+
+### `TEN`
+
+**Type:** `Decimal`
+
+### `ZERO`
+
+**Type:** `Decimal`
+
 ## Functions
+
+### `abs(d): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
+### `add(a, b): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
 
 ### `approvePendingReview(pool, schema, patchName, actor, note): Promise<boolean>`
 
@@ -1876,6 +2137,16 @@ annotation family (e.g. `UUID` + `pgType:"text"`, `number` + `pgType:
 | annotation | `EntityAnnotationInfo` |  |
 | explicitPgType | `string` |  |
 | propertyKey | `string` |  |
+
+### `asSnakeCaseSingular(value): SnakeCaseSingular`
+
+Branded constructor for SnakeCaseSingular.
+ Throws if the value contains uppercase letters
+ (camelCase/PascalCase/UPPER_CASE).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| value | `string` |  |
 
 ### `Auditable(Base): { prototype: AuditableEntity<any> } & TBase`
 
@@ -2041,6 +2312,14 @@ Fold alias spellings to canonical names (`integer` → `int4`, …).
 |-----------|------|-------------|
 | t | `string` |  |
 
+### `ceil(d): Decimal`
+
+Smallest integer `>= d`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
 ### `checkDrift(registry, db, opts): Promise<SchemaMetaDiffV2>`
 
 | Parameter | Type | Description |
@@ -2061,6 +2340,15 @@ Assigns the single strictest tier that applies, or `null` if no rule matches.
 ### `CloneField(): PropertyDecorator`
 
 Marks a field as clone tracking (cloned_from). Stores UUID of the source record.
+
+### `cmp(a, b): -1 \| 0 \| 1`
+
+Numeric comparison ignoring scale: `cmp(1.0, 1.00) === 0`. Returns -1 | 0 | 1.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
 
 ### `collectEntityTypeWarnings(registry, annotations): EntityTypeWarning[]`
 
@@ -2152,6 +2440,14 @@ PostgreSQL parameter form — plain canonical decimal string, no `d` suffix.
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
 
+### `defaultVisibleColumnKeys(columns): string[]`
+
+Keys visible by default — from column flags.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `MetaColumn[]` |  |
+
 ### `Deletable(Base): { prototype: DeletableEntity<any> } & TBase`
 
 Adds deleted_at / deleted_by — soft-delete markers.
@@ -2167,6 +2463,25 @@ Marks a field as deletable (deleted_at, deleted_by).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | what | `DeletableFieldType` |  |
+
+### `div(a, b, opts): Decimal`
+
+`a / b`. Without `scale`, the result uses the PostgreSQL `numeric`
+division rule (`pgDivScale` — e.g. `1/3` → scale 20, `10/4` → 16), so
+Decimal↔DB computations compare equal digit-for-digit. Rounding defaults
+to `HALF_UP`. When the true quotient does not terminate at the target
+scale the result is flagged `periodic` (`isPeriodic(d)` → true).
+
+  div(1, 3)            // 0.33333333333333333333 — periodic
+  div(10, 4)           // 2.5000000000000000
+  div(1, 3, 2)         // 0.33
+  div(a, b, &#123; scale: 6, rounding: "HALF_EVEN" &#125;)
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+| opts | `number \| { scale: number; rounding: RoundingMode }` |  |
 
 ### `effectivePgStorageType(h): string`
 
@@ -2191,6 +2506,15 @@ if omitted, the table name equals the class name.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | value | `Date` |  |
+
+### `eq(a, b): boolean`
+
+Numeric equality ignoring scale — `eq(1.0, 1.00)` is `true`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
 
 ### `extractEntityAnnotations(entryFile): Promise<EntityAnnotationMap>`
 
@@ -2234,6 +2558,14 @@ Uses ordinal indexing to avoid scanning all DB-only columns for every entity-onl
 | entityColumns | `Record<string, SchemaColumnMeta>` |  |
 | databaseColumns | `Record<string, SchemaColumnMeta>` |  |
 
+### `floor(d): Decimal`
+
+Largest integer `<= d`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
 ### `ForeignKey(target, opts): PropertyDecorator`
 
 Declares a FOREIGN KEY constraint referencing another entity's column.
@@ -2250,6 +2582,19 @@ meta validation throws and points to `@PartitionChildOf` for that shape.
 |-----------|------|-------------|
 | target | `() => EntityClass` |  |
 | opts | `ForeignKeyOptions` |  |
+
+### `fromBigInt(v, scale): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `bigint` |  |
+| scale | `number` |  |
+
+### `fromNumber(n): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| n | `number` |  |
 
 ### `getColumnName(ctor, propertyKey): string`
 
@@ -2290,6 +2635,14 @@ Snapshot fragment for one
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 | tableSchema | `string` |  |
+
+### `getOperatorsForColumnType(columnType): FilterOperator[]`
+
+Operators available for a given column UI type.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columnType | `string` |  |
 
 ### `getPrimaryKeyColumn(ctor): string`
 
@@ -2356,6 +2709,21 @@ drop) — i.e. no unapplied entity intent remains.
 |-----------|------|-------------|
 | value | `unknown` |  |
 
+### `isEntityOpEnabled(actions, op): boolean`
+
+Pure enablement check — true when `op` exists in the served `actions`
+array and carries `enabled: true`. FAIL-CLOSED: when `actions` is absent
+(meta without actions — contract violation) the op is not enabled.
+
+This deliberately does NOT evaluate user permissions — that step lives in
+the consumer (e.g. FE `isEntityOpAllowed` composes this with the session
+permission check).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| actions | `typeOperator \| undefined` |  |
+| op | `string` |  |
+
 ### `isISODate(v): v is ISODate`
 
 | Parameter | Type | Description |
@@ -2398,6 +2766,16 @@ Excludes the property from meta schema / migration and from future DAL queries.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `isSnakeCaseSingular(value): value is SnakeCaseSingular`
+
+Runtime validator for SnakeCaseSingular — rejects strings with
+ uppercase letters. Use in meta-loading code to catch BE meta that
+ violates the convention.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| value | `string` |  |
 
 ### `isUUID(v): v is UUID`
 
@@ -2483,6 +2861,50 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 |-----------|------|-------------|
 | dbMetaDir | `string` |  |
 
+### `max(a, b): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
+### `min(a, b): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
+### `mod(a, b): Decimal`
+
+`a mod b` — remainder of truncated division at the common scale.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
+### `mul(a, b): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
+### `neg(d): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
+### `normalize(d): Decimal`
+
+Strip trailing fractional zeros — `1.230` → `1.23`, `12.000` → `12`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
 ### `normalizePatchEol(body): string`
 
 Patch integrity hashes are EOL-insensitive: a Windows checkout may
@@ -2493,6 +2915,26 @@ are platform-stable.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | body | `string` |  |
+
+### `orderedColumns(columns): MetaColumn[]`
+
+Columns in display order: sticky group → normal group → audited group,
+each sorted by `order`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `typeOperator \| null \| undefined` |  |
+
+### `parseDecimal(input): Decimal`
+
+Parse a decimal string into unscaled form.
+Accepts: `"12"`, `"-0.5"`, `".5"`, `"5."`, `"1.5e3"`, `"1E-3"`, `"+4"`.
+Rejects: `NaN`, `Infinity`, empty strings, hex, non-numeric garbage.
+Scale is preserved as written (`"1.230"` → scale 3).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| input | `string` |  |
 
 ### `parsePatchPragmas(raw): { requiresReview: boolean; noTransaction: boolean }`
 
@@ -2560,6 +3002,17 @@ The registry identity of a patch is its filename minus the `.sql` extension.
 |-----------|------|-------------|
 | diff | `SchemaMetaDiffV2` |  |
 
+### `pgDivScale(a, b): number`
+
+PostgreSQL-faithful result scale for `x / y` (mirrors `select_div_scale`):
+`max(16 - 4·qweight, x.scale, y.scale)` — 16 significant digits minimum.
+Verified live: `1/3`→20, `10/4`→16, `1.00/8`→20, `2/1`→16, `100/3`→16.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
 ### `pgTypeFromAnnotation(a): string \| null`
 
 Annotation → base pg type. Returns `null` for unmappable annotations —
@@ -2582,6 +3035,12 @@ through unchanged.
 | value | `unknown` |  |
 | h | `ColumnPgPersistenceHints` |  |
 
+### `pow10(n): bigint`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| n | `number` |  |
+
 ### `quoteIdent(ident): string`
 
 | Parameter | Type | Description |
@@ -2594,6 +3053,17 @@ through unchanged.
 |-----------|------|-------------|
 | pool | `Pool` |  |
 | schema | `string` |  |
+
+### `rescale(d, newScale, mode): Decimal`
+
+Re-express `d` at `newScale`. Growing is exact; shrinking applies `mode`
+(default `HALF_UP`, matching PostgreSQL `round()`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+| newScale | `number` |  |
+| mode | `RoundingMode` |  |
 
 ### `resetDal(): Promise<void>`
 
@@ -2646,6 +3116,16 @@ failed → pending: next runMigrations retries them (and past them, in order).
 | schema | `string` |  |
 | actor | `string` |  |
 
+### `round(d, scale, mode): Decimal`
+
+Round to `scale` fractional digits (default `HALF_UP`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+| scale | `number` |  |
+| mode | `RoundingMode` |  |
+
 ### `runMigrations(opts): Promise<MigrationRunResult>`
 
 | Parameter | Type | Description |
@@ -2658,6 +3138,24 @@ failed → pending: next runMigrations retries them (and past them, in order).
 |-----------|------|-------------|
 | client | `PoolClient` |  |
 | entities | `typeOperator` |  |
+
+### `sanitizeVisibleKeys(visibleKeys, columns): string[]`
+
+Drop unknown keys and fall back to defaults when nothing left.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| visibleKeys | `string[]` |  |
+| columns | `MetaColumn[]` |  |
+
+### `searchableTextColumns(columns): MetaColumn[]`
+
+Text-physical searchable columns — the scope selector + default
+ "all fields" search set.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `MetaColumn[]` |  |
 
 ### `sha256Hex(body): string`
 
@@ -2673,6 +3171,12 @@ Sign a manifest body (entries already updated) with a PEM/DER private key.
 |-----------|------|-------------|
 | manifest | `Omit<PatchManifest, "signature">` |  |
 | privateKeyB64 | `string` |  |
+
+### `signum(d): -1 \| 0 \| 1`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
 
 ### `slugifyPatchSegment(s): string`
 
@@ -2693,6 +3197,22 @@ separately. Handles: single/double-quoted strings, dollar-quoted bodies
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | sql | `string` |  |
+
+### `strictEq(a, b): boolean`
+
+Exact structural equality — value AND scale must match (`strictEq(1.0, 1.00)` is `false`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
+
+### `sub(a, b): Decimal`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `DecimalInput` |  |
+| b | `DecimalInput` |  |
 
 ### `SynchronizableField(what): PropertyDecorator`
 
@@ -2737,6 +3257,14 @@ Validating constructor — throws on malformed input. Use at system boundaries (
 |-----------|------|-------------|
 | v | `string` |  |
 
+### `toWire(d): string`
+
+Wire form — `"…d"` suffixed string.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
+
 ### `translateFilterConditions(entity, conditions, options): FilterExpr[] \| null`
 
 | Parameter | Type | Description |
@@ -2744,6 +3272,14 @@ Validating constructor — throws on malformed input. Use at system boundaries (
 | entity | `EntityClass` |  |
 | conditions | `ListFilterCondition[] \| null \| undefined` |  |
 | options | `ListFilterOptions` |  |
+
+### `trunc(d): Decimal`
+
+Integer part, toward zero.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| d | `DecimalInput` |  |
 
 ### `trustedISODate(v): ISODate`
 

@@ -17,7 +17,7 @@ import {
 } from "../src/meta/column-pg-io.js";
 import { getEntityPersistenceMeta } from "../src/index.js";
 import { Vector } from "../src/types/vector.js";
-import { Decimal, dec } from "@primebrick/decimal";
+import { Decimal, dec } from "@primebrick/core/decimal";
 import { TypeMatrixEntity } from "./entities/type-matrix-entity.js";
 
 /**

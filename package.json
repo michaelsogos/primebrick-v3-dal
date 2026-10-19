@@ -51,18 +51,18 @@
   },
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
-    "@primebrick/decimal": "3.0.0",
-    "pg": "8.22.0",
-    "pg-query-stream": "4.16.0",
+    "@primebrick/core": "3.0.0",
+    "pg": "8.23.1",
+    "pg-query-stream": "4.17.1",
     "reflect-metadata": "0.2.2"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
-    "@types/pg": "8.20.0",
+    "@types/pg": "8.23.1",
     "dotenv": "17.4.2",
     "typedoc": "0.28.20",
     "typescript": "6.0.3",
-    "vite": "8.1.5",
+    "vite": "8.3.4",
     "vitest": "4.1.10"
   }
 }
