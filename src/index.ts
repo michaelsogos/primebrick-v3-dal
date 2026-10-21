@@ -289,7 +289,11 @@ export {
   isPeriodic,
   fromPG as decimalFromPG,
   toPG as decimalToPG,
-} from "@primebrick/decimal";
+} from "@primebrick/core/decimal";
+
+// Canonical shared contracts (entity meta schema, actions vocabulary, list
+// query types) — re-exported so consumers get them through this package.
+export * from "@primebrick/core";
 
 // ── Static annotation extraction (schema pipeline — primebrick-db) ───────────
 export {

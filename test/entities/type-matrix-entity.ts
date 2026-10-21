@@ -17,7 +17,7 @@ import {
   type ISOTime,
   type UUID,
 } from "../../src/index.js";
-import type { Decimal } from "@primebrick/decimal";
+import type { Decimal } from "@primebrick/core/decimal";
 
 /**
  * Canonical type-matrix entity — one property per annotation → PostgreSQL

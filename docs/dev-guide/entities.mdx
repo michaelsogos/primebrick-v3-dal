@@ -257,6 +257,99 @@ export class AuditLogEntity {
 }
 ```
 
+### `@Index(opts?)` — secondary index
+
+Declares a secondary (non-unique) index. Bare `@Index()` → single-column
+btree auto-named `<table>_<column>_idx`. Columns sharing the same `name`
+form a composite index ordered by `order`. Unique indexes stay on
+`@Unique()`.
+
+```typescript
+export type IndexOptions = {
+  name?: string;       // shared name → composite index
+  order?: number;      // position inside the composite (default 0)
+  using?: IndexMethod; // access method — default btree
+  opclass?: string;    // e.g. "vector_cosine_ops" (hnsw), "gin_trgm_ops" (gin)
+  where?: string;      // partial-index predicate, e.g. "deleted_at IS NULL"
+};
+```
+
+```typescript
+@Column({ nullable: false })
+@Index({ using: "hnsw", opclass: "vector_cosine_ops" })
+embedding!: number[];
+
+@Column()
+@Index({ where: "deleted_at IS NULL" })
+email!: string;
+```
+
+### `@ForeignKey(target, opts?)` — REFERENCES constraint
+
+Declares a FOREIGN KEY referencing another entity's column. `target` is a
+lazy thunk (`() => CustomerEntity`) so circular references resolve at
+meta-read time, not class-eval time. The zero-option form references the
+target's `@Key()` column with `ON DELETE RESTRICT` / `ON UPDATE NO
+ACTION` — the safest default.
+
+```typescript
+export type ForeignKeyOptions = {
+  column?: string;           // referenced column — default: target's @Key()
+  onDelete?: ForeignKeyAction; // default "restrict"
+  onUpdate?: ForeignKeyAction; // default "no_action"
+  name?: string;             // constraint name — default <table>_<column>_fkey
+};
+```
+
+```typescript
+@Column({ nullable: false })
+@ForeignKey(() => CustomerEntity, { onDelete: "cascade" })
+customer_uuid!: UUID;
+```
+
+A `@PartitionField`-partitioned parent **cannot** be a plain FK target
+(unique constraints must contain the partition key) — meta validation
+throws and points to `@PartitionChildOf`.
+
+### `@PartitionField(opts?)` — RANGE partition key
+
+Marks a column as the RANGE partition key (pg_partman, daily/monthly/…).
+Exactly ONE per entity; the column must be date/timestamptz-typed and is
+forced NOT NULL (a NULL would fall into no partition). Every unique group
+and the primary key emitted in DDL must include it — meta validation
+throws otherwise, so a partitioned entity can never produce an invalid
+table definition.
+
+```typescript
+export type PartitionFieldOptions = {
+  interval?: string;   // pg_partman interval — default "1 month"
+  retention?: string;  // e.g. "6 months" — undefined = no auto-retention
+  keepTable?: boolean; // retention_keep_table — false = DROP (default)
+  premake?: number;    // future partitions kept ahead
+};
+```
+
+```typescript
+@Column({ nullable: false })
+@PartitionField({ interval: "1 month", retention: "6 months" })
+last_seen_at!: Date;
+```
+
+### `@PartitionChildOf(opts)` — membership in a partition unit (class decorator)
+
+Declares the entity a logical child of a `@PartitionField`-partitioned
+parent: it joins the parent's atomic delete and retention purge unit.
+Needed because a partitioned parent cannot host a plain FOREIGN KEY —
+the relationship is application-level, enforced by the repository cascade
+and the partition-maintenance purge. Entities that merely *reference* a
+parent (telemetry, logs) don't declare this.
+
+```typescript
+@Entity("ai_messages")
+@PartitionChildOf({ parent: AiConversationEntity, ref: "conversation_uuid" })
+export class AiMessageEntity { ... }
+```
+
 ## Entity interfaces
 
 The library ships four marker interfaces that document an entity's capabilities.

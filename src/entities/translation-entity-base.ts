@@ -45,7 +45,6 @@ import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 export abstract class TranslationEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()
-  @Column({ pgType: "bigint" })
   id!: bigint;
 
   @Unique()

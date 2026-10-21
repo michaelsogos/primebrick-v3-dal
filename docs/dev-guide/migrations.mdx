@@ -87,9 +87,10 @@ Consumers wire it through their own scripts (`pnpm db:migrate`,
 manifests run locally only when the service explicitly allows `dev`
 (typically gated by NODE_ENV/dev mode).
 
-## Fire-and-forget SQL
+## Fire-and-forget SQL — retired
 
-`db-meta/fire-and-forget/` holds one-off operational SQL (seeds,
-backfills, manual fix-ups). It is **not** tracked by the manifest or the
-registry — idempotency is the author's responsibility
-(`ON CONFLICT`, `IF EXISTS`, existence guards).
+`db-meta/fire-and-forget/` is **deprecated and deleted**. One-off
+operational SQL (seeds, backfills, manual fix-ups) now lives in the
+workspace `temp/` directory and is applied manually — **never committed**.
+The only SQL that ships with a service is `db-meta/patches/` +
+signed manifest.

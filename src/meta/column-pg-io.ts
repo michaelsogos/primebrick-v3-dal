@@ -13,7 +13,7 @@
  * in the schema pipeline — runtime only needs to convert VALUES.
  */
 
-import { Decimal, dec, toPG } from "@primebrick/decimal";
+import { Decimal, dec, toPG } from "@primebrick/core/decimal";
 import { Vector } from "../types/vector.js";
 import type { EntityPersistenceMeta } from "./entity-decorators.js";
 

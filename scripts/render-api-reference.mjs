@@ -81,6 +81,8 @@ function typeToString(type) {
       return `${typeToString(type.checkType)} extends ${typeToString(type.extendsType)} ? ${typeToString(type.trueType)} : ${typeToString(type.falseType)}`;
     case 'query':
       return `typeof ${typeToString(type.queryType)}`;
+    case 'typeOperator':
+      return `${type.operator} ${typeToString(type.target)}`;
     case 'unknown':
       return type.name || 'unknown';
     default:
