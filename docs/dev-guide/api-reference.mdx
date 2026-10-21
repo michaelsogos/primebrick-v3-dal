@@ -196,7 +196,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass` |  |
-| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| vectorField | `FieldRef<TEntity, keyof TEntity & string>` |  |
 | queryVector | `string \| number[]` |  |
 | options | `VectorSearchOptions<TEntity>` |  |
 
@@ -205,7 +205,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| row | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `AuditableWriteOptions<TEntity>` |  |
 
 #### `Dal.update(entity, updates, options): Promise<TResult>`
@@ -213,7 +213,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| updates | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Dal.delete(entity, match, options): Promise<TResult>`
@@ -221,7 +221,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Dal.restore(entity, match, options): Promise<TResult>`
@@ -229,7 +229,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Dal.hardDelete(entity, match, options): Promise<TResult>`
@@ -237,7 +237,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Dal.addMany(entity, rows, options): Promise<BulkResult>`
@@ -245,7 +245,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| rows | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| rows | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & BulkOptions` |  |
 
 #### `Dal.hardDeleteMany(entity, matches, options): Promise<BulkResult>`
@@ -253,7 +253,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 #### `Dal.restoreMany(entity, matches, options): Promise<BulkResult>`
@@ -261,7 +261,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 #### `Dal.updateMany(entity, updates, options): Promise<BulkResult>`
@@ -269,7 +269,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| updates | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 #### `Dal.deleteMany(entity, matches, options): Promise<BulkResult>`
@@ -277,7 +277,7 @@ cosine (`<=>`), raw `distance` for other operators.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Dal.entityService(cfg): EntityService<TEntity>`
@@ -350,7 +350,7 @@ then runs `partman.run_maintenance_proc()`. Called by the service's
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| entities | `typeOperator` | the service's entity registry (only `@PartitionField`
+| entities | `readonly EntityClass[]` | the service's entity registry (only `@PartitionField`
   entities participate; everything else is ignored) |
 | options | `TimeoutOverrideOptions` |  |
 
@@ -404,7 +404,7 @@ Buffer an insert — see `Repository.add`. `options.audit` is rejected.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| row | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `AuditableWriteOptions<TEntity>` |  |
 
 #### `DeferredTransaction.update(entity, updates, options): Deferred<TResult>`
@@ -414,7 +414,7 @@ Buffer an update — see `Repository.update`. `options.audit` is rejected.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| updates | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `DeferredTransaction.delete(entity, match, options): Deferred<TResult>`
@@ -424,7 +424,7 @@ Buffer a soft-delete — see `Repository.delete`. `options.audit` is rejected.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `DeferredTransaction.restore(entity, match, options): Deferred<TResult>`
@@ -434,7 +434,7 @@ Buffer a restore — see `Repository.restore`. `options.audit` is rejected.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `DeferredTransaction.hardDelete(entity, match, options): Deferred<TResult>`
@@ -444,7 +444,7 @@ Buffer a hard delete — see `Repository.hardDelete`. `options.audit` is rejecte
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `DeferredTransaction.find(entity, fields, options): Deferred<TResult \| null>`
@@ -515,7 +515,7 @@ Buffer a pgvector search — see `Repository.vectorSearch`.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| vectorField | `FieldRef<TEntity, keyof TEntity & string>` |  |
 | queryVector | `string \| number[]` |  |
 | options | `VectorSearchOptions<TEntity>` |  |
 
@@ -847,7 +847,7 @@ closer).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass` |  |
-| vectorField | `FieldRef<TEntity, typeOperator & string>` |  |
+| vectorField | `FieldRef<TEntity, keyof TEntity & string>` |  |
 | queryVector | `string \| number[]` |  |
 | options | `VectorSearchOptions<TEntity>` |  |
 
@@ -888,7 +888,7 @@ Add — auditable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| row | `Partial<Record<typeOperator & string, unknown>>` |  |
+| row | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `AuditableWriteOptions<TEntity>` |  |
 
 #### `Repository.update(entity, updates, options): Promise<TResult>`
@@ -898,7 +898,7 @@ Update — auditable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<typeOperator & string, unknown>>` |  |
+| updates | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Repository.delete(entity, match, options): Promise<TResult>`
@@ -906,7 +906,7 @@ Update — auditable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Repository.restore(entity, match, options): Promise<TResult>`
@@ -916,7 +916,7 @@ Restore — auditable+deletable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Repository.hardDelete(entity, match, options): Promise<TResult>`
@@ -926,7 +926,7 @@ Hard-delete — auditable entity (actor required for audit log).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<typeOperator & string, unknown>>` |  |
+| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Repository.clone(entity, sourceUuid, options): Promise<TEntity>`
@@ -951,7 +951,7 @@ Bulk add — auditable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| rows | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| rows | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & BulkOptions` |  |
 
 #### `Repository.deleteMany(entity, matches, options): Promise<BulkResult>`
@@ -961,7 +961,7 @@ Bulk soft-delete — auditable+deletable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
 
 #### `Repository.hardDeleteMany(entity, matches, options): Promise<BulkResult>`
@@ -971,7 +971,7 @@ Bulk hard-delete — auditable entity (actor required for audit).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 #### `Repository.restoreMany(entity, matches, options): Promise<BulkResult>`
@@ -981,7 +981,7 @@ Bulk restore — auditable+deletable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 #### `Repository.updateMany(entity, updates, options): Promise<BulkResult>`
@@ -991,7 +991,7 @@ Bulk update — auditable entity (actor required).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<typeOperator & string, unknown>>[]` |  |
+| updates | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
 | options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
 
 ### `SchemaDomainViolationError`
@@ -1113,13 +1113,13 @@ Parse the pgvector literal `'[v1,v2,…]'` (or a plain number array).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| v | `string \| typeOperator \| Vector` |  |
+| v | `string \| readonly number[] \| Vector` |  |
 
 #### `Vector.fromNumbers(v): Vector`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| v | `typeOperator` |  |
+| v | `readonly number[]` |  |
 
 ## Interfaces
 
@@ -1292,6 +1292,12 @@ compile errors, so new meta props require extending this type first.
 |-------|------|-------------|
 | entity | `string` | Entity name, snake_case singular (e.g. `user_profile`). |
 | translation_key | `string` | i18n prefix, snake_case singular — used to build dynamic keys. |
+| entities_ns | `string` | Namespace OWNING this entity's label keys — the module's own namespace
+(`job` → `job.entities.<translation_key>.*`). Absent → `system`
+(BE/core-owned entities keep `system.entities.*`).
+This is a READ-side reference declared by the owning module — the
+namespace write boundary (see `translation-keys.ts`) guarantees the
+keys actually live in that module's `<code>.translations` schema. |
 | title_key | `string` | Optional i18n key overriding the canonical page title.
 When absent, list/create/edit titles are built from the generic
 `system.entities.page_title.{list|create|edit}` templates interpolated
@@ -1333,7 +1339,7 @@ The contract every entity service must satisfy — enforced on the router.
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | userEntity | `EntityClass` | Optional auditable display-name join target (BE: UserProfileEntity). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
-| list | `{ searchableKeys: typeOperator; filterableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `IAuditableEntity`
@@ -1375,6 +1381,15 @@ Entity has a public UUID safe to expose outside the system.
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
+
+### `ListFilterParamsOptions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| filterValues | `Record<string, unknown>` | Toolbar quick-filter values keyed by column key. |
+| columns | `readonly MetaColumn[]` | Entity columns (needed to map filterValues to the right operator). |
+| advancedFilters | `readonly AdvancedFilter[]` | FiltersPanel conditions. |
+| connector | `string` | Global connector for advanced filters (`AND` | `OR`). |
 
 ### `ListResponse`
 
@@ -1445,6 +1460,9 @@ Table options — present only on entities with a table page.
 | row_custom_actions | `RowCustomAction[]` | UI config for non-standard row actions (e.g. change password).
  Standard ops (edit/delete/duplicate/preview) are derived from
  `meta.actions` — never declared here. |
+| filter_presets | `readonly FilterPreset[]` | Mutually-exclusive preset WHERE filters — each rendered as its own
+ toolbar control; the active option's conditions AND into every list
+ request (see FilterPreset). |
 
 ### `TimeoutOverrideOptions`
 
@@ -1525,7 +1543,7 @@ Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany).
 
 ### `DalErrorCode`
 
-**Type:** `typeof DalErrorCodes[typeOperator]`
+**Type:** `typeof DalErrorCodes[keyof typeof DalErrorCodes]`
 
 ### `DecimalInput`
 
@@ -1635,6 +1653,12 @@ carries the only dynamic data. Example:
 
 ### `FieldRef`
 
+### `FilterCondition`
+
+One WHERE condition of a filter preset — serialized verbatim as a
+`filters[i]` entry on the `/list` query string (same vocabulary as
+`AdvancedFilter` conditions: field/op/value).
+
 ### `FilterExpr`
 
 **Type:** `{ kind: "field_value"; left: FieldRef<any, any>; op: SqlOperator; right: unknown; operand: SqlExpressionOperand } \| { kind: "field_field"; left: FieldRef<any, any>; op: SqlOperator; right: FieldRef<any, any>; operand: SqlExpressionOperand } \| { kind: "raw"; left: string; op: SqlOperator; right: string; operand: SqlExpressionOperand } \| { kind: "expr"; left: ExprOperand; op: SqlOperator; right: ExprOperand; operand: SqlExpressionOperand } \| { kind: "group"; filters: FilterExpr[]; operand: SqlExpressionOperand; connector: SqlExpressionOperand }`
@@ -1644,6 +1668,18 @@ carries the only dynamic data. Example:
 Filter operators available for advanced filters.
 
 **Type:** `"=" \| "!=" \| ">" \| "<" \| ">=" \| "<=" \| "contains" \| "startsWith" \| "endsWith" \| "BETWEEN"`
+
+### `FilterPreset`
+
+A mutually-exclusive preset filter group rendered as its own control in
+the table toolbar (tandem with the deletion-filter group). Exactly one
+option is always active — there is no "clear" affordance. Declared in
+`meta.table.filter_presets`; example: a `schedule_type` scope selector
+(recurring / once / all) on a jobs table.
+
+### `FilterPresetOption`
+
+A single selectable option of a table filter preset.
 
 ### `FindByIdOptions`
 
@@ -1675,6 +1711,11 @@ builder; expression projections must be listed here explicitly when they
 are the grouping key.
 
 **Type:** `FieldRef<any, any> \| { kind: "expr"; sql: string; params: unknown[] }`
+
+### `HostMountHandle`
+
+Handle returned by `ModulePageHost.mount_host` — imperative channel to a
+host-mounted component root.
 
 ### `IndexMethod`
 
@@ -1727,7 +1768,7 @@ cell-snippet args typed as `Record<string, unknown>`.
 UI column renderer type. NOTE: this is the UI type, not the DB type —
  e.g. `roles` is `"text"` here but `jsonb` on disk (never ILIKE-searchable).
 
-**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number"`
+**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline"`
 
 ### `MigrationEngineOptions`
 
@@ -1743,11 +1784,74 @@ Migration engine — apply side. Generation side lives in schema-diff/.
 
 Migration engine — apply side. Generation side lives in schema-diff/.
 
+### `ModuleNavDeclaration`
+
+A module's self-described navigation declaration — the payload a service
+publishes in `service.register` (`endpoints.nav`) so the FE can render
+the module's sidebar nav and the census can resolve its routes WITHOUT
+the BE hardcoding another module's pages. This is the wiring that lets
+each module present its own nav — a remote page is owned by the service
+that ships it, never declared inside a host module's registry.
+
+`route_prefixes` drive active-module resolution (longest-prefix match —
+a page under a shared prefix like `/system/jobs` resolves to the owning
+module, not to the module owning the broader `/system` prefix).
+
+### `ModuleNavLink`
+
+One sidebar navigation link contributed by a module. `children` is the
+collapsible-group mechanism (the shell renders children under the parent).
+
+### `ModulePageHost`
+
+Host-side context handed to a remote page's `mountPage(el, ctx)`.
+Versioned via `host_version` — remote chunks can refuse incompatible hosts.
+
+HARD CONSTRAINT — plain values and functions ONLY: Svelte rune state
+(`$state`/`$derived`/`$effect`) is bundle-local and cannot cross this
+boundary. UI building blocks come from `@primebrick/ui` bundled inside the
+remote chunk, not from ctx; `components` is reserved for the few
+host-coupled cases (see `ModulePageHost.components`).
+
+### `ModulePageNotifyInput`
+
+Notification payload accepted by `ctx.notify` — the minimal shape of the
+host's `pushNotification` input. Plain values only.
+
+### `MountPageFn`
+
+The `esm-mount` chunk's entry contract — `export function mountPage(el, ctx)`.
+May return the `mount()` result (disposed via `unmount()`), a custom dispose
+function, or a promise of either.
+
+**Type:** `(el: HTMLElement, ctx: ModulePageHost) => unknown`
+
 ### `OnConflictMode`
 
 Insert conflict semantics for `add()`.
 
 **Type:** `"raise" \| "ignore"`
+
+### `PageRouteComponentFormat`
+
+Remote component delivery format. Extensible — new literals are additive
+and non-breaking. `esm-mount`: a precompiled ESM chunk that exports
+`mountPage(el, ctx)` (or a default component as fallback).
+
+**Type:** `"esm-mount"`
+
+### `PageRouteDeclaration`
+
+One declared frontend route owned by a module. Modules MUST declare every
+FE path they own that is not deducible from nav links or entity
+conventions — the AI route census (GET /system/routes) depends on it.
+`param` marks dynamic segments using the FE convention ([uuid], [code]).
+
+### `PageRouteKind`
+
+Page archetype vocabulary — what the route renders, regardless of delivery.
+
+**Type:** `"list" \| "detail" \| "create" \| "page"`
 
 ### `PaginatedEntity`
 
@@ -1837,7 +1941,7 @@ runtime check rejecting strings containing A-Z. This catches camelCase
 (`userProfile`), PascalCase (`RoleMapping`), and UPPER_CASE
 (`USER_PROFILE`) at both compile time and runtime.
 
-**Type:** `string & { __snakeCaseSingularBrand: typeOperator }`
+**Type:** `string & { __snakeCaseSingularBrand: unique symbol }`
 
 ### `SortDir`
 
@@ -2059,7 +2163,7 @@ read, so an empty database upgrades itself.
 
 Ordered strict → loose; documented for consumers of `diff-entities-vs-database.json`.
 
-**Type:** `typeOperator`
+**Type:** `readonly string[]`
 
 ### `Sort`
 
@@ -2077,7 +2181,7 @@ The canonical vocabulary of standard entity ops. Every op is always
 present in `meta.actions` — ops whose route is not registered are emitted
 with `enabled: false` (explicitly unavailable) instead of being omitted.
 
-**Type:** `typeOperator`
+**Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk"]`
 
 ### `TEN`
 
@@ -2102,6 +2206,23 @@ with `enabled: false` (explicitly unavailable) instead of being omitted.
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
 
+### `allowedKeyNamespaces(moduleCode): ReadonlySet<string>`
+
+Namespaces a module's meta/nav declarations may REFERENCE — the module's
+own namespace plus the CORE vocabularies (`app`, `system`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| moduleCode | `string` |  |
+
+### `appendListFilterParams(params, opts, startIdx): number`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| params | `URLSearchParams` |  |
+| opts | `ListFilterParamsOptions` |  |
+| startIdx | `number` |  |
+
 ### `approvePendingReview(pool, schema, patchName, actor, note): Promise<boolean>`
 
 pending_review → approved for ONE named patch: the engine treats an
@@ -2122,9 +2243,9 @@ Boot-time check: every registered entity must resolve inside `schemas`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| entities | `typeOperator` |  |
-| schemas | `typeOperator` |  |
-| sharedTables | `typeOperator` |  |
+| entities | `readonly unknown[]` |  |
+| schemas | `readonly string[]` |  |
+| sharedTables | `readonly string[]` |  |
 
 ### `assertPgTypeCompatible(annotation, explicitPgType, propertyKey): void`
 
@@ -2244,7 +2365,7 @@ Parameterized on the registry — no service-specific imports live here.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| registry | `typeOperator` |  |
+| registry | `readonly EntityClass[]` |  |
 | opts | `BuildEntitySnapshotOptions` |  |
 | generatedAt | `string` |  |
 
@@ -2324,7 +2445,7 @@ Smallest integer `>= d`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| registry | `typeOperator` |  |
+| registry | `readonly EntityClass[]` |  |
 | db | `SnapshotQueryable` |  |
 | opts | `BuildEntitySnapshotOptions` |  |
 
@@ -2358,7 +2479,7 @@ default. Requires the static annotation map; warnings never fail a gate.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| registry | `typeOperator` |  |
+| registry | `readonly EntityClass[]` |  |
 | annotations | `EntityAnnotationMap` |  |
 
 ### `Column(sqlName): PropertyDecorator`
@@ -2440,6 +2561,21 @@ PostgreSQL parameter form — plain canonical decimal string, no `d` suffix.
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
 
+### `defaultSearchGate(trimmed): boolean`
+
+search-gate — canonical "should this search query hit the server" predicate.
+
+Mirrors the backend list-search gate: ≥3 "real" characters, or an escaped
+wildcard (`\*` / `\?`) with ≥1 real char. Prevents per-keystroke queries
+while still allowing single-char wildcard searches.
+
+Canonical home for both the host FE and remote module pages — the gate
+must match the server-side rule byte-for-byte.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| trimmed | `string` | the search string, already `.trim()`ed by the caller |
+
 ### `defaultVisibleColumnKeys(columns): string[]`
 
 Keys visible by default — from column flags.
@@ -2515,6 +2651,30 @@ Numeric equality ignoring scale — `eq(1.0, 1.00)` is `true`.
 |-----------|------|-------------|
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
+
+### `extJsonParse(text): T`
+
+Parse an Ext-JSON string.
+
+ALL integers are returned as native `bigint` (via reviver).
+Floats (values with decimal point or scientific notation) are `number`.
+Strings, booleans, null are unaffected.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
+### `extJsonStringify(data): string`
+
+Serialize a value to an Ext-JSON string.
+BigInt values serialize as JSON numbers (42n → "42"); floats stay numbers.
+
+Use for request bodies carrying bigint values — the BE's ext-json body
+parser revives them to native `bigint`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| data | `unknown` |  |
 
 ### `extractEntityAnnotations(entryFile): Promise<EntityAnnotationMap>`
 
@@ -2721,7 +2881,7 @@ permission check).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| actions | `typeOperator \| undefined` |  |
+| actions | `readonly EntityAction[] \| undefined` |  |
 | op | `string` |  |
 
 ### `isISODate(v): v is ISODate`
@@ -2801,6 +2961,14 @@ doubles anyway and BigInt breaks JSON.stringify).
 ### `Key(): PropertyDecorator`
 
 Marks the single-column primary key.
+
+### `keyNamespaceOf(key): string \| null`
+
+First dotted segment of a translation key — `job.entities.x` → `job`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| key | `string` |  |
 
 ### `listEntityPersistencePropertyKeys(ctor): string[]`
 
@@ -2923,7 +3091,7 @@ each sorted by `order`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| columns | `typeOperator \| null \| undefined` |  |
+| columns | `readonly MetaColumn[] \| null \| undefined` |  |
 
 ### `parseDecimal(input): Decimal`
 
@@ -3106,6 +3274,30 @@ become `text`.
 |-----------|------|-------------|
 | h | `EntityColumnTypeHints` |  |
 
+### `resolvePresetConditions(presets, selections): FilterCondition[]`
+
+Flatten the WHERE conditions of every preset's ACTIVE option — the
+conditions AND-ed into every `/list` call. `selections` maps
+preset.id → option id; invalid/absent ids resolve per
+resolvePresetSelection.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| presets | `readonly FilterPreset[] \| undefined` |  |
+| selections | `Record<string, string>` |  |
+
+### `resolvePresetSelection(preset, selected): string`
+
+Resolve a preset's active option id — the caller-provided selection when
+it names a declared option, otherwise `default_option` (itself falling
+back to the first option when misconfigured, keeping the always-one
+invariant rather than failing closed).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| preset | `FilterPreset` |  |
+| selected | `string \| undefined` |  |
+
 ### `retryFailedPatches(pool, schema, actor): Promise<number>`
 
 failed → pending: next runMigrations retries them (and past them, in order).
@@ -3137,7 +3329,7 @@ Round to `scale` fractional digits (default `HALF_UP`).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | client | `PoolClient` |  |
-| entities | `typeOperator` |  |
+| entities | `readonly EntityClass[]` |  |
 
 ### `sanitizeVisibleKeys(visibleKeys, columns): string[]`
 
@@ -3156,6 +3348,17 @@ Text-physical searchable columns — the scope selector + default
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | columns | `MetaColumn[]` |  |
+
+### `serviceApiBase(listBasePath): string`
+
+Service API base of an entity list basePath — strips the trailing
+`/entities/<entity>` segment so service-relative endpoints declared in
+meta (e.g. sparkline `endpoint: "/actions/job-run-stats"`) resolve to
+`/ws/<svc>/api/v1/actions/…` or `/api/v1/actions/…` for BE entities.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| listBasePath | `string` |  |
 
 ### `sha256Hex(body): string`
 
@@ -3273,6 +3476,14 @@ Wire form — `"…d"` suffixed string.
 | conditions | `ListFilterCondition[] \| null \| undefined` |  |
 | options | `ListFilterOptions` |  |
 
+### `translationKeyNamespace(schema): string`
+
+Owning PG schema → the only translation-key namespace writable there.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `string` |  |
+
 ### `trunc(d): Decimal`
 
 Integer part, toward zero.
@@ -3332,7 +3543,7 @@ Verify manifest signature against the keyring (filtered by allowed trust levels)
 |-----------|------|-------------|
 | manifest | `PatchManifest` |  |
 | keyring | `TrustedKey[]` |  |
-| allowedTrust | `typeOperator` |  |
+| allowedTrust | `readonly "release" \| "dev"[]` |  |
 
 ### `writeManifest(manifestPath, manifest): void`
 
