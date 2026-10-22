@@ -4,6 +4,9 @@ This directory contains AI-first documentation for the Primebrick Data Access La
 
 ## Documents
 
+- [dev-server.md](./dev-server.md) — Dev-server lifecycle & process ownership (library variant — no dev server; owns its builds/tests)
+- [env-policy.md](./env-policy.md) — Closed environment policy — no `.env`; DB config lives in `config_entries`
+- [enforcement-over-verification.md](./enforcement-over-verification.md) — Enforcement-over-verification doctrine — behavior enforced by code/types/builders, tests prove it
 - [dal-usage-guide.md](./dal-usage-guide.md) — Complete method-by-method guide to the Repository API
 - [dal-architecture.md](./dal-architecture.md) — Internal architecture, design decisions, and data flow
 - [dal-testing.md](./dal-testing.md) — How to write and run tests against the DAL

@@ -51,7 +51,7 @@
   },
   "packageManager": "pnpm@9.15.9",
   "dependencies": {
-    "@primebrick/core": "3.0.0",
+    "@primebrick/core": "workspace:*",
     "pg": "8.23.1",
     "pg-query-stream": "4.17.1",
     "reflect-metadata": "0.2.2"
