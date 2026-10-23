@@ -32,7 +32,7 @@ export async function retryFailedPatches(
 ): Promise<number> {
   const fq = `"${schema}".${PATCH_REGISTRY_TABLE}`;
   const r = await pool.query(
-    `UPDATE ${fq} SET status='pending', error=NULL, updated_at=now(), resolved_by=$2
+    `UPDATE ${fq} SET status='pending', error=NULL, updated_at=now(), resolved_by=$1
        WHERE status='failed'`,
     [actor ?? null]
   );
@@ -52,7 +52,7 @@ export async function approvePendingReview(
 ): Promise<boolean> {
   const fq = `"${schema}".${PATCH_REGISTRY_TABLE}`;
   const r = await pool.query(
-    `UPDATE ${fq} SET status='approved', updated_at=now(), resolved_by=$3, resolved_note=$4
+    `UPDATE ${fq} SET status='approved', updated_at=now(), resolved_by=$2, resolved_note=$3
        WHERE patch_name=$1 AND status='pending_review'`,
     [patchName, actor, note ?? null]
   );
@@ -69,7 +69,7 @@ export async function resolveManually(
 ): Promise<boolean> {
   const fq = `"${schema}".${PATCH_REGISTRY_TABLE}`;
   const r = await pool.query(
-    `UPDATE ${fq} SET status='resolved_manual', updated_at=now(), resolved_by=$3, resolved_note=$4,
+    `UPDATE ${fq} SET status='resolved_manual', updated_at=now(), resolved_by=$2, resolved_note=$3,
             error=NULL
        WHERE patch_name=$1 AND status IN ('failed','pending','pending_review')`,
     [patchName, actor, note]

@@ -1770,6 +1770,18 @@ UI column renderer type. NOTE: this is the UI type, not the DB type —
 
 **Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline"`
 
+### `MfaStepUpFn`
+
+`ctx.components.mfaStepUp` — host-bound step-up MFA bridge. The remote
+calls it exactly like the host's `useMfaStepUp().executeWithToken`:
+`requestFn` runs once with `token = null`; on a `403` response carrying
+`mfa_step_up_required` the host shows ITS OWN step-up dialog (host root,
+host runtime — nothing crosses the boundary), awaits verification, then
+retries `requestFn` with the action-authorization token. The promise
+resolves with the final Response — success or failure.
+
+**Type:** `(requestFn: (token: string \| null) => Promise<Response>, context: { action: string; target_resource: string }) => Promise<Response>`
+
 ### `MigrationEngineOptions`
 
 Migration engine — apply side. Generation side lives in schema-diff/.
@@ -1813,6 +1825,13 @@ boundary. UI building blocks come from `@primebrick/ui` bundled inside the
 remote chunk, not from ctx; `components` is reserved for the few
 host-coupled cases (see `ModulePageHost.components`).
 
+### `ModulePageHostComponents`
+
+`ModulePageHost.components` — the reserved well-known keys plus open
+caller-provided entries. `remote` is assigned by the host loader after
+the chunk resolves; `mfaStepUp`/`openSheet` are built-ins the host always
+provides (a caller may override them in tests).
+
 ### `ModulePageNotifyInput`
 
 Notification payload accepted by `ctx.notify` — the minimal shape of the
@@ -1826,11 +1845,39 @@ function, or a promise of either.
 
 **Type:** `(el: HTMLElement, ctx: ModulePageHost) => unknown`
 
+### `MountSectionFn`
+
+A chunk's section-mount export — same host ctx as `mountPage`, plus the
+section's own declaration (`id`, `props`, placement) as third argument.
+
+**Type:** `(el: HTMLElement, ctx: ModulePageHost, section: PageSectionDecl) => unknown`
+
 ### `OnConflictMode`
 
 Insert conflict semantics for `add()`.
 
 **Type:** `"raise" \| "ignore"`
+
+### `OpenSheetFn`
+
+`ctx.components.openSheet` — opens a host-registered sheet panel by key
+(e.g. `"shell.aiCerebellum"`). The panel registry and sheet state live in
+the host — a remote page requests the panel, it never ships one. `props`
+are plain values (callback fns are allowed — they cross the boundary);
+`options` are the host's sheet options (`side`, `contentClass`, `modal`,
+`keepMountedState`). Unknown keys are rejected with a host notification —
+the remote cannot smuggle an unregistered panel.
+
+**Type:** `(panelKey: string, props: Record<string, unknown>, options: Record<string, unknown>) => void`
+
+### `PageLayoutDecl`
+
+Spatial arrangement of a page's sections — ONE archetype: CSS grid.
+A vertical stack is the degenerate case (`columns` defaults to `"1fr"`,
+sections auto-flow in declaration order); a split is `columns: "280px
+1fr"`; a dashboard is `columns: "repeat(3, 1fr)"` + per-section `span`.
+New container classes, when genuinely needed, arrive as new optional
+fields — the contract never grows a second placement vocabulary.
 
 ### `PageRouteComponentFormat`
 
@@ -1844,7 +1891,8 @@ and non-breaking. `esm-mount`: a precompiled ESM chunk that exports
 
 One declared frontend route owned by a module. Modules MUST declare every
 FE path they own that is not deducible from nav links or entity
-conventions — the AI route census (GET /system/routes) depends on it.
+conventions — the AI route census (derived from the consolidated
+`GET /api/v1/modules` discovery payload) depends on it.
 `param` marks dynamic segments using the FE convention ([uuid], [code]).
 
 ### `PageRouteKind`
@@ -1852,6 +1900,24 @@ conventions — the AI route census (GET /system/routes) depends on it.
 Page archetype vocabulary — what the route renders, regardless of delivery.
 
 **Type:** `"list" \| "detail" \| "create" \| "page"`
+
+### `PageRouteProps`
+
+`page_props` — free-form per-route metadata with a typed `layout` axis.
+
+### `PageSectionDecl`
+
+One mountable block inside a `layout` — placement is grid-cell based.
+
+### `PageSectionSource`
+
+Section mount target — `remote:<export>` = a named mount export of the
+page's own chunk (`mod.mountModels(el, ctx, section)`); `host:<key>` = a
+component registered in the host's section registry. The `remote:` form is
+the default for module-owned blocks; `host:` composes host-owned building
+blocks without shipping a chunk at all.
+
+**Type:** `templateLiteral \| templateLiteral`
 
 ### `PaginatedEntity`
 
@@ -1898,6 +1964,11 @@ Type modifiers are NEVER written inside `pgType`: `varchar(N)` comes from
 (`vector(N)` literal is allowed for readability but `length` wins).
 
 **Type:** `"text" \| "varchar" \| "char" \| "citext" \| "uuid" \| "smallint" \| "int2" \| "integer" \| "int" \| "int4" \| "bigint" \| "int8" \| "real" \| "float4" \| "double precision" \| "float8" \| "numeric" \| "decimal" \| "boolean" \| "bool" \| "date" \| "time" \| "timetz" \| "timestamp" \| "timestamptz" \| "interval" \| "inet" \| "cidr" \| "macaddr" \| "macaddr8" \| "json" \| "jsonb" \| "bytea" \| "xml" \| "tsvector"`
+
+### `RemoteDepsManifest`
+
+`<chunk>.deps.json` — emitted next to each remote chunk at build time,
+declaring the vendor specifiers/versions it was compiled against.
 
 ### `RenameAmbiguity`
 
@@ -2007,6 +2078,24 @@ pgvector distance operator for `vectorSearch` — `<=>` cosine, `<->` L2, `<#>` 
 ### `VectorSearchOptions`
 
 Options for `Repository.vectorSearch` — entity-generic like `FindOptions`.
+
+### `VendorManifest`
+
+Host `vendor-manifest.json` — specifier → published vendor asset.
+
+**Type:** `Record<string, { url: string; version: string }>`
+
+### `VendorMismatch`
+
+**Type:** `{ specifier: string; kind: "missing"; required: string } \| { specifier: string; kind: "version"; required: string; provided: string }`
+
+### `VendorResolution`
+
+**Type:** `"external" \| "reject" \| "bundle"`
+
+### `VendorSpecifier`
+
+**Type:** `typeof VENDOR_SPECIFIERS[number]`
 
 ### `ViewName`
 
@@ -2186,6 +2275,23 @@ with `enabled: false` (explicitly unavailable) instead of being omitted.
 ### `TEN`
 
 **Type:** `Decimal`
+
+### `VENDOR_BLOCKED_PACKAGES`
+
+Packages that MUST NOT be imported raw inside a remote chunk — they are
+already served through a sanctioned vendor specifier (e.g. transformers is
+vendored behind `@primebrick/ui/transformers`). A raw import would bundle
+a second runtime copy (split caches, split env config) — reject it.
+
+**Type:** `readonly ["@huggingface/transformers", "clsx", "tailwind-merge", "tailwind-variants", "@lucide/svelte", "bits-ui"]`
+
+### `VENDOR_SPECIFIERS`
+
+Closed allowlist of bare specifiers remote chunks may import. The union
+of a package's specifiers maps to ONE bundle file per package, so the
+browser dedupes by URL — a single runtime instance is guaranteed.
+
+**Type:** `readonly ["svelte", "svelte/internal/client", "svelte/internal/disclose-version", "svelte/internal/flags/legacy", "svelte/events", "svelte/reactivity", "svelte/store", "svelte/attachments", "@primebrick/core", "@primebrick/ui", "@primebrick/ui/transformers", "@primebrick/ui/vendor/clsx", "@primebrick/ui/vendor/tailwind-merge", "@primebrick/ui/vendor/tailwind-variants", "@primebrick/ui/vendor/lucide", "@primebrick/ui/vendor/bits-ui"]`
 
 ### `ZERO`
 
@@ -2599,6 +2705,19 @@ Marks a field as deletable (deleted_at, deleted_by).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | what | `DeletableFieldType` |  |
+
+### `diffVendorRequirements(requires, manifest): VendorMismatch[]`
+
+Vendor compatibility check — exact-match policy. A remote chunk compiled
+against a different version of a vendored package is incompatible:
+`svelte/internal/*` is not a stable API and each union bundle's export set
+may change between versions. The remedy is rebuilding the remote chunk —
+a semver-tolerant handshake would only defer an opaque import failure.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| requires | `Record<string, string>` |  |
+| manifest | `VendorManifest` |  |
 
 ### `div(a, b, opts): Decimal`
 
@@ -3298,6 +3417,16 @@ invariant rather than failing closed).
 | preset | `FilterPreset` |  |
 | selected | `string \| undefined` |  |
 
+### `resolveVendorSpecifier(specifier): VendorResolution`
+
+How a remote chunk's bundler must treat a bare import specifier. Both the
+host vendor build and every module chunk build derive behavior from this
+single function so the plane stays deterministic.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| specifier | `string` |  |
+
 ### `retryFailedPatches(pool, schema, actor): Promise<number>`
 
 failed → pending: next runMigrations retries them (and past them, in order).
@@ -3386,6 +3515,14 @@ Sign a manifest body (entries already updated) with a PEM/DER private key.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | s | `string` |  |
+
+### `specifierTopPackage(specifier): string`
+
+Top-level npm package of a specifier ('svelte/internal/client' → 'svelte').
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| specifier | `string` |  |
 
 ### `splitSqlStatements(sql): string[]`
 
