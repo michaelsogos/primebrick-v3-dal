@@ -1,160 +1,76 @@
-# DAL Testing Guide — @primebrick/dal
+# DAL Testing
 
-How to write and run tests against the DAL.
+> Canonical body of `.devin/rules/dal-testing.md` — the rule file is a pointer to this page.
 
-## Test infrastructure
+## Test Framework
 
-- **Framework:** Vitest
-- **Database:** Real PostgreSQL® (no mocks, no in-memory substitutes)
-- **Test runner config:** `vitest.config.ts` (main), `test/benchmark.vitest.config.ts` (benchmarks)
+- Tests use **Vitest**.
+- Tests run against a **REAL PostgreSQL® database** — **no mocks**.
+  - Do not stub `pg` or the connection pool in tests.
+  - Mock-based tests are not acceptable for verifying DAL behavior.
 
-## Environment setup
+## Test Entities
 
-Create a `.env` file in the DAL repo root:
+- **`SimpleTestEntity`** — used for basic CRUD coverage (insert, find, update, delete, soft-delete).
+- **`TypeTestEntity`** — used for the full type matrix (see below).
+- Test entities live alongside the test files and use the same decorators as production entities.
 
-```bash
-DATABASE_URL=postgresql://user:password@localhost:5432/primebrick_test
-```
+## Database Setup
 
-The test pool reads `DATABASE_URL` via `dotenv/config`. Without it, tests will throw immediately.
+- Setup is **idempotent**: use `CREATE TABLE IF NOT EXISTS` for all test tables.
+- Schema setup runs once per test run (or per suite) and does not assume a clean DB.
 
-## Running tests
+## Test Isolation
 
-```bash
-pnpm test              # run all tests once
-pnpm test:watch        # watch mode
-pnpm test:benchmark    # run benchmarks (100, 1K, 10K records)
-```
+- Between tests, tables are cleared via:
+  ```sql
+  TRUNCATE RESTART IDENTITY CASCADE
+  ```
+- This resets sequences/identities and cascades to dependent tables.
+- Do not rely on test ordering; each test must be independent.
 
-For 1M record benchmarks (long-running):
+## Environment
 
-```bash
-BENCH_1M=1 pnpm test:benchmark
-```
+- `DATABASE_URL` **must be set** in `.env` (project root).
+  - Example: `DATABASE_URL=postgres://user:pass@localhost:5432/primebrick_dal_test`
+- Tests fail fast if `DATABASE_URL` is missing.
 
-## Test entities
+## Running Tests
 
-### SimpleTestEntity (`test/entities/simple-test-entity.ts`)
+- **Run tests:** `pnpm test`
+- **Run benchmarks:** `pnpm test:benchmark`
+- **1M record benchmarks:** set `BENCH_1M=1` env var to enable large-scale benchmarks.
+  - Without this flag, benchmarks use a smaller default record count to keep CI fast.
+  - Example: `BENCH_1M=1 pnpm test:benchmark`
 
-Minimal entity for basic CRUD, finder, and bulk operation tests:
-- `id` (bigint identity PK)
-- `uuid` (uuid unique)
-- `name` (varchar 255)
-- `description` (text, nullable)
-- Full audit fields (created_at/by, updated_at/by, version)
-- Soft-delete fields (deleted_at/by)
+## Type Test Matrix
 
-### TypeTestEntity (`test/entities/type-test-entity.ts`)
+- `TypeTestEntity` exercises the full type mapping across:
+  - `int` (integer)
+  - `bigint` (returned as native `bigint` via `INT8_OID`)
+  - `boolean`
+  - `varchar`
+  - `text`
+  - `numeric`
+  - `decimal`
+  - `date`
+  - `timestamp`
+  - `jsonb`
+- Each type has round-trip tests: insert a value, read it back, assert type and value fidelity.
 
-Type-rich entity for the type mapping matrix:
-- `int_col` (integer)
-- `bigint_col` (bigint — native bigint)
-- `bool_col` (boolean)
-- `varchar_col` (varchar 100)
-- `text_col` (text, nullable)
-- `numeric_col` (numeric 15,2 — returns as number)
-- `big_numeric_col` (numeric 38,0 — returns as string)
-- `decimal_col` (decimal 10,4)
-- `timestamp_col` (timestamptz — returns as JS Date)
-- `date_col` (date — returns as JS Date)
-- `jsonb_col` (jsonb, nullable)
-- Full audit + soft-delete fields
+## Positive and Negative Paths
 
-## Setup helpers (`test/helpers/setup.ts`)
+- Tests cover **both positive and negative paths**.
+- **Negative/failure path tests** verify:
+  - Correct error **types** are thrown (e.g. `NotFoundError`, `MultipleRowsError`, `UnknownColumnError`, `ValidationError`).
+  - Correct error **codes** are present on the thrown errors.
+  - Constraint violations and invalid inputs surface as the expected DAL error, not a raw `pg` error.
+- Do not only test the happy path; every error branch must have coverage.
 
-### `getTestPool()`
+## Documentation Language
 
-Returns a shared `pg.Pool` connected to the test database. Throws if `DATABASE_URL` is not set.
+- All `*.md` files (including this one) use English.
 
-### `setupTestSchema()`
+## Deep dive
 
-Idempotent DDL setup — creates test tables with `CREATE TABLE IF NOT EXISTS`. Safe to run multiple times. Called in `beforeAll`.
-
-### `truncateTestTables()`
-
-Truncates all test tables with `TRUNCATE ... RESTART IDENTITY CASCADE`. Called in `beforeEach` for test isolation.
-
-### `closeTestPool()`
-
-Closes the shared pool. Called in `afterAll`.
-
-### `dropTestSchema()`
-
-Drops test tables entirely. Not used in normal test runs — useful for full teardown.
-
-## Test isolation
-
-Each test file follows this pattern:
-
-```typescript
-import { REPO_INTERNAL } from "../src/repository/repository.js";
-
-beforeAll(async () => {
-  pool = getTestPool();
-  await setupTestSchema();
-  repo = new Repository(pool, REPO_INTERNAL);
-});
-
-afterAll(async () => {
-  await closeTestPool();
-});
-
-beforeEach(async () => {
-  await truncateTestTables();
-});
-```
-
-`TRUNCATE RESTART IDENTITY CASCADE` ensures:
-- All rows are deleted
-- Identity sequences are reset to 1
-- No cross-test contamination
-
-## Test files
-
-| File | Coverage |
-|------|----------|
-| `repository-crud.test.ts` | Basic CRUD: add, findById, findByUUID, find, findAll, findByPage, count, update, delete, restore, hardDelete, upsert |
-| `repository-bulk.test.ts` | Bulk ops: addMany, upsertMany, deleteMany, updateMany (TEMP TABLE) |
-| `repository-types.test.ts` | Type mapping matrix: int, bigint, boolean, varchar, text, numeric, decimal, date, timestamp, jsonb |
-| `repository-streaming.test.ts` | Streaming via pg-query-stream: AsyncIterable, empty result, large result |
-| `repository-negative.test.ts` | Failure paths: NotFoundError, ValidationError, UnknownColumnError, silent failures (empty arrays), error code stability |
-| `repository-benchmark.test.ts` | Benchmarks: addMany, upsertMany, updateMany at 100/1K/10K (and 1M with BENCH_1M=1) |
-
-## Type test matrix
-
-The type test matrix in `repository-types.test.ts` verifies correct PG ↔ JS type mapping:
-
-| PG type | JS type | Notes |
-|---------|---------|-------|
-| `integer` | `number` | |
-| `bigint` | `bigint` | Native bigint via INT8_OID parser |
-| `boolean` | `boolean` | |
-| `varchar(n)` | `string` | |
-| `text` | `string` / `null` | Nullable |
-| `numeric(15,2)` | `number` | Fits in Number.MAX_SAFE_INTEGER |
-| `numeric(38,0)` | `string` | Overflows Number — returned as string |
-| `decimal(10,4)` | `number` | |
-| `timestamptz` | `Date` | JS Date object |
-| `date` | `Date` | JS Date object, time component stripped |
-| `jsonb` | `object` / `null` | Parsed JSON |
-
-## Negative / failure path testing
-
-The DAL tests both positive paths (things work) and negative paths (things fail correctly):
-
-- **NotFoundError** — finders throw when rows don't exist (default behavior)
-- **ValidationError** — empty inputs, invalid page numbers
-- **UnknownColumnError** — non-existent properties in write ops
-- **Silent failures** — empty arrays in bulk ops return `[]` (no error)
-- **Error code stability** — every error has a stable `code` field
-
-## bigint configuration
-
-For `bigint` columns to return as native `bigint`, the `pg` module must be configured with the INT8 type parser. Add this to your application's pool setup:
-
-```typescript
-import pg from "pg";
-pg.types.setTypeParser(pg.types.builtins.INT8, (val: string) => BigInt(val));
-```
-
-The test suite expects this to be configured. If it's not, `bigint_col` will return as a string instead of a native bigint.
+The normative rules live here; the full mechanics and rationale are in `docs/dev-guide/getting-started.mdx` — link, do not duplicate.
