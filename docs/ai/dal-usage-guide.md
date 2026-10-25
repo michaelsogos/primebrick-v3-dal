@@ -81,7 +81,7 @@ import or mount time.
 
 **Consumer rule:** `getDal(config)` belongs to the bootstrap seam only —
 services never pass config. In the BE, `getDal(`/`initDal(` calls outside
-the `.devin/check-standards.json` `dal-access` allowlist fail
+the consumer repo's `check-standards.json` `dal-access` allowlist fail
 `check:standards`. Worker services extend `DomainService<TEntity>` and
 use `this.dal`/`this.svc` instead of importing `getDal` at all (see the
 `entity-service` dev-guide page).

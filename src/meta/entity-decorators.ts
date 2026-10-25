@@ -790,8 +790,10 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       inferredPgType === "uuid" &&
       (reg.isKey || reg.isUnique)
     ) {
-      const provider = (process.env.PB_UUID_DEFAULT_PROVIDER ?? "pgcrypto").toLowerCase();
-      reg.defaultSql = provider === "uuid-ossp" ? "uuid_generate_v4()" : "gen_random_uuid()";
+      // uuid key/unique columns always default to gen_random_uuid() —
+      // pgcrypto is the standard PostgreSQL uuid provider. There is no env
+      // override: env configuration is closed-set (see docs/ai/env-policy).
+      reg.defaultSql = "gen_random_uuid()";
     }
     const usePostgresIdentity = Boolean(reg.isKey && (reg.keyGenerated ?? "identity") === "identity");
     const entry: EntityPersistenceMeta["columns"][string] = {
