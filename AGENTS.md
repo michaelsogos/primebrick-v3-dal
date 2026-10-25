@@ -1,5 +1,23 @@
 # AI AGENT INSTRUCTIONS - @primebrick/dal
 
+## Documentation is the contract — code is the proof
+
+- Docs (AGENTS.md, .devin/rules/, docs/ai/, docs/dev-guide/, docs/user-guide/)
+  are the source of truth for HOW things work. Source code is NEVER
+  documentation: pages are composed dynamically (mountPage, remote chunks,
+  layout.sections, runtime wiring) — reading a +page.svelte alone tells you
+  little about what actually renders.
+- Need to know how to do something (tests, auth, dev servers, conventions)?
+  Find it in the doc FIRST. Read code only as the "prova del 9" — to verify
+  the code behaves as the doc says. Never the reverse.
+- Doc and code disagree? Report the discrepancy — the doc is probably stale.
+  Do NOT fix docs silently and do NOT create new files in .devin/rules/,
+  docs/, or AGENTS.md on your own initiative: propose the text, write only
+  after approval.
+- Before claiming "a doc is missing", check the indexes:
+  docs/ai/README.md, .devin/rules/, docs/dev-guide/_order.json.
+  The missing doc is usually a doc you haven't read.
+
 ## ⚠️ CRITICAL: NEVER COMMIT AUTOMATICALLY
 
 **AI agents MUST NEVER commit changes without explicit user instruction.**
