@@ -99,6 +99,8 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
   }
 
   // Add projections for display_name fields from joined tables (auditable joins).
+  // COALESCE falls back to the raw actor column so "system" / orphan uuids
+  // still render instead of NULL.
   if (joins) {
     for (const j of joins) {
       if (j.alias) {
@@ -108,7 +110,11 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
         else if (j.alias === 'deleter') fieldName = 'deleted_by_name';
 
         if (fieldName) {
-          projections.push(`${quoteIdent(j.alias)}.display_name AS ${quoteIdent(fieldName)}`);
+          const actorCol = getColumnName(j.right.entity, j.right.key);
+          const actorRef = `${qTable(j.right.entity, j.right.entity === entity ? tableNameOverride : undefined)}.${quoteIdent(actorCol)}`;
+          projections.push(
+            `COALESCE(${quoteIdent(j.alias)}.display_name, ${actorRef}) AS ${quoteIdent(fieldName)}`
+          );
         }
       }
     }

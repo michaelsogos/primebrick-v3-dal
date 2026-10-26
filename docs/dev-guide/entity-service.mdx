@@ -23,7 +23,6 @@ copying a line.
 const service = dal.entityService<CustomerEntity>({
   entity: CustomerEntity,
   actor: requireActor,                 // SDK — the resolved caller
-  userEntity: UserProfileEntity,       // optional display-name join
   list: {
     searchableKeys: ["name", "email"],
     filterableKeys: new Set(["status", "country", "created_at"]),
@@ -71,7 +70,7 @@ Three design guarantees make it the only legal shape:
 - **IS an `EntityService`** — a subclass can be handed to an entity-router
   unchanged; domain rules override whichever methods need them.
 - **`buildConfig()` seam** — override to inject extra `EntityServiceConfig`
-  fields (`auditPort`, `actor`, `userEntity`) at resolution time; it runs
+  fields (`auditPort`, `actor`) at resolution time; it runs
   inside the lazy path so it may itself use `this.dal`.
 
 Collaborator services may still be constructor-injected for tests; the DAL
@@ -136,9 +135,12 @@ omits the BE's Redis/NATS `entity-changed` markers — those are gateway
 collaboration infra, not persistence concern; a service that needs them
 wraps the port itself.
 
-`userEntity` enables the auditable display-name joins (`created_by_name`,
-`updated_by_name`, `deleted_by_name`) — without it audit rows carry the
-raw `changed_by` uuid.
+Auditable entities get the display-name joins (`created_by_name`,
+`updated_by_name`, `deleted_by_name`) **automatically** — `joinsFor()` emits
+`buildAuditableJoinsSelective` against the hardcoded `UserProfileRefEntity`
+projection (`public.user_profiles`), with `COALESCE(creator.display_name,
+t.<actor col>)` so raw values like `"system"` stay readable. It is a platform
+invariant, not a config knob — there is no `userEntity` option.
 
 ## What it deliberately does not do
 

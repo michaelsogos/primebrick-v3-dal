@@ -16,10 +16,13 @@
  *                     publishes entity-changed markers, which are gateway
  *                     collaboration infra, NOT required here)
  *   - `actor`       — `() => string` supplier (US passes SDK `requireActor`)
- *   - `userEntity`  — optional auditable display-name join target (BE:
- *                     `UserProfileEntity`). Without it, `created_by_name` /
- *                     `updated_by_name` / `deleted_by_name` are not projected
- *                     and audit rows carry the raw `changed_by` uuid only.
+ *
+ * Auditable display names are NOT configurable: for every auditable entity
+ * the read paths LEFT JOIN `public.user_profiles` via the dal-owned
+ * `UserProfileRefEntity` projection and emit `created_by_name` /
+ * `updated_by_name` / `deleted_by_name` (COALESCE → raw actor on miss) —
+ * `public` is a cross-app platform domain, exempt via
+ * `PLATFORM_SHARED_TABLES` in schema-domain.ts.
  *
  * Guarantees identical to the BE version:
  * - every write returns the row produced by `RETURNING` — there is no code
@@ -51,6 +54,8 @@ import {
 } from "../query/dsl.js";
 import { buildAuditableJoinsSelective } from "../audit/auditable-joins.js";
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
+import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
+import { isAuditableEntity } from "../repository/repository.js";
 import {
   DeletableFieldType,
   getEntityPersistenceMeta,
@@ -148,8 +153,6 @@ export interface EntityServiceConfig<TEntity> {
   auditPort?: AuditPort;
   /** Actor supplier for audit stamping (e.g. SDK `requireActor`). */
   actor?: () => string;
-  /** Optional auditable display-name join target (BE: UserProfileEntity). */
-  userEntity?: EntityClass;
   /** Audit trail table override — default `${tableName}_audit`. */
   auditTableName?: string;
   list: {
@@ -291,9 +294,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   const hasDeletedBy = Object.values(meta.columns).some(
     (c) => c.isDeletable && c.deletableType === DeletableFieldType.DELETED_BY,
   );
+  const auditable = isAuditableEntity(meta);
   const joinsFor = (): JoinExpr[] =>
-    cfg.userEntity
-      ? (buildAuditableJoinsSelective(cfg.entity, cfg.userEntity, {
+    auditable
+      ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
           includeDeleter: hasDeletedBy,
         }) as JoinExpr[])
       : [];
@@ -542,7 +546,6 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         entityUuid: uuid,
         page,
         limit,
-        ...(cfg.userEntity ? { userEntity: cfg.userEntity } : {}),
       });
       return {
         ...r,

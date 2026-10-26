@@ -467,7 +467,11 @@ describe("Repository — buildAuditTrailJoins", () => {
   });
 
   it("buildAuditTrailJoins: returns joins and projections", () => {
-    const { joins, projections } = buildAuditTrailJoins(AuditLogEntity, TestUserEntity);
+    const { joins, projections } = buildAuditTrailJoins(
+      AuditLogEntity,
+      TestUserEntity,
+      '"public"."dal_test_simple_audit"',
+    );
 
     expect(joins).toHaveLength(1);
     expect(joins[0].type).toBe("LEFT");
@@ -476,8 +480,12 @@ describe("Repository — buildAuditTrailJoins", () => {
     expect(joins[0].options?.castLeftTo).toBe("uuid");
 
     expect(projections).toHaveLength(2);
-    expect(projections[0]).toEqual({ kind: "expr", expr: "creator.display_name", alias: "changed_by_display_name" });
-    expect(projections[1]).toEqual({ kind: "expr", expr: "creator.idp_code", alias: "changed_by_idp_code" });
+    expect(projections[0]).toEqual({
+      kind: "expr",
+      expr: 'COALESCE("creator"."display_name", "public"."dal_test_simple_audit"."changed_by")',
+      alias: "changed_by_display_name",
+    });
+    expect(projections[1]).toEqual({ kind: "expr", expr: '"creator"."idp_code"', alias: "changed_by_idp_code" });
   });
 
   it("buildAuditTrailJoins: resolves display_name via LEFT JOIN", async () => {
@@ -508,7 +516,11 @@ describe("Repository — buildAuditTrailJoins", () => {
     );
 
     // Query with buildAuditTrailJoins
-    const { joins, projections: joinProjections } = buildAuditTrailJoins(AuditLogEntity, TestUserEntity);
+    const { joins, projections: joinProjections } = buildAuditTrailJoins(
+      AuditLogEntity,
+      TestUserEntity,
+      '"public"."dal_test_simple_audit"',
+    );
     const result = await repo.findByPage<AuditLogEntity>(
       AuditLogEntity,
       1,
@@ -537,7 +549,7 @@ describe("Repository — buildAuditTrailJoins", () => {
     expect(row.changed_by_idp_code).toBe("john.doe");
   });
 
-  it("buildAuditTrailJoins: returns null display_name for non-UUID changed_by (system)", async () => {
+  it("buildAuditTrailJoins: falls back to raw actor for non-UUID changed_by (system)", async () => {
     const source = await repo.add(SimpleTestEntity, { name: "Src" }, { actor: "u" });
     const sourceId = (await repo.findByUUID(SimpleTestEntity, source.uuid))!.id;
 
@@ -556,7 +568,11 @@ describe("Repository — buildAuditTrailJoins", () => {
       { tableName: "dal_test_simple_audit" },
     );
 
-    const { joins, projections: joinProjections } = buildAuditTrailJoins(AuditLogEntity, TestUserEntity);
+    const { joins, projections: joinProjections } = buildAuditTrailJoins(
+      AuditLogEntity,
+      TestUserEntity,
+      '"public"."dal_test_simple_audit"',
+    );
     const result = await repo.findByPage<AuditLogEntity>(
       AuditLogEntity,
       1,
@@ -576,8 +592,9 @@ describe("Repository — buildAuditTrailJoins", () => {
     expect(result.entities).toHaveLength(1);
     const row = result.entities[0] as any;
     expect(row.changed_by).toBe("system");
-    // The regex guardrail should prevent the join from matching → null
-    expect(row.changed_by_display_name).toBeNull();
+    // Regex guardrail prevents the join match → COALESCE falls back to the
+    // raw actor string instead of NULL
+    expect(row.changed_by_display_name).toBe("system");
     expect(row.changed_by_idp_code).toBeNull();
   });
 });

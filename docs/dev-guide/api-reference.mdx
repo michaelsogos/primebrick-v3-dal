@@ -1077,6 +1077,30 @@ Thrown when a write operation (add, update) receives a property not in entity me
 |-----------|------|-------------|
 | message | `string` |  |
 
+### `UserProfileRefEntity`
+
+`UserProfileRefEntity` — read-only projection of the platform identity
+table `public.user_profiles`, owned by the DAL so the auditable
+display-name join is a STATIC, hardcoded statement: every auditable
+entity read (list/get/stream/audit) LEFT JOINs this table and projects
+`display_name` / `idp_code` — no consumer config, no per-service entity.
+
+`public` is a cross-app platform domain (like `custom`), not a module
+domain: `user_profiles` is exempted from the schema-domain check via the
+built-in `PLATFORM_SHARED_TABLES` set in `schema-domain.ts`, so the join
+resolves legally from every service domain.
+
+This is NOT `UserProfileEntity`: the full entity — Casdoor sync, all
+columns, CRUD + routes — stays owned by the backend. Only the three
+columns the auditable join needs are projected here.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | `bigint` |  |
+| uuid | `string` |  |
+| idp_code | `string` |  |
+| display_name | `string` |  |
+
 ### `ValidationError`
 
 Thrown when a validation check fails (e.g. empty updates object, missing actor).
@@ -1337,7 +1361,6 @@ The contract every entity service must satisfy — enforced on the router.
  `{table}_audit` writer). Override only for ports with extra side
  effects (e.g. the BE entity-changed marker publisher). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
-| userEntity | `EntityClass` | Optional auditable display-name join target (BE: UserProfileEntity). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
 | list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
@@ -1540,6 +1563,31 @@ Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany).
 ### `ColumnOptions`
 
 ### `ColumnPgPersistenceHints`
+
+### `ConfigEntry`
+
+Standard Config Table entry.
+
+The BE coerces `value` to its native JS type before serialization:
+  - `bigint` → native `bigint` (preserved by ext-json response parsing)
+  - `number` → native `number`
+  - `money`  → native `number` (amount only; currency is in `type_config`)
+  - `secret` → `null` (masked by BE)
+  - other    → `string`
+
+Write path: callers send the native type (bigint/number/string); the BE
+serializes it to the DB string form via `serializeConfigValue`.
+
+### `ConfigEntryType`
+
+Config value type vocabulary — drives widget selection and validation.
+Mirrors the SDK `ConfigType` and the BE `type` column.
+
+- `bigint`: integer values backed by JS `BigInt` (renamed from `integer`)
+- `number`: decimal/float values backed by JS `Number`
+- `money`:  numeric amount with currency metadata in `type_config`
+
+**Type:** `"string" \| "text" \| "boolean" \| "bigint" \| "number" \| "money" \| "badge" \| "single_select" \| "multi_select" \| "url" \| "secret" \| "json" \| "date" \| "datetime" \| "time" \| "email" \| "phone"`
 
 ### `DalErrorCode`
 
@@ -1758,6 +1806,8 @@ Global connector joining the advanced-filter group.
 
 ### `ListFilterOptions`
 
+### `LucideRewriteResult`
+
 ### `MatchByOptions`
 
 Options for match-by operations (update, delete, restore, hardDelete, *Many).
@@ -1866,7 +1916,8 @@ mounted at runtime into the host's global sheet surface.
 declared key can never collide across services (enforced at enrollment
 by the nav-declaration validator). Anyone holding the key can open it —
 host `openSheet`, `ctx.components.openSheet` — visibility is gated by
-`access`, never by import reachability.
+the sheet's derived access key (`access.<ns>.<name>`), never by import
+reachability.
 
 ### `ModuleSheetDefaults`
 
@@ -2350,6 +2401,22 @@ a second runtime copy (split caches, split env config) — reject it.
 
 **Type:** `readonly ["@huggingface/transformers", "clsx", "tailwind-merge", "tailwind-variants", "@lucide/svelte", "bits-ui"]`
 
+### `VENDOR_SPECIFIER_PREFIXES`
+
+Open-ended specifier prefixes — everything under a prefix is a sanctioned
+vendor specifier without central allowlisting per item. Unlike
+VENDOR_SPECIFIERS (one bundle file per specifier), each prefix
+maps to a `/vendor/…/` URL directory: the specifier suffix resolves
+verbatim after the prefix.
+
+`@primebrick/ui/vendor/lucide/icons/` covers every lucide icon file the
+host vendor build emits at `/vendor/icons/lucide/<dist-name>.js` —
+remote chunks never resolve icons through a barrel (a barrel would force
+the whole catalog on every consumer), they emit one specifier per used
+icon. New lucide releases add icons with zero changes to this contract.
+
+**Type:** `readonly ["@primebrick/ui/vendor/lucide/icons/"]`
+
 ### `VENDOR_SPECIFIERS`
 
 Closed allowlist of bare specifiers remote chunks may import. A
@@ -2360,7 +2427,7 @@ their own files — their export names collide with the internal signal
 API (`get`/`derived` exist in both), and a flat union module cannot hold
 both. Shared internals still dedupe through the bundler's shared chunks.
 
-**Type:** `readonly ["svelte", "svelte/internal/client", "svelte/internal/disclose-version", "svelte/internal/flags/legacy", "svelte/events", "svelte/reactivity", "svelte/store", "svelte/attachments", "svelte/motion", "svelte/easing", "@primebrick/core", "@primebrick/ui", "@primebrick/ui/vendor/transformers", "@primebrick/ui/vendor/clsx", "@primebrick/ui/vendor/tailwind-merge", "@primebrick/ui/vendor/tailwind-variants", "@primebrick/ui/vendor/lucide", "@primebrick/ui/vendor/bits-ui"]`
+**Type:** `readonly ["svelte", "svelte/internal/client", "svelte/internal/disclose-version", "svelte/internal/flags/legacy", "svelte/events", "svelte/reactivity", "svelte/store", "svelte/attachments", "svelte/motion", "svelte/easing", "@primebrick/core", "@primebrick/ui", "@primebrick/ui/vendor/transformers", "@primebrick/ui/vendor/clsx", "@primebrick/ui/vendor/tailwind-merge", "@primebrick/ui/vendor/tailwind-variants", "@primebrick/ui/vendor/bits-ui"]`
 
 ### `ZERO`
 
@@ -2500,7 +2567,7 @@ Useful when you only need specific audit fields to reduce query overhead.
 | userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) |
 | options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean }` | Configuration for which joins to include |
 
-### `buildAuditTrailJoins(auditEntity, userEntity): { joins: JoinExpr[]; projections: FieldProjector[] }`
+### `buildAuditTrailJoins(auditEntity, userEntity, baseTableRef): { joins: JoinExpr[]; projections: FieldProjector[] }`
 
 Build LEFT JOIN + projections for audit trail entities (AuditLogEntity).
 
@@ -2517,7 +2584,10 @@ buildAuditTrailJoins() uses castRightTo: "uuid" + castLeftTo: "uuid" (guardrail 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | auditEntity | `EntityClass` | The audit trail entity class (e.g., AuditLogEntity) |
-| userEntity | `EntityClass` | The user entity class (e.g., UserProfileEntity) with uuid, display_name, idp_code columns |
+| userEntity | `EntityClass` | The user entity class (e.g., UserProfileRefEntity) with uuid, display_name, idp_code columns |
+| baseTableRef | `string` | Quoted `"schema"."table"` ref of the audit table actually queried
+  (callers query via `tableName` override — e.g. `"crm"."customers_audit"`); needed so the
+  COALESCE fallback can qualify `changed_by` on the right table |
 
 ### `buildDatabaseSnapshot(db, tables, generatedAt): Promise<SchemaSnapshot>`
 
@@ -2884,13 +2954,14 @@ nearest `tsconfig.json` so path aliases resolve correctly.
 ### `findAuditPage(repo, opts): Promise<AuditPageResult>`
 
 Page through an entity audit table, newest first.
-`userEntity` — optional auditable-display-name join target (BE:
-`UserProfileEntity`). Without it, display-name columns are null.
+`changed_by` is always LEFT JOINed to `public.user_profiles` —
+`changed_by_display_name` COALESCEs onto the raw actor (uuid / "system")
+when no profile row matches.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | repo | `AuditQueryable` |  |
-| opts | `AuditPageOptions & { userEntity: EntityClass }` |  |
+| opts | `AuditPageOptions` |  |
 
 ### `findLikelyRenames(schema, table, entityOnly, databaseOnly, entityColumns, databaseColumns): RenameHeuristicResult`
 
@@ -3035,6 +3106,14 @@ composite index ordered by `order`. Supports every PG access method:
 `@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
 `@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
 Unique indexes stay on `@Unique()`.
+
+### `isAuditableEntity(meta): boolean`
+
+Runtime check: does this entity metadata have auditable columns?
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `EntityPersistenceMeta` |  |
 
 ### `isDecimal(v): v is Decimal`
 
@@ -3190,6 +3269,18 @@ declares no such property.
 | map | `EntityAnnotationMap` |  |
 | className | `string` |  |
 | prop | `string` |  |
+
+### `lucideIconSpecifier(exportName): string`
+
+CamelCase lucide export name → emitted icon specifier.
+`Cpu` → `@primebrick/ui/vendor/lucide/icons/cpu.js`;
+`CheckCircle2` → `…/check-circle-2.js`. Matches the dist filename
+convention (`dist/icons/<kebab>.js`) so aliases (`alarm-check`) resolve
+identically — validation of existence is the remote build's job.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| exportName | `string` |  |
 
 ### `makeEntityService(cfg): EntityService<TEntity>`
 
@@ -3505,6 +3596,20 @@ failed → pending: next runMigrations retries them (and past them, in order).
 | pool | `Pool` |  |
 | schema | `string` |  |
 | actor | `string` |  |
+
+### `rewriteLucideBarrelImports(code): LucideRewriteResult`
+
+Remote-build transform: decomposes named imports of the lucide vendor
+barrel into one bare specifier per icon — the chunk then carries only
+the icons it actually uses. Type imports are stripped (they exist only
+for the compiler, which checks the ORIGINAL source pre-transform).
+
+Non-decomposable forms (`import X`, `import * as X`, `export … from`)
+throw — the barrel surface cannot survive into an emitted chunk.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| code | `string` |  |
 
 ### `round(d, scale, mode): Decimal`
 

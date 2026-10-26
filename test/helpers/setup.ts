@@ -125,6 +125,20 @@ export async function setupTestSchema(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS dal_test_users_uuid_idx ON dal_test_users (uuid);
   `);
 
+  // Platform identity table — the dal-owned auditable display-name join
+  // targets public.user_profiles statically, so the test env must provide it.
+  // Minimal projection shape (id/uuid/idp_code/display_name); on a dev DB the
+  // real table already satisfies IF NOT EXISTS.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid         uuid NOT NULL DEFAULT gen_random_uuid(),
+      idp_code     varchar(255) NOT NULL,
+      display_name varchar(255)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_uuid_idx ON user_profiles (uuid);
+  `);
+
   // Type-rich test table
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_types (

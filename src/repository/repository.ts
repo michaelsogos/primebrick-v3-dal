@@ -193,7 +193,7 @@ async function disambiguateZeroRows(
 }
 
 /** Runtime check: does this entity metadata have auditable columns? */
-function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMeta>): boolean {
+export function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMeta>): boolean {
   return meta.isAuditable === true || Object.values(meta.columns).some((c) => c.isAuditable);
 }
 

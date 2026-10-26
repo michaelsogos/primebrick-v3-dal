@@ -173,16 +173,24 @@ table.
 
 ## buildAuditTrailJoins()
 
-`buildAuditTrailJoins(auditEntity, userEntity)` returns `{ joins, projections }`
-that LEFT JOIN the user entity to resolve `changed_by` into `display_name` and
-`idp_code`. It uses `castRightTo: "uuid"` + `castLeftTo: "uuid"` which triggers
-the regex guardrail — rows where `changed_by` is not a UUID (e.g. `"system"`)
-are safely excluded from the join rather than causing a cast error.
+`buildAuditTrailJoins(auditEntity, userEntity, baseTableRef)` returns
+`{ joins, projections }` that LEFT JOIN the user entity to resolve `changed_by`
+into `display_name` and `idp_code`. It uses `castRightTo: "uuid"` +
+`castLeftTo: "uuid"` which triggers the regex guardrail — rows where
+`changed_by` is not a UUID (e.g. `"system"`) are safely excluded from the join
+rather than causing a cast error. `baseTableRef` is the quoted
+`"schema"."table"` ref of the audit table actually queried (callers use the
+`tableName` override) — the `COALESCE` fallback qualifies `changed_by` on the
+right table so non-UUID actors still render.
 
 ```typescript
-import { Repository, AuditLogEntity, buildAuditTrailJoins, Project, Sort, field } from "@primebrick/dal-pg";
+import { Repository, AuditLogEntity, UserProfileRefEntity, buildAuditTrailJoins, Project, Sort, field } from "@primebrick/dal-pg";
 
-const { joins, projections } = buildAuditTrailJoins(AuditLogEntity, UserProfileEntity);
+const { joins, projections } = buildAuditTrailJoins(
+  AuditLogEntity,
+  UserProfileRefEntity,
+  '"public"."customers_audit"',
+);
 
 const rows = await dal.findAll(
   AuditLogEntity,

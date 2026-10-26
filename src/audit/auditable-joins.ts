@@ -119,12 +119,16 @@ export function buildAuditableJoinsSelective(
  * buildAuditTrailJoins() uses castRightTo: "uuid" + castLeftTo: "uuid" (guardrail + uuid = uuid).
  *
  * @param auditEntity - The audit trail entity class (e.g., AuditLogEntity)
- * @param userEntity - The user entity class (e.g., UserProfileEntity) with uuid, display_name, idp_code columns
+ * @param userEntity - The user entity class (e.g., UserProfileRefEntity) with uuid, display_name, idp_code columns
+ * @param baseTableRef - Quoted `"schema"."table"` ref of the audit table actually queried
+ *   (callers query via `tableName` override — e.g. `"crm"."customers_audit"`); needed so the
+ *   COALESCE fallback can qualify `changed_by` on the right table
  * @returns { joins, projections } — joins for the query, projections for display_name + idp_code
  */
 export function buildAuditTrailJoins(
   auditEntity: EntityClass,
   userEntity: EntityClass,
+  baseTableRef: string,
 ): { joins: JoinExpr[]; projections: FieldProjector[] } {
   const meta = getEntityPersistenceMeta(auditEntity);
   const changedByCol = meta.auditTrailChangedByColumn ?? "changed_by";
@@ -139,8 +143,11 @@ export function buildAuditTrailJoins(
       ),
     ],
     projections: [
-      Project.expr("creator.display_name", "changed_by_display_name"),
-      Project.expr("creator.idp_code", "changed_by_idp_code"),
+      Project.expr(
+        `COALESCE("creator"."display_name", ${baseTableRef}."${changedByCol}")`,
+        "changed_by_display_name",
+      ),
+      Project.expr('"creator"."idp_code"', "changed_by_idp_code"),
     ],
   };
 }
