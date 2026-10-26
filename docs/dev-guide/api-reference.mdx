@@ -1948,6 +1948,14 @@ The `esm-mount` chunk's entry contract — `export function mountPage(el, ctx)`.
 May return the `mount()` result (disposed via `unmount()`), a custom dispose
 function, or a promise of either.
 
+NOTE: a raw `mount()` result is only safe when it was registered by the
+SAME svelte module instance that will call `unmount()` on it. Remote
+chunks resolve svelte through the vendor import map while the host runs
+its own bundled copy — two `mounted_components` registries — so chunk
+code MUST go through `mountModuleContent` (or return an equivalent
+dispose closure over the mounting bundle's `unmount`), never hand the
+host a foreign mount record.
+
 **Type:** `(el: HTMLElement, ctx: ModulePageHost) => unknown`
 
 ### `MountSectionFn`
@@ -3657,7 +3665,7 @@ Text-physical searchable columns — the scope selector + default
 Service API base of an entity list basePath — strips the trailing
 `/entities/<entity>` segment so service-relative endpoints declared in
 meta (e.g. sparkline `endpoint: "/actions/job-run-stats"`) resolve to
-`/ws/<svc>/api/v1/actions/…` or `/api/v1/actions/…` for BE entities.
+`/svc/<svc>/api/v1/actions/…` or `/api/v1/actions/…` for BE entities.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

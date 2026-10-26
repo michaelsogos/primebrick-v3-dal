@@ -2754,7 +2754,7 @@
 											},
 											{
 												"kind": "code",
-												"text": "`/ws/job/api/v1/actions/…`"
+												"text": "`/svc/job/api/v1/actions/…`"
 											},
 											{
 												"kind": "text",
@@ -2762,7 +2762,7 @@
 											},
 											{
 												"kind": "code",
-												"text": "`/ws/`"
+												"text": "`/svc/`"
 											},
 											{
 												"kind": "text",
@@ -5621,7 +5621,7 @@
 							},
 							{
 								"kind": "code",
-								"text": "`/ws/<svc>/api/v1/actions/…`"
+								"text": "`/svc/<svc>/api/v1/actions/…`"
 							},
 							{
 								"kind": "text",
@@ -6681,7 +6681,7 @@
 							},
 							{
 								"kind": "code",
-								"text": "`/ws/<service>/api/v1/module-assets/…`"
+								"text": "`/svc/<service>/api/v1/module-assets/…`"
 							},
 							{
 								"kind": "text",
@@ -7808,7 +7808,7 @@
 							},
 							{
 								"kind": "code",
-								"text": "`/ws/<service>/api/v1/module-assets/…`"
+								"text": "`/svc/<service>/api/v1/module-assets/…`"
 							},
 							{
 								"kind": "text",
@@ -9807,7 +9807,7 @@
 							},
 							{
 								"kind": "code",
-								"text": "`/ws/<code>`"
+								"text": "`/svc/<code>`"
 							},
 							{
 								"kind": "text",
@@ -11253,14 +11253,54 @@
 					},
 					{
 						"kind": "text",
-						"text": "), a custom dispose\nfunction, or a promise of either."
+						"text": "), a custom dispose\nfunction, or a promise of either.\n\nNOTE: a raw "
+					},
+					{
+						"kind": "code",
+						"text": "`mount()`"
+					},
+					{
+						"kind": "text",
+						"text": " result is only safe when it was registered by the\nSAME svelte module instance that will call "
+					},
+					{
+						"kind": "code",
+						"text": "`unmount()`"
+					},
+					{
+						"kind": "text",
+						"text": " on it. Remote\nchunks resolve svelte through the vendor import map while the host runs\nits own bundled copy — two "
+					},
+					{
+						"kind": "code",
+						"text": "`mounted_components`"
+					},
+					{
+						"kind": "text",
+						"text": " registries — so chunk\ncode MUST go through "
+					},
+					{
+						"kind": "code",
+						"text": "`mountModuleContent`"
+					},
+					{
+						"kind": "text",
+						"text": " (or return an equivalent\ndispose closure over the mounting bundle's "
+					},
+					{
+						"kind": "code",
+						"text": "`unmount`"
+					},
+					{
+						"kind": "text",
+						"text": "), never hand the\nhost a foreign mount record."
 					}
 				]
 			},
 			"sources": [
 				{
 					"fileName": "primebrick-v3-core/dist/page-route.d.ts",
-					"line": 394,
+					"line": 402,
 					"character": 12
 				}
 			],
@@ -11373,7 +11413,7 @@
 			"sources": [
 				{
 					"fileName": "primebrick-v3-core/dist/page-route.d.ts",
-					"line": 401,
+					"line": 409,
 					"character": 12
 				}
 			],
@@ -30012,7 +30052,8 @@
 						{
 							"fileName": "primebrick-dal-v3/src/entities/user-profile-ref-entity.ts",
 							"line": 25,
-							"character": 2
+							"character": 2,
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entities/user-profile-ref-entity.ts#L25"
 						}
 					],
 					"type": {
@@ -30030,7 +30071,8 @@
 						{
 							"fileName": "primebrick-dal-v3/src/entities/user-profile-ref-entity.ts",
 							"line": 29,
-							"character": 2
+							"character": 2,
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entities/user-profile-ref-entity.ts#L29"
 						}
 					],
 					"type": {
@@ -30048,7 +30090,8 @@
 						{
 							"fileName": "primebrick-dal-v3/src/entities/user-profile-ref-entity.ts",
 							"line": 32,
-							"character": 2
+							"character": 2,
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entities/user-profile-ref-entity.ts#L32"
 						}
 					],
 					"type": {
@@ -30068,7 +30111,8 @@
 						{
 							"fileName": "primebrick-dal-v3/src/entities/user-profile-ref-entity.ts",
 							"line": 35,
-							"character": 2
+							"character": 2,
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entities/user-profile-ref-entity.ts#L35"
 						}
 					],
 					"type": {
@@ -30098,7 +30142,8 @@
 				{
 					"fileName": "primebrick-dal-v3/src/entities/user-profile-ref-entity.ts",
 					"line": 22,
-					"character": 13
+					"character": 13,
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entities/user-profile-ref-entity.ts#L22"
 				}
 			]
 		},
