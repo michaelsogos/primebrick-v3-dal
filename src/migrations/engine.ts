@@ -377,6 +377,12 @@ async function upsertStatus(
         duration_ms, error, applied_by, atomic, applied_at, updated_at)
      VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8, now(), now())
      ON CONFLICT (patch_name) DO UPDATE SET
+       -- content_sha256 follows the FILE THAT ACTUALLY RAN this attempt —
+       -- a failed→fixed retry must overwrite the failed attempt's sha,
+       -- otherwise the immutability check refuses every future boot.
+       -- Applied rows never reach this upsert (skipped before apply), so
+       -- the applied-content invariant is preserved.
+       content_sha256 = EXCLUDED.content_sha256,
        status       = EXCLUDED.status,
        signed_key_id= EXCLUDED.signed_key_id,
        attempts     = ${PATCH_REGISTRY_TABLE}.attempts + 1,

@@ -71,6 +71,7 @@ export {
   type ForeignKeyOptions,
   type ForeignKeyAction,
   type EntityPersistenceMeta,
+  withColumnConstraints,
 } from "./meta/entity-meta.js";
 
 // Column PG<->JS coercion

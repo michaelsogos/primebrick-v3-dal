@@ -1608,6 +1608,14 @@ on the wire (`non_deleted` → `EXCLUDED`, `deleted` → `ONLY`,
 
 **Type:** `"non_deleted" \| "deleted" \| "all"`
 
+### `EmitDecl`
+
+One published subject — the ConfigEntry display anatomy mirrored:
+`label_key` = short translated display name (primary line), `description_key`
+= human description (small secondary line), `subject` = the raw key (mono
+line). Both keys point at translations in the EMITTING module's namespace
+(`<ns>.events.<name>`); pickers render label + desc + subject.
+
 ### `EntityAction`
 
 **Type:** `"meta" \| "list" \| "export" \| "create" \| "duplicate" \| "bulkDelete" \| "bulkRestore" \| "get" \| "update" \| "delete" \| "purge" \| "restore" \| "audit"`
@@ -1749,6 +1757,24 @@ Options for `find`, `findAll`, `findByPage`.
 
 Options for `@ForeignKey()` — REFERENCES target entity column.
 
+### `FormFieldPlacement`
+
+One field's placement + policy inside an entity form — PAGE-domain
+metadata: it positions a field the ENTITY owns; it never redefines the
+field's type or validation (those come from `meta.columns` — class-derived
+constraints + authored `format`).
+
+`key` MUST exist in the served `meta.columns` — the host archetype
+validates at render time and fails loudly on drift.
+
+### `FormPageDecl`
+
+`page_props.form` — the entity-form page declaration. `fields` is the
+ORDERED placement list: only declared keys render (absent columns are
+simply not editable on this surface). `validators` names closed-vocab
+cross-field rules implemented host-side (e.g. `target_matches_lane`) —
+the host rejects unknown validator keys.
+
 ### `GroupByOperand`
 
 GROUP BY operand — either an entity field reference or a parameterized
@@ -1822,6 +1848,19 @@ implicit index signature, keeping `MetaColumn` assignable to
 `Record<string, unknown>` — host/remotes pass columns through generic
 cell-snippet args typed as `Record<string, unknown>`.
 
+### `MetaColumnFormat`
+
+Authored field-format vocabulary — the SEMANTIC input contract of a
+column: which control archetype a form renderer must use and which
+validation chain `buildEntityFormSchema` applies. Absent → the renderer
+falls back to `type` (text→text input, boolean→switch, badge→options).
+
+Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
+compile error — the US→FE option boundary is enforced by the type.
+New formats are additive literals (never breaking).
+
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time"`
+
 ### `MetaColumnType`
 
 UI column renderer type. NOTE: this is the UI type, not the DB type —
@@ -1854,6 +1893,8 @@ Migration engine — apply side. Generation side lives in schema-diff/.
 ### `MigrationRunResult`
 
 Migration engine — apply side. Generation side lives in schema-diff/.
+
+### `ModuleEventsDecl`
 
 ### `ModuleHostBase`
 
@@ -2435,7 +2476,7 @@ their own files — their export names collide with the internal signal
 API (`get`/`derived` exist in both), and a flat union module cannot hold
 both. Shared internals still dedupe through the bundler's shared chunks.
 
-**Type:** `readonly ["svelte", "svelte/internal/client", "svelte/internal/disclose-version", "svelte/internal/flags/legacy", "svelte/events", "svelte/reactivity", "svelte/store", "svelte/attachments", "svelte/motion", "svelte/easing", "@primebrick/core", "@primebrick/ui", "@primebrick/ui/vendor/transformers", "@primebrick/ui/vendor/clsx", "@primebrick/ui/vendor/tailwind-merge", "@primebrick/ui/vendor/tailwind-variants", "@primebrick/ui/vendor/bits-ui"]`
+**Type:** `readonly ["svelte", "svelte/internal/client", "svelte/internal/disclose-version", "svelte/internal/flags/legacy", "svelte/events", "svelte/reactivity", "svelte/store", "svelte/attachments", "svelte/motion", "svelte/easing", "svelte/transition", "@primebrick/core", "@primebrick/ui", "@primebrick/ui/vendor/transformers", "@primebrick/ui/vendor/clsx", "@primebrick/ui/vendor/tailwind-merge", "@primebrick/ui/vendor/tailwind-variants", "@primebrick/ui/vendor/bits-ui"]`
 
 ### `ZERO`
 
@@ -3863,6 +3904,13 @@ Verify manifest signature against the keyring (filtered by allowed trust levels)
 | manifest | `PatchManifest` |  |
 | keyring | `TrustedKey[]` |  |
 | allowedTrust | `readonly "release" \| "dev"[]` |  |
+
+### `withColumnConstraints(meta, entityClass): T`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `T` |  |
+| entityClass | `EntityClass` |  |
 
 ### `writeManifest(manifestPath, manifest): void`
 
