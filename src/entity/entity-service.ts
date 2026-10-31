@@ -206,7 +206,7 @@ export interface EntityService<TEntity> {
 export function makeTableAuditPort(repo: Repository): AuditPort {
   return {
     async writeAudit(params) {
-      await repo.add(
+      const inserted = await repo.add(
         AuditLogEntity,
         {
           entity_id: params.entityId,
@@ -219,6 +219,7 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
         },
         { tableName: `${params.tableName}_audit` },
       );
+      return inserted.id;
     },
   };
 }

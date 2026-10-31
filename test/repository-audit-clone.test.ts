@@ -34,8 +34,9 @@ import {
 // In-memory audit collector for testing
 class TestAuditPort implements AuditPort {
   entries: AuditParams[] = [];
-  async writeAudit(params: AuditParams): Promise<void> {
+  async writeAudit(params: AuditParams): Promise<bigint> {
     this.entries.push(params);
+    return BigInt(this.entries.length);
   }
   reset(): void {
     this.entries = [];

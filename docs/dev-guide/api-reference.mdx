@@ -1189,6 +1189,8 @@ Declarative aggregate rollup projected into list rows.
 
 Audit port — consumers inject their own audit writer.
 The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
+Returns the inserted audit row id (used as `audit_log_id` in collaboration
+markers); ports that do not persist a row may return `0n`.
 
 ### `AuditRow`
 
@@ -1282,6 +1284,21 @@ Backing route of an `EntityAction` — emitted by the BE route scan.
 | path | `string` | Full registered API path with `:param` placeholders verbatim
  (e.g. `/api/v1/auth/users/:uuid/restore`). Consumers substitute
  placeholders from the row (`:uuid` ← `meta.uid`). |
+
+### `EntityChangedMarker`
+
+Marker published server-side when an auditable entity is saved.
+Stored in Redis with a 5-minute TTL so late-joining clients can see the
+most recent change without scanning the audit log.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| entity_type | `string` |  |
+| entity_uuid | `string` |  |
+| version | `number` | The new `version` after the save. |
+| audit_log_id | `number` | The `audit_log_id` of the change (for the GET audit/:auditLogId diff endpoint). |
+| changed_by | `string` | user_uuid of the writer. |
+| changed_at | `number` | Epoch ms of the save. |
 
 ### `EntityListQuery`
 
@@ -1450,6 +1467,65 @@ Logger port — consumers inject their own logger.
 | partitions_before | `number` | Live partition count before/after `run_maintenance_proc()`. |
 | partitions_after | `number` |  |
 | skipped | `string` | Set when the parent was skipped — reason string. |
+
+### `PresenceDelta`
+
+Delta published on the NATS `presence.{entityType}.{entityUuid}` subject.
+Consumed by the BE SSE bridge and forwarded to connected FE clients.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| user_uuid | `string` | The user whose presence changed. |
+| action | `PresenceAction` | The action that triggered this delta. |
+| entry | `PresenceEntry \| null` | The updated entry (for READING/EDITING/HEARTBEAT), or null (for LEAVE). |
+| emitted_at | `number` | Epoch ms of the delta (for dedup / ordering on the FE). |
+
+### `PresenceEntry`
+
+A single user's presence on an entity. Stored in Redis as JSON.
+One entry per (entity_type, entity_uuid, user_uuid).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| user_uuid | `string` |  |
+| user_name | `string` |  |
+| avatar_color | `string \| null` |  |
+| avatar_initials | `string \| null` |  |
+| status | `PresenceStatus` |  |
+| field | `string` | EDITING only — the field being edited. |
+| value | `unknown` | EDITING only — the current draft value of the field. |
+| last_seen_at | `number` | Epoch ms of the last signal/heartbeat from this user. |
+| edited_at | `number` | Epoch ms of this user's last save on the entity — stamped server-side by
+the audit hook when it publishes `EntityChangedMarker` for `changed_by`.
+Absent until the user's first save while present. The FE compares it to a
+5-minute window (and to the client's own mount time) to render the
+"recently saved" affordance. |
+| tab_count | `number` | Number of open tabs for this user on this entity (deduped by session_id). |
+
+### `PresenceSignal`
+
+Wire payload for `POST /api/v1/entities/:entity/:uuid/presence`.
+Sent by the FE on open, on field focus, on field blur, on heartbeat, and on close.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| action | `PresenceAction` |  |
+| field | `string` | EDITING only — the field name being edited. |
+| value | `unknown` | EDITING only — the current draft value of the field (full value). |
+| loaded_version | `number` | READING / HEARTBEAT — the `version` the client loaded (for staleness detection). |
+| session_id | `string` | Tab session id — deduplicates tabs for the same user. FE-generated (uuid). |
+
+### `PresenceSnapshot`
+
+Snapshot returned by `GET /api/v1/entities/:entity/:uuid/presence` and
+sent as the initial SSE `snapshot` event on connect.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| readers | `PresenceEntry[]` | Users in READING status (not editing). |
+| editors | `PresenceEntry[]` | Users in EDITING status. |
+| changed | `EntityChangedMarker \| null` | Most recent server-side change marker, or null if none in the TTL window. |
+| current_version | `number` | Current `version` of the entity (read from DB on snapshot build). |
 
 ### `RowCustomAction`
 
@@ -1999,13 +2075,6 @@ host a foreign mount record.
 
 **Type:** `(el: HTMLElement, ctx: ModulePageHost) => unknown`
 
-### `MountSectionFn`
-
-A chunk's section-mount export — same host ctx as `mountPage`, plus the
-section's own declaration (`id`, `props`, placement) as third argument.
-
-**Type:** `(el: HTMLElement, ctx: ModulePageHost, section: PageSectionDecl) => unknown`
-
 ### `MountSheetFn`
 
 The sheet chunk's entry contract — `export function mountSheet(el, ctx)`.
@@ -2035,15 +2104,6 @@ the remote cannot smuggle an undeclared panel.
 
 **Type:** `(panelKey: string, props: Record<string, unknown>, options: Record<string, unknown>) => void`
 
-### `PageLayoutDecl`
-
-Spatial arrangement of a page's sections — ONE archetype: CSS grid.
-A vertical stack is the degenerate case (`columns` defaults to `"1fr"`,
-sections auto-flow in declaration order); a split is `columns: "280px
-1fr"`; a dashboard is `columns: "repeat(3, 1fr)"` + per-section `span`.
-New container classes, when genuinely needed, arrive as new optional
-fields — the contract never grows a second placement vocabulary.
-
 ### `PageRouteComponentFormat`
 
 Remote component delivery format. Extensible — new literals are additive
@@ -2068,21 +2128,7 @@ Page archetype vocabulary — what the route renders, regardless of delivery.
 
 ### `PageRouteProps`
 
-`page_props` — free-form per-route metadata with a typed `layout` axis.
-
-### `PageSectionDecl`
-
-One mountable block inside a `layout` — placement is grid-cell based.
-
-### `PageSectionSource`
-
-Section mount target — `remote:<export>` = a named mount export of the
-page's own chunk (`mod.mountModels(el, ctx, section)`); `host:<key>` = a
-component registered in the host's section registry. The `remote:` form is
-the default for module-owned blocks; `host:` composes host-owned building
-blocks without shipping a chunk at all.
-
-**Type:** `templateLiteral \| templateLiteral`
+`page_props` — free-form per-route metadata with a typed `form` axis.
 
 ### `PaginatedEntity`
 
@@ -2129,6 +2175,24 @@ Type modifiers are NEVER written inside `pgType`: `varchar(N)` comes from
 (`vector(N)` literal is allowed for readability but `length` wins).
 
 **Type:** `"text" \| "varchar" \| "char" \| "citext" \| "uuid" \| "smallint" \| "int2" \| "integer" \| "int" \| "int4" \| "bigint" \| "int8" \| "real" \| "float4" \| "double precision" \| "float8" \| "numeric" \| "decimal" \| "boolean" \| "bool" \| "date" \| "time" \| "timetz" \| "timestamp" \| "timestamptz" \| "interval" \| "inet" \| "cidr" \| "macaddr" \| "macaddr8" \| "json" \| "jsonb" \| "bytea" \| "xml" \| "tsvector"`
+
+### `PresenceAction`
+
+Client → BE signal describing what the user is doing on an entity.
+
+- `READING`: user opened the entity (loaded_version is what they fetched).
+- `EDITING`: user is editing a field (field + value are the current draft).
+- `HEARTBEAT`: keep-alive (refreshes the Redis TTL; no state change).
+- `LEAVE`: user closed the tab / navigated away.
+
+**Type:** `"READING" \| "EDITING" \| "LEAVE" \| "HEARTBEAT"`
+
+### `PresenceStatus`
+
+Persistent status derived from the latest non-heartbeat signal.
+`HEARTBEAT` and `LEAVE` do not change `status` (LEAVE removes the entry).
+
+**Type:** `"READING" \| "EDITING"`
 
 ### `RemoteDepsManifest`
 
