@@ -17,8 +17,9 @@
  *   1. an authored `nullable`/`max_length`/`pg_type` (derived props are
  *      class-owned; restating them duplicates the source of truth);
  *   2. a column `key` that has no physical column on the class — unless
- *      the column is explicitly virtual (`type:"sparkline"`, the only
- *      documented no-DB-field renderer contract today).
+ *      the column is explicitly virtual (`virtual: true`, or
+ *      `type:"sparkline"` — the documented no-DB-field renderer
+ *      contract).
  */
 import type { MetaColumn } from "@primebrick/core";
 import { getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
@@ -37,7 +38,8 @@ export function withColumnConstraints<T extends { columns: MetaColumn[] }>(
   const columns = meta.columns.map((col) => {
     const phys = persistence.columns[col.key];
     if (!phys) {
-      if (VIRTUAL_COLUMN_TYPES.includes(col.type)) return col;
+      if (col.virtual === true || VIRTUAL_COLUMN_TYPES.includes(col.type))
+        return col;
       throw new Error(
         `withColumnConstraints[${persistence.entityClassName}]: meta column "${col.key}" has no matching column on the entity class — ` +
           `declare it on the class or remove it from meta.columns (virtual columns must use a virtual type)`,
