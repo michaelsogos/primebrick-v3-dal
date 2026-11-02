@@ -154,7 +154,18 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
 
   const filenames = listPatchFiles(opts.patchesDir);
   const client = await opts.pool.connect();
+  // ── advisory lock — FIRST, before ANY statement ────────────────────────
+  // The registry bootstrap runs `CREATE SCHEMA/TABLE/INDEX IF NOT EXISTS`
+  // — concurrent `IF NOT EXISTS` DDL on the same objects deadlocks on the
+  // catalog (observed: two hot-reloaded boots of the same service), so the
+  // lock must cover the WHOLE critical section, not just the apply loop.
+  // Session-scoped: a crash releases it; the flag skips the unlock query
+  // when the lock was never taken.
+  let locked = false;
   try {
+    locked = await acquireAdvisoryLock(client, schema, opts.lockWaitMs ?? 30_000, logger);
+    if (!locked) throw new Error("db-migration: advisory lock not acquired within wait budget — another migrator running?");
+
     // ── registry self-bootstrap ──────────────────────────────────────────
     await client.query(patchRegistryDdl(schema));
 
@@ -246,106 +257,97 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
       return result;
     }
 
-    // ── advisory lock ────────────────────────────────────────────────────
-    const locked = await acquireAdvisoryLock(client, schema, opts.lockWaitMs ?? 30_000, logger);
-    if (!locked) throw new Error("db-migration: advisory lock not acquired within wait budget — another migrator running?");
+    await client.query(`SET lock_timeout = '10s'`);
+    await client.query(`SET idle_in_transaction_session_timeout = '60s'`);
 
-    try {
-      await client.query(`SET lock_timeout = '10s'`);
-      await client.query(`SET idle_in_transaction_session_timeout = '60s'`);
+    for (const f of files) {
+      const row = byName.get(f.patchName);
+      if (row && (row.status === "applied" || row.status === "resolved_manual")) {
+        result.skipped.push(f.patchName);
+        continue;
+      }
+      if (
+        f.requiresReview &&
+        row?.status !== "approved" &&
+        !(opts.approvedReviews ?? []).includes(f.patchName)
+      ) {
+        await upsertStatus(client, registryFq, f, "pending_review", signingKey, opts.actor);
+        result.pendingReview.push(f.patchName);
+        result.degraded = true;
+        logger.warn(`db-migration: ${f.filename} requires review — schema incomplete, service degraded until an admin approves`);
+        break;
+      }
 
-      for (const f of files) {
-        const row = byName.get(f.patchName);
-        if (row && (row.status === "applied" || row.status === "resolved_manual")) {
-          result.skipped.push(f.patchName);
-          continue;
-        }
-        if (
-          f.requiresReview &&
-          row?.status !== "approved" &&
-          !(opts.approvedReviews ?? []).includes(f.patchName)
-        ) {
-          await upsertStatus(client, registryFq, f, "pending_review", signingKey, opts.actor);
-          result.pendingReview.push(f.patchName);
-          result.degraded = true;
-          logger.warn(`db-migration: ${f.filename} requires review — schema incomplete, service degraded until an admin approves`);
-          break;
-        }
-
-        const startedAt = Date.now();
-        try {
-          const segments = parsePatchSegments(f.raw);
-          const atomic = segments.length === 1 && segments[0]!.kind === "tx";
-          if (atomic) {
-            // strongest form: DDL + registry row in the SAME transaction
-            await client.query("BEGIN");
-            try {
-              await client.query(`SET LOCAL statement_timeout = '5min'`);
-              // engine owns the transaction — embedded BEGIN/COMMIT in the
-              // file (legacy style) are stripped, not executed
-              await client.query(stripTxControl(segments[0]!.sql));
-              await upsertStatus(client, registryFq, f, "applied", signingKey, opts.actor, {
-                durationMs: Date.now() - startedAt,
-                atomic: true,
-              });
-              await client.query("COMMIT");
-            } catch (e) {
-              await client.query("ROLLBACK");
-              throw e;
-            }
-          } else {
-            // mixed / non-transactional: tx segments in their own tx, notx per-statement
-            for (const seg of segments) {
-              if (seg.kind === "tx") {
-                await client.query("BEGIN");
-                try {
-                  await client.query(`SET LOCAL statement_timeout = '5min'`);
-                  await client.query(stripTxControl(seg.sql));
-                  await client.query("COMMIT");
-                } catch (e) {
-                  await client.query("ROLLBACK");
-                  throw e;
-                }
-              } else {
-                for (const stmt of splitSqlStatements(seg.sql)) {
-                  if (isTxControlStatement(stmt)) continue;
-                  await client.query(stmt);
-                }
+      const startedAt = Date.now();
+      try {
+        const segments = parsePatchSegments(f.raw);
+        const atomic = segments.length === 1 && segments[0]!.kind === "tx";
+        if (atomic) {
+          // strongest form: DDL + registry row in the SAME transaction
+          await client.query("BEGIN");
+          try {
+            await client.query(`SET LOCAL statement_timeout = '5min'`);
+            // engine owns the transaction — embedded BEGIN/COMMIT in the
+            // file (legacy style) are stripped, not executed
+            await client.query(stripTxControl(segments[0]!.sql));
+            await upsertStatus(client, registryFq, f, "applied", signingKey, opts.actor, {
+              durationMs: Date.now() - startedAt,
+              atomic: true,
+            });
+            await client.query("COMMIT");
+          } catch (e) {
+            await client.query("ROLLBACK");
+            throw e;
+          }
+        } else {
+          // mixed / non-transactional: tx segments in their own tx, notx per-statement
+          for (const seg of segments) {
+            if (seg.kind === "tx") {
+              await client.query("BEGIN");
+              try {
+                await client.query(`SET LOCAL statement_timeout = '5min'`);
+                await client.query(stripTxControl(seg.sql));
+                await client.query("COMMIT");
+              } catch (e) {
+                await client.query("ROLLBACK");
+                throw e;
+              }
+            } else {
+              for (const stmt of splitSqlStatements(seg.sql)) {
+                if (isTxControlStatement(stmt)) continue;
+                await client.query(stmt);
               }
             }
-            // registry insert runs AFTER all segments (its own mini-tx) — the file
-            // is inherently non-atomic, so segment DDL must be authored idempotent
-            await client.query("BEGIN");
-            try {
-              await upsertStatus(client, registryFq, f, "applied", signingKey, opts.actor, {
-                durationMs: Date.now() - startedAt,
-                atomic: false,
-              });
-              await client.query("COMMIT");
-            } catch (e) {
-              await client.query("ROLLBACK");
-              throw e;
-            }
           }
-          result.applied.push(f.patchName);
-          logger.info(`db-migration: applied ${f.filename} (${Date.now() - startedAt}ms)`);
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          // failure marker goes in its OWN transaction — must survive the patch rollback
-          await upsertStatus(client, registryFq, f, "failed", signingKey, opts.actor, {
-            error: message,
-          });
-          result.failed.push({ patch_name: f.patchName, error: message });
-          logger.error(`db-migration: ${f.filename} failed: ${message}`);
-          // every patch is required — any failure degrades and stops ordering
-          result.degraded = true;
-          break;
+          // registry insert runs AFTER all segments (its own mini-tx) — the file
+          // is inherently non-atomic, so segment DDL must be authored idempotent
+          await client.query("BEGIN");
+          try {
+            await upsertStatus(client, registryFq, f, "applied", signingKey, opts.actor, {
+              durationMs: Date.now() - startedAt,
+              atomic: false,
+            });
+            await client.query("COMMIT");
+          } catch (e) {
+            await client.query("ROLLBACK");
+            throw e;
+          }
         }
+        result.applied.push(f.patchName);
+        logger.info(`db-migration: applied ${f.filename} (${Date.now() - startedAt}ms)`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        // failure marker goes in its OWN transaction — must survive the patch rollback
+        await upsertStatus(client, registryFq, f, "failed", signingKey, opts.actor, {
+          error: message,
+        });
+        result.failed.push({ patch_name: f.patchName, error: message });
+        logger.error(`db-migration: ${f.filename} failed: ${message}`);
+        // every patch is required — any failure degrades and stops ordering
+        result.degraded = true;
+        break;
       }
-    } finally {
-      await client.query(`SELECT pg_advisory_unlock(hashtext('primebrick:migrate:' || $1))`, [schema]).catch(() => {});
     }
-
     // ── pre-patch read reload invariant: re-read mode (a patch may have changed it)
     result.nextMode = await readMode(client, schema).catch(() => undefined);
     if (result.nextMode && result.nextMode !== mode) {
@@ -354,6 +356,9 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
 
     return result;
   } finally {
+    if (locked) {
+      await client.query(`SELECT pg_advisory_unlock(hashtext('primebrick:migrate:' || $1))`, [schema]).catch(() => {});
+    }
     client.release();
   }
 }

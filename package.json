@@ -21,10 +21,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
       "import": "./dist/index.js"
     },
     "./errors": {
       "types": "./dist/errors/errors.d.ts",
+      "development": "./src/errors/errors.ts",
       "import": "./dist/errors/errors.js"
     }
   },
