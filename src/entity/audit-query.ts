@@ -1,19 +1,19 @@
 /**
  * audit-query — paged reads over a `{table}_audit` partition-parent table.
  *
- * Ported from the BE's `db/audit-query-helper.ts` so microservices can serve
- * their own entity audit routes. The only difference vs the BE version is
- * that the `user_profiles` join is OPTIONAL: `userEntity` is injected by the
- * caller (the BE passes `UserProfileEntity`; a microservice that does not
- * own a user_profiles table simply omits it and gets `changed_by_display_name`
- * / `changed_by_idp_code` as null — the raw `changed_by` uuid is always
- * present).
+ * The `public.user_profiles` display-name join is UNCONDITIONAL and owned
+ * by this library: `public` is a cross-app platform domain (exempt via
+ * `PLATFORM_SHARED_TABLES` in schema-domain.ts), so every service gets
+ * `changed_by_display_name` (COALESCE → raw actor on join miss) and
+ * `changed_by_idp_code` for free.
  */
 
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
+import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
+import { getEntityPersistenceMeta } from "../meta/entity-decorators.js";
 import { Project, Filter, Sort, field } from "../query/dsl.js";
+import { quoteIdent } from "../query/query-builder.js";
 import { buildAuditTrailJoins } from "../audit/auditable-joins.js";
-import type { EntityClass } from "../meta/entity-decorators.js";
 import type { Repository } from "../repository/repository.js";
 
 /** Structural minimum the audit page query needs — satisfied by both the
@@ -57,16 +57,21 @@ function entityDateToApiIso(date: Date): string {
 
 /**
  * Page through an entity audit table, newest first.
- * `userEntity` — optional auditable-display-name join target (BE:
- * `UserProfileEntity`). Without it, display-name columns are null.
+ * `changed_by` is always LEFT JOINed to `public.user_profiles` —
+ * `changed_by_display_name` COALESCEs onto the raw actor (uuid / "system")
+ * when no profile row matches.
  */
 export async function findAuditPage(
   repo: AuditQueryable,
-  opts: AuditPageOptions & { userEntity?: EntityClass },
+  opts: AuditPageOptions,
 ): Promise<AuditPageResult> {
-  const { joins, projections } = opts.userEntity
-    ? buildAuditTrailJoins(AuditLogEntity, opts.userEntity)
-    : { joins: [], projections: [] as ReturnType<typeof Project.field>[] };
+  const auditMeta = getEntityPersistenceMeta(AuditLogEntity);
+  const baseRef = `${quoteIdent(auditMeta.tableSchema)}.${quoteIdent(opts.tableName)}`;
+  const { joins, projections } = buildAuditTrailJoins(
+    AuditLogEntity,
+    UserProfileRefEntity,
+    baseRef,
+  );
 
   const result = await repo.findByPage<AuditLogEntity, Record<string, unknown>>(
     AuditLogEntity,

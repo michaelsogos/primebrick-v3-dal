@@ -41,3 +41,5 @@ export {
   type ForeignKeyAction,
   type EntityPersistenceMeta,
 } from "./entity-decorators.js";
+
+export { withColumnConstraints } from "./column-constraints.js";

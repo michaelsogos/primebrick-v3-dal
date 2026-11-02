@@ -16,9 +16,10 @@
  * be ctor-injected for tests; the DAL never is.
  *
  * `buildConfig()` is the subclass seam: override it to inject extra
- * `EntityServiceConfig` fields (auditPort, actor, userEntity) at service
- * resolution time — inside the lazy path, so they may themselves use
- * `this.dal`.
+ * `EntityServiceConfig` fields (auditPort, actor) at service resolution
+ * time — inside the lazy path, so they may themselves use `this.dal`.
+ * Display-name joins are NOT part of the seam — they are a platform
+ * invariant (`public.user_profiles` via `UserProfileRefEntity`).
  *
  * Do NOT introduce per-entity `*Dal`/`*Repo` wrapper classes — custom
  * queries belong as methods on the owning service, using `this.dal.*`

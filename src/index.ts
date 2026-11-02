@@ -71,6 +71,7 @@ export {
   type ForeignKeyOptions,
   type ForeignKeyAction,
   type EntityPersistenceMeta,
+  withColumnConstraints,
 } from "./meta/entity-meta.js";
 
 // Column PG<->JS coercion
@@ -204,6 +205,8 @@ export {
 export { calculateDelta, calculateDeltaWithForcedFields } from "./audit/delta-calculator.js";
 
 export { AuditLogEntity } from "./audit/audit-log-entity.js";
+export { UserProfileRefEntity } from "./entities/user-profile-ref-entity.js";
+export { isAuditableEntity } from "./repository/repository.js";
 
 // Entity capability mixins — declare shared audit/deletable columns once,
 // compose per-entity: `class E extends Deletable(Auditable(EntityBase))`
