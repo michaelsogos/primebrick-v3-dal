@@ -37,9 +37,11 @@ export type SchemaDomain = {
   primary: string;
   /**
    * Table names exempt from the domain check in ANY schema — governed
-   * cross-schema contracts. Today only `translations`: every module schema
-   * carries a `translations` table and the BE i18n gateway manages all of
-   * them, including schemas installed after boot.
+   * cross-schema contracts. The built-in `PLATFORM_SHARED_TABLES` set is
+   * always unioned in: `public`/`custom` are cross-app platform domains,
+   * not module domains — `user_profiles` (platform identity, auditable
+   * display-name joins) and `translations` (every module schema carries
+   * one; the BE i18n gateway manages them all) are platform infrastructure.
    */
   sharedTables: ReadonlySet<string>;
 };
@@ -48,6 +50,15 @@ let domain: SchemaDomain | null = null;
 
 const SCHEMA_IDENT = /^[a-z_][a-z0-9_]*$/;
 const TABLE_IDENT = /^[a-z_][a-z0-9_]*$/;
+
+/**
+ * Platform-owned tables always exempt from the domain check — hardcoded
+ * because they are platform invariants, not configuration: `public`/`custom`
+ * are cross-app domains, and every service may legally reach these tables
+ * (`user_profiles` for auditable display-name joins, `translations` for the
+ * governed i18n contract).
+ */
+const PLATFORM_SHARED_TABLES = new Set(["user_profiles", "translations"]);
 
 /** Called once by the Dal constructor. Re-calls replace the domain (tests). */
 export function configureSchemaDomain(schemas: string[], sharedTables: string[] = []): SchemaDomain {
@@ -66,7 +77,11 @@ export function configureSchemaDomain(schemas: string[], sharedTables: string[] 
       `DalConfig.sharedTables contains invalid name(s) [${badTables.join(", ")}] — must match ${TABLE_IDENT}`,
     );
   }
-  domain = { allowed: new Set(schemas), primary: schemas[0]!, sharedTables: new Set(sharedTables) };
+  domain = {
+    allowed: new Set(schemas),
+    primary: schemas[0]!,
+    sharedTables: new Set([...PLATFORM_SHARED_TABLES, ...sharedTables]),
+  };
   return domain;
 }
 

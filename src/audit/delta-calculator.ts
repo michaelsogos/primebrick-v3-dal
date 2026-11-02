@@ -13,6 +13,15 @@ function bigintToNumber(val: unknown): unknown {
     if (Math.abs(num) > Number.MAX_SAFE_INTEGER) return val;
     return num;
   }
+  // Wire-decoded jsonb payloads (extJsonParse turns every int into bigint)
+  // may carry bigints at ANY depth — a nested bigint inside a field object
+  // crashes the JSON.stringify probe below. Recurse into plain containers.
+  if (Array.isArray(val)) return val.map(bigintToNumber);
+  if (val !== null && typeof val === "object" && val.constructor === Object) {
+    const out: Record<string, unknown> = {};
+    for (const k in val as Record<string, unknown>) out[k] = bigintToNumber((val as Record<string, unknown>)[k]);
+    return out;
+  }
   return val;
 }
 
