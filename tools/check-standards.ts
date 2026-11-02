@@ -15,6 +15,7 @@
  *   upsert          `.upsert(`/`.upsertMany(` — removed; find → add | update
  *   new-repository  `new Repository(` — use dal.entityService/tableAuditPort
  *   pool-ping       `client|pool|conn.ping(` — raw driver ping; use dal.serverVersion()
+ *   column-flag-defaults — column-flag `!==|=== false` reads: opt-out flags are read ONLY via isColumnVisible/isColumnSortable/isColumnFilterable/isColumnSearchable (@primebrick/core)
  *   entity-nullable-explicit
  *                   In @Entity classes, properties declared `prop?:` or
  *                   `prop: T | null` MUST carry an explicit nullability marker:
@@ -76,6 +77,7 @@ type RuleId =
   | "upsert"
   | "new-repository"
   | "pool-ping"
+  | "column-flag-defaults"
   | "entity-nullable-explicit"
   | "dal-access"
   | "layer-repo-import";
@@ -100,6 +102,7 @@ const LINE_RULES: Rule[] = [
   { id: "upsert", pattern: /\.upsert(?:Many)?\s*\(/, hint: "upsert removed — find → add | update(version)" },
   { id: "new-repository", pattern: /\bnew\s+Repository\s*\(/, hint: "use dal.entityService()/dal.tableAuditPort()" },
   { id: "pool-ping", pattern: /\b(?:client|pool|conn)\.ping\s*\(/, hint: "raw driver ping — use dal.serverVersion()" },
+  { id: "column-flag-defaults", pattern: /\.(?:default_visible|sortable|filterable|searchable)\s*(?:!==|===)\s*false\b/, hint: "column flags are opt-out — read them via isColumnVisible/isColumnSortable/isColumnFilterable/isColumnSearchable (@primebrick/core)" },
 ];
 
 // Config-gated rules — populated from `.devin/check-standards.json` (repo
@@ -236,9 +239,9 @@ const SQL_SHAPES =
 const CONSUMER_RULES = new Set<RuleId>([
   "ext-json", "pg-import", "pg-pool", "raw-query", "raw-sql",
   "getPool", "withClient", "upsert", "new-repository", "pool-ping",
-  "entity-nullable-explicit",
+  "entity-nullable-explicit", "column-flag-defaults",
 ]);
-const LIB_RULES = new Set<RuleId>(["ext-json", "entity-nullable-explicit"]);
+const LIB_RULES = new Set<RuleId>(["ext-json", "entity-nullable-explicit", "column-flag-defaults"]);
 
 interface Violation {
   file: string;
