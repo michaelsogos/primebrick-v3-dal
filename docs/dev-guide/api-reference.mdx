@@ -1207,6 +1207,25 @@ markers); ports that do not persist a row may return `0n`.
 | version | `number` |  |
 | delta | `Record<string, unknown>` |  |
 
+### `BulkCustomAction`
+
+UI configuration for a selection-aware bulk CTA (endpoint-backed op
+ with no row binding — e.g. `disarm_all`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| action_name | `string` | Action/op name — must resolve to an `entity_op`-declared route. |
+| translation_key | `string` | i18n key for the CTA label. |
+| icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
+| text_color | `string` | Optional CSS color class for the label. |
+| required_permission | `string \| string[]` | Permission required to see/use the action. |
+| requires_selection | `boolean` | When true, the CTA is enabled only with rows selected and the body
+ receives `selected_uuids`; false = fires with an empty body
+ (selection-independent, e.g. `disarm_all`). Default true. |
+| require_step_up | `boolean` | Require a step-up MFA challenge before dispatch (destructive bulk). |
+| confirm_key | `string` | i18n key for a confirmation dialog message — when set, the action
+ asks before dispatching. |
+
 ### `BulkItem`
 
 | Field | Type | Description |
@@ -1471,6 +1490,18 @@ The paged list response returned by every entity list endpoint.
 
 Logger port — consumers inject their own logger.
 
+### `MapKeyDecl`
+
+One declared key of an `x_map_keys` declaration (e.g. a template's
+ `variables`): its synthesized schema drives icons, compat filtering
+ and per-leaf target typing; `required` drives upfront rows + gating.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| schema | `Record<string, unknown>` |  |
+| required | `boolean` |  |
+| description | `string` |  |
+
 ### `PartitionMaintenanceReport`
 
 | Field | Type | Description |
@@ -1508,6 +1539,11 @@ Context the resolver reads meta values from.
 | Field | Type | Description |
 |-------|------|-------------|
 | actor_uuid | `string` | Who armed the rule (stored actor). |
+| actor_email | `string` | Email of the actor whose event triggered the arm — `x-user-email`
+ header. Absent on the system lane / anonymous events. |
+| creator_email | `string` | Email of the user who armed the rule (`trigger.created_by`, resolved
+ via `auth.ctl.resolve_user`). Absent when the creator no longer
+ resolves — fallback clauses decide the field's fate. |
 | trigger_id | `string` | The trigger the dispatch materialized from (job_trigger.uuid). |
 | fired_at | `number` | Fire timestamp (epoch ms) — set by the engine at dispatch. |
 | actor_locale | `string` | Locale (BCP-47, e.g. `it-IT`) of the actor whose event triggered the
@@ -1615,11 +1651,20 @@ UI configuration for a non-standard row CTA (route-backed bare op).
 | action_name | `string` | Action/op name — matches the bare op derived from the route
  (e.g. `change_password`). |
 | translation_key | `string` | i18n key for the CTA label. |
-| icon | `string` | Icon name (Lucide in the reference FE). |
+| icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
 | text_color | `string` | Optional CSS color class for the label. |
 | disabled_when_deleted | `boolean` | Disable the CTA on soft-deleted rows. |
 | required_permission | `string \| string[]` | Permission required to see/use the action (filtered client-side
  against the user's permission set). |
+| row_key | `string` | Row→body binding for endpoint-dispatched actions: the op's request
+ body receives `{[row_key]: row[row_key]}` — same convention as
+ sparkline `row_key` (e.g. `schedule_subject`). When absent and the
+ endpoint path carries `:param` placeholders, params substitute from
+ the row fields of the same name (`:uuid` ← `meta.uid`). |
+| visible_on | `{ field: string; values: string \| number \| boolean[] }` | Show the CTA only when the row's `status` (or `visible_on.field`)
+ equals one of these values — e.g. show `resume` only on `paused`
+ rows. Absent = always visible. Scalar comparison — boolean/number
+ fields are allowed (e.g. `enabled ∈ [false]` for an Enable CTA). |
 
 ### `SnapshotQueryable`
 
@@ -1638,6 +1683,9 @@ Table options — present only on entities with a table page.
 | row_custom_actions | `RowCustomAction[]` | UI config for non-standard row actions (e.g. change password).
  Standard ops (edit/delete/duplicate/preview) are derived from
  `meta.actions` — never declared here. |
+| bulk_custom_actions | `BulkCustomAction[]` | UI config for non-standard bulk CTAs rendered in the selection
+ toolbar (e.g. `disarm_all`) — dispatch rides the same endpoint
+ contract as row custom actions via `meta.actions`. |
 | filter_presets | `readonly FilterPreset[]` | Mutually-exclusive preset WHERE filters — each rendered as its own
  toolbar control; the active option's conditions AND into every list
  request (see FilterPreset). |
@@ -2024,14 +2072,14 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
 
 ### `MetaColumnType`
 
 UI column renderer type. NOTE: this is the UI type, not the DB type —
  e.g. `roles` is `"text"` here but `jsonb` on disk (never ILIKE-searchable).
 
-**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline"`
+**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline" \| "ref" \| "ref_count"`
 
 ### `MfaStepUpFn`
 
@@ -2269,6 +2317,14 @@ Where one target field's value comes from.
 
 **Type:** `PayloadMapLeafEntry \| { kind: "inject"; inject: PayloadInjector; fallback: PayloadMapFallbackClause[] } \| { kind: "list"; items: PayloadMapItemEntry[]; fallback: PayloadMapFallbackClause[] } \| { kind: "map"; entries: Record<string, PayloadMapItemEntry>; fallback: PayloadMapFallbackClause[] }`
 
+### `PayloadMapEntryKind`
+
+Entry `kind` vocabulary — declared once, consumed by the DST enum
+ (`job.meta.ts`), the widget's kind pickers and the wire conformance.
+ A new member enters the union AND this list in the same edit.
+
+**Type:** `PayloadMapEntry["kind"]`
+
 ### `PayloadMapFallbackClause`
 
 Fallback clause — one nesting level, user-sourced kinds only.
@@ -2285,13 +2341,15 @@ Value allowed inside `list` items / `map` entries — leaf kinds or a
 
 ### `PayloadMapLeafEntry`
 
-User-authored source for a single scalar value.
+User-authored source for a single scalar value. `meta` is optional on
+ the leaf too: the builder keeps the honest "kind picked, source not
+ chosen yet" state (`{kind:"meta"}`) — conformance gates it to the wire.
 
 **Type:** `{ kind: "const"; value: unknown; fallback: PayloadMapFallbackClause[] } \| { kind: "path"; path: string; fallback: PayloadMapFallbackClause[] } \| { kind: "meta"; meta: PayloadMapMeta; fallback: PayloadMapFallbackClause[] }`
 
 ### `PayloadMapMeta`
 
-**Type:** `"actor_uuid" \| "trigger_id" \| "fired_at" \| "actor_locale"`
+**Type:** `"actor_uuid" \| "actor_email" \| "creator_email" \| "trigger_id" \| "fired_at" \| "actor_locale"`
 
 ### `PayloadSemanticSlot`
 
@@ -2547,6 +2605,19 @@ Alias of `dec()` — parse a PostgreSQL `numeric`/`decimal` text value.
 
 **Type:** `typeof dec`
 
+### `DOTTED_GLOB_RE`
+
+`dotted_glob` — dotted_key where a whole segment may be the `*`
+ wildcard (`access.system.*`, `access.crm.*`).
+
+**Type:** `RegExp`
+
+### `DOTTED_KEY_RE`
+
+`dotted_key` — dot-separated snake_key segments (`customer.read.all`).
+
+**Type:** `RegExp`
+
 ### `EMAIL_REGEX`
 
 Email — same RFC-5322-simplified regex the config validator and the FE
@@ -2584,6 +2655,21 @@ Alias of `dec()` — tolerates the `"…d"` wire suffix.
 |-------|-------|
 | expr | "" |
 
+### `HONEST_FORMAT_HINTS`
+
+The name→format honesty matrix — exported so the check-standards lint
+ (`schema-honest-format`) and the enrollment validator test the SAME
+ hints. Add a case here, never re-invent it per surface.
+
+**Type:** `{ re: RegExp; formats: readonly string[]; why: string }[]`
+
+### `IDENTIFIER_RE`
+
+`identifier` — edge-alphanumeric machine id: `[a-z0-9]` at both ends,
+ internal `.`/`_`/`-` allowed (`micha-test-rule-1`, `e2e-callable-dispatch`).
+
+**Type:** `RegExp`
+
 ### `isClockTime`
 
 `HH:MM`/`HH:MM:SS` 24h clock.
@@ -2602,7 +2688,27 @@ Parseable ISO/RFC3339 datetime.
 
 **Type:** `(v: string) => boolean`
 
+### `isDottedGlob`
+
+**Type:** `(v: string) => boolean`
+
+### `isDottedKey`
+
+**Type:** `(v: string) => boolean`
+
 ### `isEmail`
+
+**Type:** `(v: string) => boolean`
+
+### `isIdentifier`
+
+**Type:** `(v: string) => boolean`
+
+### `isLang`
+
+**Type:** `(v: string) => boolean`
+
+### `isNoSpace`
 
 **Type:** `(v: string) => boolean`
 
@@ -2611,6 +2717,14 @@ Parseable ISO/RFC3339 datetime.
 `+`/`00` optional E.164-ish phone — intentionally permissive (the FE
  libphonenumber check is richer; server-side stays non-rejecting on
  format-only signals it cannot verify).
+
+**Type:** `(v: string) => boolean`
+
+### `isSlug`
+
+**Type:** `(v: string) => boolean`
+
+### `isSnakeKey`
 
 **Type:** `(v: string) => boolean`
 
@@ -2626,9 +2740,23 @@ Parseable ISO/RFC3339 datetime.
 
 **Type:** `"keys.json"`
 
+### `LANG_RE`
+
+`lang` — BCP-47 language tag (`it-IT`, `en`, `zh-Hans`, `es-419`) —
+ primary subtag + optional subtags. Closed-grammar, not full RFC 5646:
+ matches every tag the platform emits.
+
+**Type:** `RegExp`
+
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
+
+### `NO_SPACE_RE`
+
+`no_space` — any non-whitespace token (UA prefixes, client names).
+
+**Type:** `RegExp`
 
 ### `NUMERIC_MIN_SIG_DIGITS`
 
@@ -2663,9 +2791,23 @@ Marker key emitted by `{kind:"inject"}` at arm time — the dispatcher
 
 **Type:** `readonly PayloadInjector[]`
 
+### `PAYLOAD_MAP_ENTRY_KINDS`
+
+**Type:** `readonly PayloadMapEntryKind[]`
+
 ### `PAYLOAD_MAP_META_KINDS`
 
 **Type:** `readonly PayloadMapMeta[]`
+
+### `PAYLOAD_MAP_META_SCHEMAS`
+
+Declared value domain per meta kind — the SAME vocabulary the form
+ builder's compat filter and the resolver context share. `actor_*`
+ kinds describe who fired the event (forwarded auth headers);
+ `creator_email` describes who armed the rule (resolved via
+ `auth.ctl.resolve_user` — lazily, only when the map references it).
+
+**Type:** `Record<PayloadMapMeta, Record<string, unknown>>`
 
 ### `PAYLOAD_OPTIONS_VALUES_SOURCES`
 
@@ -2676,6 +2818,14 @@ Built-in `values_source` vocabularies — closed registry.
 ### `PAYLOAD_SEMANTIC_SLOTS`
 
 **Type:** `readonly PayloadSemanticSlot[]`
+
+### `PAYLOAD_X_HELP_KEY`
+
+i18n key for the field's user-facing help (the label tooltip). The
+ service ships the key's translations in the shared dictionary; the
+ plain `description` stays as the documented English fallback.
+
+**Type:** `"x_help_key"`
 
 ### `PAYLOAD_X_INJECT`
 
@@ -2732,6 +2882,20 @@ Semantic derivation slot — declares what context the field wants so
 Ordered strict → loose; documented for consumers of `diff-entities-vs-database.json`.
 
 **Type:** `readonly string[]`
+
+### `SLUG_RE`
+
+`slug` — letter-leading, internal `-` allowed (`test-role`,
+ `administrators`). Superset of snake_key by the hyphen.
+
+**Type:** `RegExp`
+
+### `SNAKE_KEY_RE`
+
+`snake_key` — snake_case key starting with a letter (`favorite_pages`,
+ `oidc_issuer_url`). Digit-leading values are rejected.
+
+**Type:** `RegExp`
 
 ### `Sort`
 
@@ -2846,17 +3010,23 @@ to undefined — the field is omitted, never invented.
 | payload | `unknown` |  |
 | ctx | `PayloadInjectContext` |  |
 
-### `applyPayloadMap(map, eventPayload, ctx): unknown`
+### `applyPayloadMap(map, eventPayload, ctx, targetSchema): unknown`
 
 Apply a payload map: for each declared target field, resolve its entry
 against the source event payload + fire context. `null`/absent map →
 the event payload verbatim (the default passthrough).
+
+`targetSchema` (the callable's `payload_schema`, when the caller has it)
+enables the honest broadcast `pathCompatible` declares: a scalar source
+mapped onto an `array` field resolves to `[v]` — without it the payload
+would fail the destination's own `items` validation downstream.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | map | `PayloadMap \| null \| undefined` |  |
 | eventPayload | `unknown` |  |
 | ctx | `PayloadMapContext` |  |
+| targetSchema | `Record<string, unknown>` |  |
 
 ### `approvePendingReview(pool, schema, patchName, actor, note): Promise<boolean>`
 
@@ -2935,6 +3105,14 @@ The changedByColumn specifies which property holds the actor (default: "changed_
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | options | `{ changedByColumn: string }` |  |
+
+### `baseJsonType(schema): string \| undefined`
+
+First non-`"null"` member of a (possibly union) `type` keyword.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `Record<string, unknown> \| undefined` |  |
 
 ### `buildAuditableJoins(entity, userEntity): JoinExpr[]`
 
@@ -3091,11 +3269,12 @@ Smallest integer `>= d`.
 
 Validate a wire entity object against `meta.columns`.
 Required = `nullable === false` AND client-writable — `audited`
-columns are system-managed (filled server-side) and never arrive on
-the wire, so an absent one is NOT a violation. A PRESENT
-empty value still fails `nullable === false` — clients must not send
-managed fields at all. Mirrors the form, where required only ever
-applies to declared placements (`placement.required ?? nullable`).
+columns and `meta.uid` (server-generated identity) are system-managed
+(filled server-side) and never arrive on the wire, so an absent one is
+NOT a violation. A PRESENT empty value still fails `nullable === false`
+— clients must not send managed fields at all. Mirrors the form, where
+required only ever applies to declared placements
+(`placement.required ?? nullable`).
 Unknown entity keys are ignored — system columns (`uuid`, `version`)
 need no column.
 
@@ -3298,6 +3477,14 @@ scale the result is flagged `periodic` (`isPeriodic(d)` → true).
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
 | opts | `number \| { scale: number; rounding: RoundingMode }` |  |
+
+### `effectiveFormat(schema): string \| undefined`
+
+The source's effective format — a `*.uuid` semantic slot IS a uuid.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `Record<string, unknown> \| undefined` |  |
 
 ### `effectivePgStorageType(h): string`
 
@@ -3586,6 +3773,18 @@ drop) — i.e. no unapplied entity intent remains.
 |-----------|------|-------------|
 | diff | `SchemaMetaDiffV2` |  |
 
+### `isEmptyValue(v): boolean`
+
+"Empty" per the fallback contract — null, undefined, empty string,
+ empty array, empty object. `0` and `false` are legitimate values.
+ Exported: the SAME predicate drives the wire conformance gate (an
+ entry whose primary resolves empty and has no fallback delivers
+ nothing — it is not a mapping).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
 ### `isEntityClass(value): value is EntityClass`
 
 | Parameter | Type | Description |
@@ -3698,17 +3897,23 @@ Type guard — validates RFC 4122 layout (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 |-----------|------|-------------|
 | v | `string` |  |
 
-### `jobTriggerShapeIssues(entity): FieldIssue[]`
+### `jobTriggerShapeIssues(entity, now): FieldIssue[]`
 
 `event_subject`/`schedule_spec` are mutually mandatory (at least one);
 `execution_context: "user"` requires an event source to forward auth
-headers from. Pure — shared by the FE `job_trigger_shape` validator and
-the service-side `assertTriggerShape`. On `partial` (update), fields not
-present in `entity` are treated from the merged record the caller passes.
+headers from; a one-shot `@at <ts>` must lie in the future — a past
+timestamp FIRES IMMEDIATELY at declare time (verified empirically:
+the declaration PubAcks, the scheduler dispatches at once, then the
+declaration self-purges — an unintended execution, not a dead one).
+`now` is injected so the predicate stays
+pure — the form passes the client clock, the write guard the server
+clock. On `partial` (update), fields not present in `entity` are
+treated from the merged record the caller passes.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `Record<string, unknown>` |  |
+| now | `Date` |  |
 
 ### `jsonSchemaCheck(value, schema, path): FieldIssue[]`
 
@@ -3850,6 +4055,21 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
 
+### `nextScheduleFire(spec, opts): Date \| null`
+
+Next fire for a `schedule_spec`, when derivable without a cron evaluator:
+- `@every <n><unit>` — next interval boundary after `now`, anchored at
+  `since` (the declaration's `armed_at`); without an anchor the period is
+  assumed to start at `now`, so the first fire is `now + interval`.
+- `@at <ts>` — the timestamp itself if still future, else null (fired).
+- cron — null: NATS owns cron evaluation; a second interpreter here would
+  drift on dom/dow edge semantics. Invalid specs return null too.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `string` |  |
+| opts | `{ now: Date; since: Date }` |  |
+
 ### `normalize(d): Decimal`
 
 Strip trailing fractional zeros — `1.230` → `1.23`, `12.000` → `12`.
@@ -3888,6 +4108,20 @@ Scale is preserved as written (`"1.230"` → scale 3).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | input | `string` |  |
+
+### `parseMapKeysDeclaration(raw): Record<string, MapKeyDecl>`
+
+Parse an `x_map_keys.prop` declaration row (the template's `variables`
+jsonb). Two shapes, one contract — **required by default, nullable
+explicitly** (a declared placeholder must be filled):
+  - shorthand  `{"otp_code":"string"}` — a bare type name; required.
+  - longhand   `{"x":{"type":"string","optional":true,"description":…}}`
+    — `optional`/`required:false`/`nullable` or a `null` type union
+    mark the key optional; the rest of the object IS the schema.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `unknown` |  |
 
 ### `parsePatchPragmas(raw): { requiresReview: boolean; noTransaction: boolean }`
 
@@ -3955,7 +4189,19 @@ The registry identity of a patch is its filename minus the `.sql` extension.
 |-----------|------|-------------|
 | diff | `SchemaMetaDiffV2` |  |
 
-### `payloadMapConformance(map, callableSchema): FieldIssue[]`
+### `pathCompatible(target, source): boolean`
+
+Is `source` (a source-schema leaf, e.g. `$.customer.email`'s schema)
+compatible with `target` (a callable's payload_schema property)?
+Format/enum/const on the destination must be PROVABLE from the source
+declaration — a bare string never satisfies `format:"email"`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| target | `Record<string, unknown>` |  |
+| source | `Record<string, unknown> \| undefined` |  |
+
+### `payloadMapConformance(map, callableSchema, sourceSchema, mapKeySchemas): FieldIssue[]`
 
 Conformance of a `payload_map` document against the callable's emitted
 `payload_schema`. Reports:
@@ -3969,6 +4215,14 @@ Conformance of a `payload_map` document against the callable's emitted
 |-----------|------|-------------|
 | map | `Record<string, unknown> \| PayloadMap \| null \| undefined` |  |
 | callableSchema | `Record<string, unknown>` |  |
+| sourceSchema | `Record<string, unknown>` |  |
+| mapKeySchemas | `Record<string, Record<string, Record<string, unknown>>>` | Resolved `x_map_keys` declarations per field — `{field: {key:
+ schema}}` — the catalog-row contract (e.g. a template's
+ `variables`). Optional: the wire gate can't resolve catalog rows
+ synchronously and skips this layer; the design-time checker passes
+ the resolved set so a `const` typed against a declared key schema
+ (`"hhhhh"` on `amount:"number"`) fails `invalid_type` instead of
+ passing on the record's empty `additionalProperties`. |
 
 ### `pgDivScale(a, b): number`
 
@@ -4107,6 +4361,15 @@ invariant rather than failing closed).
 | preset | `FilterPreset` |  |
 | selected | `string \| undefined` |  |
 
+### `resolveSourceSchema(root, path): Record<string, unknown> \| undefined`
+
+Walk `$.a.b[0].c` through a source schema's `properties`/`items`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| root | `Record<string, unknown>` |  |
+| path | `string` |  |
+
 ### `resolveVendorSpecifier(specifier): VendorResolution`
 
 How a remote chunk's bundler must treat a bare import specifier. Both the
@@ -4172,6 +4435,18 @@ Drop unknown keys and fall back to defaults when nothing left.
 |-----------|------|-------------|
 | visibleKeys | `string[]` |  |
 | columns | `MetaColumn[]` |  |
+
+### `schemaHonestyIssue(field, prop): string \| null`
+
+`property` honesty gate — the declared name implies a format the schema
+must carry (on the prop, or on its array items). Returns an error string
+or `null`. `format` on the prop — or a `*.uuid` semantic slot — is what
+satisfies the hint; a bare `type:"string"` is a lie.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| field | `string` |  |
+| prop | `Record<string, unknown>` |  |
 
 ### `searchableTextColumns(columns): MetaColumn[]`
 
@@ -4403,6 +4678,17 @@ Verify manifest signature against the keyring (filtered by allowed trust levels)
 | manifest | `PatchManifest` |  |
 | keyring | `TrustedKey[]` |  |
 | allowedTrust | `readonly "release" \| "dev"[]` |  |
+
+### `walkSchemaProps(schema, prefix): Generator<{ field: string; path: string; prop: Record<string, unknown>; required: boolean }>`
+
+Iterate every property schema a JSON schema declares — nested objects
+ and array items included. `required` reflects the PARENT level's
+ `required` list.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `Record<string, unknown>` |  |
+| prefix | `string` |  |
 
 ### `withColumnConstraints(meta, entityClass): T`
 
