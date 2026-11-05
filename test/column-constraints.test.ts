@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Column, withColumnConstraints } from "../src/index.js";
+import { Entity, Key, Unique, Column, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -62,5 +62,62 @@ describe("withColumnConstraints", () => {
     const stats = out.columns.find((c) => c.key === "run_stats");
     expect(stats?.nullable).toBeUndefined();
     expect(stats?.pg_type).toBeUndefined();
+  });
+});
+
+// ── Class → meta completeness (auto-derivation) ────────────────────────────
+
+@Entity("cc_jobs", "job")
+class CcJobEntity extends Deletable(Auditable(EntityBase)) {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ nullable: false }) name!: string;
+  @Column({ nullable: true }) payload_map?: unknown;
+}
+
+const auditableMeta = (): EntityMeta => ({
+  entity: "cc_job",
+  translation_key: "cc_job",
+  entities_ns: "job",
+  uid: "uuid",
+  display_field: "name",
+  columns: [
+    { key: "name", label_key: "job.entities.cc_job.fields.name", type: "text", order: 10 },
+  ],
+});
+
+describe("withColumnConstraints — class→meta auto-derivation", () => {
+  it("auto-derives every physical column missing from meta (audit, delete, uuid, version)", () => {
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    const keys = out.columns.map((c) => c.key);
+    for (const k of ["uuid", "id", "name", "created_at", "created_by", "updated_at", "updated_by", "version", "deleted_at", "deleted_by", "payload_map"]) {
+      expect(keys, `missing ${k}`).toContain(k);
+    }
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    // system cols: hidden-by-default, audited group, i18n key by convention
+    expect(byKey.created_by).toMatchObject({ audited: true, default_visible: false, label_key: "job.entities.cc_job.fields.created_by" });
+    expect(byKey.deleted_at).toMatchObject({ audited: true, default_visible: false, type: "datetime" });
+    expect(byKey.uuid).toMatchObject({ order: -1, sticky: true, default_visible: false });
+    expect(byKey.version).toMatchObject({ type: "number", audited: true });
+    // non-declared field is auto-derived hidden-by-default
+    expect(byKey.payload_map).toMatchObject({ default_visible: false });
+    // derived physical props still injected
+    expect(typeof byKey.created_by?.pg_type).toBe("string");
+  });
+
+  it("`hidden: true` suppresses a physical column entirely (no emission, no derivation)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "payload_map", label_key: "x", type: "text", order: 20, hidden: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.map((c) => c.key)).not.toContain("payload_map");
+  });
+
+  it("authored column wins over derivation (dedupe by key)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "created_at", label_key: "custom.label", type: "datetime", order: 70, default_visible: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    const createdAt = out.columns.filter((c) => c.key === "created_at");
+    expect(createdAt).toHaveLength(1);
+    expect(createdAt[0]).toMatchObject({ label_key: "custom.label", order: 70, default_visible: true });
   });
 });
