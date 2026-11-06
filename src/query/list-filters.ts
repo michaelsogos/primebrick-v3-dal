@@ -8,14 +8,17 @@
  * JSON decoding anywhere on the wire).
  *
  * Semantics (superset of the former per-entity copies):
- * - Unknown `field` (not in `allowedFields`) or unknown `op` → condition is
- *   skipped (allowlists are the SQL-injection barrier — field names are never
- *   trusted from the wire).
+ * - FAIL CLOSED: an unknown `field` (not in `allowedFields`), an unknown
+ *   `op`, or a malformed value throws `ValidationError` → 400. A criterion
+ *   that cannot be applied must NEVER silently produce unfiltered rows —
+ *   skipping a `uuid`-equality would return every row, which is a wrong
+ *   answer, not a safe one. Allowlists are the SQL-injection barrier —
+ *   field names are never trusted from the wire.
  * - `LIKE`/`ILIKE` + string value without `%` → wrapped as `%value%` (or via
  *   the caller's `escapeIlike` hook when the endpoint escapes wildcards).
  * - `IN`/`NOT IN` → `value` array passed through.
- * - `BETWEEN` + `{start,end}` → `[start, end]` (skipped when either bound is
- *   null — a half-open range is not a BETWEEN).
+ * - `BETWEEN` + `{start,end}` → `[start, end]` (either bound null →
+ *   `ValidationError` — a half-open range is not a BETWEEN).
  * - `IS`/`IS NOT` → only `null`/`boolean` values (enforced downstream by the
  *   query builder).
  * - All conditions are combined inside one group joined by `connector`
@@ -26,6 +29,7 @@
  */
 
 import type { EntityClass } from "../meta/entity-meta.js";
+import { ValidationError } from "../errors/errors.js";
 import { field, Filter, type FilterExpr, type SqlExpressionOperand, type SqlOperator } from "./dsl.js";
 
 export type ListFilterCondition = {
@@ -80,8 +84,12 @@ export function translateFilterConditions(
   const exprs: FilterExpr[] = [];
 
   for (const cond of conditions) {
-    if (!validOps.has(cond.op)) continue;
-    if (!options.allowedFields.has(cond.field)) continue;
+    if (!validOps.has(cond.op)) {
+      throw new ValidationError(`Invalid filter op "${cond.op}" — allowed: ${[...validOps].join(", ")}`);
+    }
+    if (!options.allowedFields.has(cond.field)) {
+      throw new ValidationError(`Invalid filter field "${cond.field}" — allowed: ${[...options.allowedFields].sort().join(", ")}`);
+    }
 
     let value: unknown = cond.value;
 
@@ -97,10 +105,12 @@ export function translateFilterConditions(
         "end" in value
       ) {
         const { start, end } = value as { start: unknown; end: unknown };
-        if (start === null || start === undefined || end === null || end === undefined) continue;
+        if (start === null || start === undefined || end === null || end === undefined) {
+          throw new ValidationError(`BETWEEN on "${cond.field}" needs both start and end`);
+        }
         value = [start, end];
       } else if (!Array.isArray(value)) {
-        continue;
+        throw new ValidationError(`BETWEEN on "${cond.field}" needs {start,end} or [start,end]`);
       }
     }
 

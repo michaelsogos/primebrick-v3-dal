@@ -33,7 +33,7 @@
  *      construction error (opting OUT is legal but redundant).
  */
 import type { MetaColumn } from "@primebrick/core";
-import { getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
+import { AuditableFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -43,7 +43,7 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
-const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables"]);
+const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors"]);
 
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
   meta: T,
@@ -68,6 +68,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // create-required checks (`checkEntityFields`). Manual keys stay
       // client-writable — `usePostgresIdentity` already encodes both.
       ...(phys.usePostgresIdentity === true ? { managed: true } : {}),
+      // Audit actor columns ALWAYS resolve the governed vocabulary —
+      // derived, never authored (the vocab is the table's own writers
+      // by definition; an authored options_source on `*_by` is drift).
+      ...(isAuditActorColumn(phys) ? { options_source: "audit.actors" as const } : {}),
     };
   };
 
@@ -129,6 +133,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `the entity class is the source; remove the authored value(s)`,
         );
       }
+      if (isAuditActorColumn(phys) && col.options_source !== undefined && col.options_source !== "audit.actors") {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" is an audit actor column — ` +
+            `options_source:"audit.actors" is derived from the entity class; remove the authored value`,
+        );
+      }
       return injectDerived(col);
     });
 
@@ -158,6 +168,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       sticky: isUid || undefined,
       default_visible: false,
       audited: isAudit || undefined,
+      // uid/version are never filter criteria: a uuid text-filter is
+      // debug noise (relationships use `ref`), version is the
+      // optimistic-lock counter — meaningless as a matcher.
+      filterable: isUid || key === "version" ? false : undefined,
+      // Audit actor columns feed the governed multi-select: the
+      // distinct vocab of THIS table's actors, label-resolved through
+      // user_profile by the entity's /audit-actors route.
+      options_source: isAuditActorColumn(phys) ? "audit.actors" : undefined,
     };
     columns.push(injectDerived(derived));
   }
@@ -183,6 +201,20 @@ const COMMON_SYSTEM_FIELD_KEYS = new Set([
   "created_at", "created_by", "updated_at", "updated_by",
   "deleted_at", "deleted_by",
 ]);
+
+/** Audit actor physical columns — `@AuditableField(CREATED_BY|UPDATED_BY)`
+ *  + `@DeletableField(DELETED_BY)`. They always resolve
+ *  `options_source:"audit.actors"` — derived from the class, never authored. */
+function isAuditActorColumn(phys: {
+  auditableType?: AuditableFieldType;
+  deletableType?: DeletableFieldType;
+}): boolean {
+  return (
+    phys.auditableType === AuditableFieldType.CREATED_BY ||
+    phys.auditableType === AuditableFieldType.UPDATED_BY ||
+    phys.deletableType === DeletableFieldType.DELETED_BY
+  );
+}
 
 /** Entity-class `inferredPgType` → MetaColumn `type` for auto-derived columns. */
 function columnTypeForPg(pgType: string): MetaColumn["type"] {

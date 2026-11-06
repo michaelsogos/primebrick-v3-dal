@@ -57,6 +57,7 @@ import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
 import {
+  AuditableFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
   type EntityClass,
@@ -197,6 +198,10 @@ export interface EntityService<TEntity> {
   bulkDelete(items: BulkItem[]): Promise<unknown>;
   bulkRestore(items: BulkItem[]): Promise<unknown>;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
+  /** `options_source:"audit.actors"` vocabulary feed — the distinct
+   *  writers of THIS table, label-resolved through `public.user_profiles`.
+   *  `[]` on entities with no audit actor columns. */
+  auditActors(): Promise<{ value: string; label: string }[]>;
   stream(query: EntityListQuery): AsyncGenerator<TEntity>;
 }
 
@@ -301,6 +306,28 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   const hasDeletedBy = Object.values(meta.columns).some(
     (c) => c.isDeletable && c.deletableType === DeletableFieldType.DELETED_BY,
   );
+
+  // uid + audit-actor columns are ALWAYS wire-filterable, on top of the
+  // service-declared `filterableKeys`: the uid powers ref/actor label
+  // `IN` lookups (`filters[i][field]=uuid`), and `*_by` columns feed
+  // `options_source:"audit.actors"` — the meta auto-derivation marks them
+  // filterable, so the wire allowlist must match the meta contract or the
+  // governed control would serialize criteria the backend then skips.
+  const wireAlwaysFilterable = new Set<string>(
+    Object.values(meta.columns)
+      .filter(
+        (c) =>
+          c.isUnique ||
+          c.auditableType === AuditableFieldType.CREATED_BY ||
+          c.auditableType === AuditableFieldType.UPDATED_BY ||
+          c.deletableType === DeletableFieldType.DELETED_BY,
+      )
+      .map((c) => c.propertyKey),
+  );
+  const allowedFilterFields: ReadonlySet<string> = new Set([
+    ...cfg.list.filterableKeys,
+    ...wireAlwaysFilterable,
+  ]);
   const auditable = isAuditableEntity(meta);
   const joinsFor = (): JoinExpr[] =>
     auditable
@@ -378,7 +405,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
 
     if (q.filters && q.filters.length > 0) {
       const translated = translateFilterConditions(cfg.entity, q.filters, {
-        allowedFields: cfg.list.filterableKeys,
+        allowedFields: allowedFilterFields,
         connector: q.connector ?? "AND",
       });
       if (translated) filters.push(...translated);
@@ -594,6 +621,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           changed_by_name: row.changed_by_display_name ?? null,
         })),
       };
+    },
+
+    async auditActors() {
+      return repo.distinctAuditActors(cfg.entity);
     },
 
     async *stream(q) {

@@ -647,6 +647,12 @@ is available here.
 | page | `number` |  |
 | limit | `number` |  |
 
+#### `DomainService.auditActors(): Promise<{ value: string; label: string }[]>`
+
+`options_source:"audit.actors"` vocabulary feed — the distinct
+ writers of THIS table, label-resolved through `public.user_profiles`.
+ `[]` on entities with no audit actor columns.
+
 #### `DomainService.stream(query): AsyncGenerator<TEntity>`
 
 | Parameter | Type | Description |
@@ -867,6 +873,23 @@ closer).
 |-----------|------|-------------|
 | entity | `EntityClass` |  |
 | options | `{ tableName: string }` |  |
+
+#### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
+
+distinctAuditActors — the governed vocabulary behind
+`options_source:"audit.actors"`: DISTINCT values across the entity's
+audit actor columns (`@AuditableField(CREATED_BY|UPDATED_BY)` +
+`@DeletableField(DELETED_BY)`), label-resolved through
+`public.user_profiles` — the same cross-app platform join every
+auditable read already performs. uuid-shaped actors get the profile
+`display_name`; fictitious writers (`system`, `migration-*`, nats
+subjects) have no profile row and surface their raw value — the
+vocab is "actors that wrote THIS table", NOT the users table, so a
+plain entity-ref combo could never offer them.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
 
 #### `Repository.truncate(entity, options): Promise<void>`
 
@@ -2096,7 +2119,7 @@ COLUMN (`MetaColumn.options_source`), never on a form placement:
 the same contract feeds forms, list filters and docs generation.
 Closed union on purpose — an unknown source is a construction error.
 
-**Type:** `"census.emits" \| "census.callables"`
+**Type:** `"census.emits" \| "census.callables" \| "audit.actors"`
 
 ### `MetaColumnType`
 
@@ -2668,6 +2691,15 @@ Email — same RFC-5322-simplified regex the config validator and the FE
 | raw | "" |
 | expr | "" |
 | group | "" |
+
+### `FILTER_OPERATOR_ICON`
+
+Canonical `FilterOperator → Lucide icon` map — the ONE operator-icon
+vocabulary every filter surface renders (advanced operator combobox,
+filter chips, summaries). Values are `@lucide/svelte` icon names,
+consumed via `DynamicIcon`.
+
+**Type:** `Record<FilterOperator, string>`
 
 ### `fromString`
 

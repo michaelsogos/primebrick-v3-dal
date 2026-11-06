@@ -573,6 +573,56 @@ export class Repository {
   }
 
   /**
+   * distinctAuditActors — the governed vocabulary behind
+   * `options_source:"audit.actors"`: DISTINCT values across the entity's
+   * audit actor columns (`@AuditableField(CREATED_BY|UPDATED_BY)` +
+   * `@DeletableField(DELETED_BY)`), label-resolved through
+   * `public.user_profiles` — the same cross-app platform join every
+   * auditable read already performs. uuid-shaped actors get the profile
+   * `display_name`; fictitious writers (`system`, `migration-*`, nats
+   * subjects) have no profile row and surface their raw value — the
+   * vocab is "actors that wrote THIS table", NOT the users table, so a
+   * plain entity-ref combo could never offer them.
+   */
+  async distinctAuditActors(
+    entity: EntityClass,
+  ): Promise<{ value: string; label: string }[]> {
+    const meta = getEntityPersistenceMeta(entity);
+    const actorCols = Object.values(meta.columns)
+      .filter(
+        (c) =>
+          c.auditableType === AuditableFieldType.CREATED_BY ||
+          c.auditableType === AuditableFieldType.UPDATED_BY ||
+          c.deletableType === DeletableFieldType.DELETED_BY,
+      )
+      .map((c) => c.sqlName);
+    if (actorCols.length === 0) return [];
+    const table = `${quoteIdent(meta.tableSchema)}.${quoteIdent(meta.tableName)}`;
+    const union = actorCols
+      .map(
+        (c) =>
+          `SELECT ${quoteIdent(c)} AS actor FROM ${table} WHERE ${quoteIdent(c)} IS NOT NULL`,
+      )
+      .join("\n    UNION\n    ");
+    // The regex guardrail on the LEFT side mirrors the audit-trail join —
+    // a non-uuid actor must not trip the uuid comparison cast.
+    const r = await this.db.query<{ value: unknown; label: unknown }>(
+      `SELECT a.actor AS value, COALESCE(up."display_name", a.actor) AS label
+       FROM (
+         ${union}
+       ) a
+       LEFT JOIN "public"."user_profiles" up
+         ON a.actor ~ '^[0-9a-fA-F-]{36}$' AND up."uuid"::text = a.actor
+       ORDER BY label`,
+      [],
+    );
+    return (r.rows ?? []).map((row) => ({
+      value: String(row.value),
+      label: row.label === null || row.label === undefined ? String(row.value) : String(row.label),
+    }));
+  }
+
+  /**
    * Physical table reset — `TRUNCATE TABLE <schema>.<table>` resolved through
    * entity metadata, like every other entity op: the schema-domain guard
    * applies (entities outside the declared domain throw before any SQL).

@@ -102,6 +102,9 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
   }
+  auditActors(): Promise<{ value: string; label: string }[]> {
+    return this.svc.auditActors();
+  }
   stream(query: EntityListQuery): AsyncGenerator<TEntity> {
     return this.svc.stream(query);
   }
