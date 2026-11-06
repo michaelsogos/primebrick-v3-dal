@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -56,12 +56,51 @@ describe("withColumnConstraints", () => {
     const meta = baseMeta();
     meta.columns.push({
       key: "run_stats", label_key: "x.stats", type: "sparkline", order: 60,
+      kind: "virtual",
       sparkline: { endpoint: "/actions/x", request_field: "k", row_key: "k", series: [] },
     } as never);
     const out = withColumnConstraints(meta, CcRuleEntity);
     const stats = out.columns.find((c) => c.key === "run_stats");
     expect(stats?.nullable).toBeUndefined();
     expect(stats?.pg_type).toBeUndefined();
+  });
+
+  it("throws when a virtual column forces a query flag on", () => {
+    const meta = baseMeta();
+    meta.columns.push({
+      key: "run_stats", label_key: "x.stats", type: "sparkline", order: 60,
+      kind: "virtual", sortable: true,
+    } as never);
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/virtual column "run_stats" forces sortable:true/);
+  });
+
+  it("throws when kind:\"calculated\" has no @Calculated prop on the class", () => {
+    const meta = baseMeta();
+    meta.columns.push({ key: "ghost_calc", label_key: "x.gc", type: "number", order: 60, kind: "calculated" });
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/no @Calculated property/);
+  });
+
+  it("accepts kind:\"calculated\" backed by a @Calculated prop and auto-derives undeclared ones", () => {
+    @Entity("cc_calc", "job")
+    class CcCalcEntity {
+      @Key() id!: bigint;
+      @Column({ nullable: false }) name!: string;
+      @Calculated(`(SELECT 'x' WHERE {self}.id IS NOT NULL)`) ghost?: string;
+      @Calculated(`(SELECT count(*) FROM job.cc_calc)` , { sqlName: "total_count" }) total?: number;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_calc", translation_key: "cc_calc", uid: "id",
+      display_field: "name",
+      columns: [
+        { key: "name", label_key: "x.name", type: "text", order: 10 },
+        { key: "total_count", label_key: "x.total", type: "number", order: 20, kind: "calculated" },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcCalcEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    expect(byKey.total_count?.kind).toBe("calculated");
+    // undeclared @Calculated prop auto-derives as a hidden calculated column
+    expect(byKey.ghost).toMatchObject({ kind: "calculated", default_visible: false });
   });
 });
 
@@ -95,7 +134,7 @@ describe("withColumnConstraints — class→meta auto-derivation", () => {
     }
     const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
     // system cols: hidden-by-default, audited group, i18n key by convention
-    expect(byKey.created_by).toMatchObject({ audited: true, default_visible: false, label_key: "job.entities.cc_job.fields.created_by" });
+    expect(byKey.created_by).toMatchObject({ audited: true, default_visible: false, label_key: "system.common.fields.created_by" });
     expect(byKey.deleted_at).toMatchObject({ audited: true, default_visible: false, type: "datetime" });
     expect(byKey.uuid).toMatchObject({ order: -1, sticky: true, default_visible: false });
     expect(byKey.version).toMatchObject({ type: "number", audited: true });

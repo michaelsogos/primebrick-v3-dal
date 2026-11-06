@@ -1,5 +1,5 @@
 import type { EntityClass } from "../meta/entity-meta.js";
-import { getColumnName, getEntityPersistenceMeta, getTableName, getQualifiedTableName } from "../meta/entity-meta.js";
+import { getColumnName, getCalculatedColumn, getEntityPersistenceMeta, getTableName, getQualifiedTableName } from "../meta/entity-meta.js";
 
 import type { FieldProjector, FieldRef, FilterExpr, GroupByOperand, JoinExpr, SortingExpr } from "./dsl.js";
 import type { WithDeletedRecords } from "../types/types.js";
@@ -35,6 +35,11 @@ function qCol(entity: EntityClass, propertyKey: string): string {
 }
 
 function qQualifiedField(entity: EntityClass, propertyKey: string, tableNameOverride?: string): string {
+  // `@Calculated` props have no physical column: render the raw expression —
+  // the single substitution point covering WHERE, ORDER BY, GROUP BY and
+  // JOIN ON alike. `{self}` resolves to the qualified base-table ref.
+  const calc = getCalculatedColumn(entity, propertyKey);
+  if (calc) return `(${calc.expr.replaceAll("{self}", qTable(entity, tableNameOverride))})`;
   return `${qTable(entity, tableNameOverride)}.${qCol(entity, propertyKey)}`;
 }
 

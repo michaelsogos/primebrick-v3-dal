@@ -13,13 +13,24 @@
  *
  *   meta: withColumnConstraints(jobRuleMeta, JobRuleEntity)
  *
+ * Column `kind` contract (one source of truth — the entity class):
+ *   - absent        → physical column (must exist on the class);
+ *   - "calculated"  → `@Calculated` prop on the class — SQL projection:
+ *                     sortable/filterable/searchable ON by default;
+ *   - "virtual"     → post-query enrichment (decorate(), external
+ *                     sources): sortable/filterable/searchable FORCED OFF.
+ *
  * ENFORCEMENT, not verification — throws at boot on:
  *   1. an authored `nullable`/`max_length`/`pg_type` (derived props are
  *      class-owned; restating them duplicates the source of truth);
- *   2. a column `key` that has no physical column on the class — unless
- *      the column is explicitly virtual (`virtual: true`, or
- *      `type:"sparkline"` — the documented no-DB-field renderer
- *      contract).
+ *   2. a column `key` with no physical column on the class — unless the
+ *      column declares `kind:"calculated"` (backed by `@Calculated`) or
+ *      `kind:"virtual"` (backed by decoration);
+ *   3. `kind:"calculated"` without a matching `@Calculated` prop on the
+ *      entity class — the class owns the expression, meta can't invent it;
+ *   4. `kind:"virtual"` with `sortable`/`filterable`/`searchable` set to
+ *      `true` — a virtual column can never be queried; opting IN is a
+ *      construction error (opting OUT is legal but redundant).
  */
 import type { MetaColumn } from "@primebrick/core";
 import { getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
@@ -27,8 +38,8 @@ import { getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
 
-/** Column types with no physical backing — exempt from the class lookup. */
-const VIRTUAL_COLUMN_TYPES: readonly string[] = ["sparkline", "ref_count"];
+/** Query flags a `kind:"virtual"` column can never enable. */
+const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
   meta: T,
@@ -55,13 +66,34 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   const columns = meta.columns
     .filter((col) => !hiddenKeys.has(col.key))
     .map((col) => {
+      if (col.kind === "virtual") {
+        const forced = QUERY_FLAGS.filter((f) => col[f] === true);
+        if (forced.length > 0) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: virtual column "${col.key}" forces ${forced.join(", ")}:true — ` +
+              `virtual columns are post-query enrichments and can never be queried; remove the flag(s)`,
+          );
+        }
+      }
       const phys = persistence.columns[col.key];
       if (!phys) {
-        if (col.virtual === true || VIRTUAL_COLUMN_TYPES.includes(col.type))
-          return col;
+        if (col.kind === "virtual") return col;
+        if (col.kind === "calculated") {
+          if (persistence.calculated[col.key]) return col;
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: calculated column "${col.key}" has no @Calculated property on the entity class — ` +
+              `declare @Calculated("<expr>") on ${persistence.entityClassName}.${col.key} (the class owns the SQL expression)`,
+          );
+        }
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: meta column "${col.key}" has no matching column on the entity class — ` +
-            `declare it on the class or remove it from meta.columns (virtual columns must use a virtual type)`,
+            `declare it on the class, or mark the column kind:"calculated" (@Calculated prop) / kind:"virtual" (decorate)`,
+        );
+      }
+      if (col.kind !== undefined) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: physical column "${col.key}" declares kind:"${col.kind}" — ` +
+            `physical columns have no kind (drop it); the value already comes from SQL`,
         );
       }
       const restated = DERIVED_PROPS.filter((p) => col[p] !== undefined);
@@ -78,7 +110,8 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   //    hidden is auto-derived — system columns are never authored by hand.
   //    Derived columns are default_visible:false (available in the picker,
   //    zero visual impact) — an explicit authored entry is required to make
-  //    one visible-by-default.                                                   */
+  //    one visible-by-default. The same auto-derivation covers @Calculated
+  //    props (kind:"calculated", no physical constraints injected).        */
   const declared = new Set(columns.map((c) => c.key));
   const ns = meta.entities_ns ?? "system";
   const entityKey = meta.translation_key ?? meta.entity ?? persistence.entityClassName;
@@ -90,7 +123,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     const isUid = key === meta.uid;
     const derived: MetaColumn = {
       key,
-      label_key: labelFor(key),
+      // System columns share ONE translation dict (`system.common.fields.*`)
+      // — a per-entity key for `uuid`/`created_by`/… is dict duplication:
+      // the label is identical for every entity by definition.
+      label_key: isAudit || isUid || COMMON_SYSTEM_FIELD_KEYS.has(key) ? `system.common.fields.${key}` : labelFor(key),
       type: columnTypeForPg(phys.inferredPgType),
       order: isUid ? -1 : 1000 + derivedIdx++,
       sticky: isUid || undefined,
@@ -99,8 +135,28 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     };
     columns.push(injectDerived(derived));
   }
+  for (const [key] of Object.entries(persistence.calculated)) {
+    if (declared.has(key) || hiddenKeys.has(key)) continue;
+    columns.push({
+      key,
+      label_key: labelFor(key),
+      type: "text",
+      order: 1000 + derivedIdx++,
+      default_visible: false,
+      kind: "calculated",
+    });
+  }
   return { ...meta, columns };
 }
+
+/** System physical fields whose label is entity-independent — auto-derived
+ *  columns for these always resolve `system.common.fields.<key>` (seeded once
+ *  per language, shared by every entity). */
+const COMMON_SYSTEM_FIELD_KEYS = new Set([
+  "id", "uuid", "version",
+  "created_at", "created_by", "updated_at", "updated_by",
+  "deleted_at", "deleted_by",
+]);
 
 /** Entity-class `inferredPgType` → MetaColumn `type` for auto-derived columns. */
 function columnTypeForPg(pgType: string): MetaColumn["type"] {

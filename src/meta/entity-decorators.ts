@@ -148,11 +148,24 @@ export type ColumnOptions = {
   castInJoin?: string;
 };
 
+type CalculatedRegistration = {
+  /** Result alias — defaults to the property key. */
+  sqlName: string;
+  /** Scalar SQL expression (correlated subquery, CASE, arithmetic, …).
+   *  `{self}` inside the string is replaced with the qualified base-table
+   *  ref (`"schema"."table"`) at render time — correlation-safe across
+   *  schema overrides and table-name overrides. */
+  expr: string;
+};
+
 type ClassEntityMeta = {
   tableName?: string;
   /** Optional schema override — if set, takes precedence over the Dal's default schema. */
   tableSchema?: string;
   columns: Map<PropertyKey, ColumnRegistration>;
+  /** `@Calculated()` — SQL-projected expressions. Never physical columns:
+   *  excluded from DDL/insert/update; injected as `Project.expr` on read. */
+  calculated: Map<PropertyKey, CalculatedRegistration>;
   /** `@IsNotColumn()` — excluded from persistence meta & future DAL builders */
   notColumnKeys: Set<PropertyKey>;
   /** `@AuditTrail()` — entity has audit trail table */
@@ -194,7 +207,7 @@ const META = new WeakMap<Function, ClassEntityMeta>();
 function ensureMeta(ctor: Function): ClassEntityMeta {
   let m = META.get(ctor);
   if (!m) {
-    m = { columns: new Map(), notColumnKeys: new Set() };
+    m = { columns: new Map(), calculated: new Map(), notColumnKeys: new Set() };
     META.set(ctor, m);
   }
   return m;
@@ -268,6 +281,18 @@ function collectEntityColumnRegistrations(
   return merged;
 }
 
+/** Merged `@Calculated` registrations across the prototype chain — same
+ *  parent-first/subclass-wins semantics as physical columns. */
+function collectCalculatedRegistrations(
+  ctor: Function,
+): Map<PropertyKey, CalculatedRegistration> {
+  const merged = new Map<PropertyKey, CalculatedRegistration>();
+  for (const m of collectMetaChain(ctor)) {
+    for (const [propKey, reg] of m.calculated) merged.set(propKey, reg);
+  }
+  return merged;
+}
+
 /** Registers every implicit column + `design:type` / nullability when not already set by decorators. */
 export function syncImplicitEntityColumns(ctor: Function): void {
   const m = META.get(ctor);
@@ -285,8 +310,21 @@ export function syncImplicitEntityColumns(ctor: Function): void {
     // prototype-chain merge in getEntityPersistenceMeta — creating a fresh
     // bare registration here would shadow the decorated one on merge.
     if (hasInheritedColumnRegistration(ctor, key)) continue;
+    if (hasInheritedCalculatedRegistration(ctor, key)) continue;
     touchColumn(ctor, key);
   }
+}
+
+/** True when an ancestor class already has a `@Calculated` registration for `key`. */
+function hasInheritedCalculatedRegistration(ctor: Function, key: PropertyKey): boolean {
+  for (
+    let p = Object.getPrototypeOf(ctor);
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    if (META.get(p)?.calculated.has(key)) return true;
+  }
+  return false;
 }
 
 /**
@@ -346,6 +384,35 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
       if (sqlNameOrOpts.jsType !== undefined) col.jsType = sqlNameOrOpts.jsType;
       if (sqlNameOrOpts.castInJoin !== undefined) col.castInJoin = sqlNameOrOpts.castInJoin;
     }
+  };
+}
+
+/** Options for `@Calculated()` — a SQL-projected read-only expression. */
+export type CalculatedOptions = {
+  /** Result alias — defaults to the property key. */
+  sqlName?: string;
+};
+
+/**
+ * Marks a property as a calculated SQL projection — never a physical column.
+ * The expression lives ONCE on the entity class; the DAL injects it as
+ * `Project.expr` on every list/get and substitutes it into WHERE/ORDER BY,
+ * so calculated columns are sortable/filterable like physical ones.
+ * `expr` may reference the base table via the `{self}` token (rendered as
+ * `"schema"."table"`); correlated subqueries must be scalar (≤1 row).
+ */
+export function Calculated(expr: string, opts?: CalculatedOptions): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    const m = ensureMeta(ctor);
+    // Never a physical column: block the implicit-column convention AND any
+    // explicit registration — DDL can never create it.
+    m.notColumnKeys.add(propertyKey);
+    m.columns.delete(propertyKey);
+    m.calculated.set(propertyKey, {
+      sqlName: opts?.sqlName ?? String(propertyKey),
+      expr,
+    });
   };
 }
 
@@ -621,6 +688,18 @@ export function getColumnName(ctor: EntityClass, propertyKey: string | symbol): 
   return reg?.sqlName ?? String(propertyKey);
 }
 
+/** `@Calculated` registration for `propertyKey`, or undefined when the prop
+ *  is a physical/non-existent column. Used by the query builder to swap the
+ *  column ref for the raw expression in WHERE/ORDER BY. */
+export function getCalculatedColumn(
+  ctor: EntityClass,
+  propertyKey: string | symbol,
+): CalculatedRegistration | undefined {
+  if (!isEntityClass(ctor)) return undefined;
+  syncImplicitEntityColumns(ctor as Function);
+  return collectCalculatedRegistrations(ctor as Function).get(propertyKey);
+}
+
 export function getPrimaryKeyColumn(ctor: EntityClass): string {
   if (!isEntityClass(ctor)) {
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
@@ -692,6 +771,9 @@ export type EntityPersistenceMeta = {
       partitionOpts?: PartitionFieldOptions;
     }
   >;
+  /** `@Calculated` SQL projections — keyed by **result alias** (`sqlName`).
+   *  Not physical columns: absent from DDL, present in read projections. */
+  calculated: Record<string, { propertyKey: string; sqlName: string; expr: string }>;
   /** Resolved partition declaration — present when a `@PartitionField` exists. */
   partition?: {
     column: string;
@@ -829,6 +911,18 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;
     columns[reg.sqlName] = entry;
+  }
+
+  // ── @Calculated resolution — projections, never physical columns ──────
+  const calculated: EntityPersistenceMeta["calculated"] = {};
+  for (const [propKey, reg] of collectCalculatedRegistrations(fn)) {
+    const propertyKey = String(propKey);
+    if (colMap.has(propKey)) {
+      throw new TypeError(
+        `${entityClassName}.${propertyKey}: @Calculated property is also registered as a physical column — remove the conflicting @Column/@Key/@Unique (or @IsNotColumn-style) registration`,
+      );
+    }
+    calculated[reg.sqlName] = { propertyKey, sqlName: reg.sqlName, expr: reg.expr };
   }
 
   // ── @PartitionField resolution + non-eludible validation ──────────────
@@ -996,5 +1090,6 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,
     columns,
+    calculated,
   };
 }

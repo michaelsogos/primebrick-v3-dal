@@ -158,6 +158,12 @@ export interface EntityServiceConfig<TEntity> {
   list: {
     searchableKeys: readonly string[];
     filterableKeys: ReadonlySet<string>;
+    /** Optional narrowing of the derived sortable universe (physical +
+     *  calculated column keys + aggregate aliases). When omitted, every
+     *  resolvable key is accepted; a `sort_key` outside the universe is
+     *  rejected with `ValidationError` BEFORE any SQL — never `ORDER BY`
+     *  on an arbitrary string. */
+    sortableKeys?: ReadonlySet<string>;
     defaultSort?: { key: string; dir: "asc" | "desc" };
     extraFilters?: (q: EntityListQuery) => FilterExpr[];
     aggregates?: AggregateDecl[];
@@ -304,6 +310,39 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       : [];
   const repoFor = (tx?: Repository) => tx ?? repo;
 
+  /** Fail-closed `sort_key` gate: the wire can only sort on keys that
+   *  resolve to a real projection — physical columns, `@Calculated`
+   *  aliases, aggregate aliases — optionally narrowed by
+   *  `cfg.list.sortableKeys`. Anything else is a 400, never a 42703. */
+  const sortableUniverse = new Set<string>([
+    ...Object.keys(meta.columns),
+    ...Object.keys(meta.calculated),
+    ...(cfg.list.aggregates ?? []).map((a) => a.name),
+  ]);
+  const allowedSortKeys = cfg.list.sortableKeys
+    ? new Set([...cfg.list.sortableKeys].filter((k) => sortableUniverse.has(k)))
+    : sortableUniverse;
+  function assertSortableKey(sort_key: string): void {
+    if (!allowedSortKeys.has(sort_key)) {
+      throw new ValidationError(
+        `Invalid sort_key "${sort_key}" for ${meta.entityClassName} — must be one of: ${[...allowedSortKeys].sort().join(", ")}`,
+      );
+    }
+  }
+
+  /** Read projection = physical columns + every `@Calculated` prop — the
+   *  single place a calculated field becomes a SELECT column. `{self}`
+   *  resolves to the qualified base-table ref (same rendering as the
+   *  WHERE/ORDER BY substitution in the query builder). */
+  const selfRef = `"${meta.tableSchema}"."${meta.tableName}"`;
+  function projectRead(): FieldProjector[] {
+    const fields = projectAllExceptPk(cfg.entity) as unknown as FieldProjector[];
+    for (const c of Object.values(meta.calculated)) {
+      fields.push({ kind: "expr", expr: c.expr.replaceAll("{self}", selfRef), alias: c.sqlName });
+    }
+    return fields;
+  }
+
   function buildListFilters(q: EntityListQuery): FilterExpr[] {
     const filters: FilterExpr[] = [];
 
@@ -354,16 +393,15 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     groupBy?: ReturnType<typeof field>[];
   } {
     const aggregates = cfg.list.aggregates ?? [];
+    const hasCalculated = Object.keys(meta.calculated).length > 0;
     const joins = joinsFor();
-    if (aggregates.length === 0) {
+    if (aggregates.length === 0 && !hasCalculated) {
       return {
         fields: projectAllExceptPk(cfg.entity) as unknown as FieldProjector[],
         joins,
       };
     }
-    const fields: FieldProjector[] = [
-      ...(projectAllExceptPk(cfg.entity) as unknown as FieldProjector[]),
-    ];
+    const fields: FieldProjector[] = projectRead();
     const pkProp = Object.values(meta.columns).find((c) => c.isKey)?.propertyKey;
     for (const agg of aggregates) {
       joins.push({
@@ -392,6 +430,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
           ? "ASC"
           : "DESC";
+      assertSortableKey(sort_key);
 
       const shape = buildListShape();
       const result = await repo.findByPage<TEntity, TEntity>(
@@ -419,7 +458,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async get(uuid) {
       const row = await repo.find<TEntity, TEntity>(
         cfg.entity,
-        projectAllExceptPk(cfg.entity) as never,
+        projectRead() as never,
         {
           filters: [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", uuid)],
           joins: joinsFor(),
@@ -563,6 +602,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
           ? "ASC"
           : "DESC";
+      assertSortableKey(sort_key);
       const shape = buildListShape();
       const iterable = await repo.findAll<TEntity, TEntity>(
         cfg.entity,

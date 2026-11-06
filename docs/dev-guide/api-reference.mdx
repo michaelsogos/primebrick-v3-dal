@@ -1410,7 +1410,7 @@ The contract every entity service must satisfy — enforced on the router.
  effects (e.g. the BE entity-changed marker publisher). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
-| list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
@@ -1741,9 +1741,10 @@ Audit action enum (mirrors BE's AuditAction).
 
 ### `ActionsOverrides`
 
-Per-op enable overrides — may ONLY toggle `enabled` on route-backed ops.
+Per-op overrides — `enabled` toggles route-backed ops; chrome fields
+ restyle the standard CTA without touching its logic.
 
-**Type:** `Record<string, { enabled: boolean }>`
+**Type:** `Record<string, { enabled: boolean; label_key: string; icon: string; text_color: string }>`
 
 ### `AuditableWriteOptions`
 
@@ -1762,6 +1763,10 @@ Bulk operation options (batch size, timeout).
 ### `BulkResult`
 
 Result summary of a bulk write (addMany/upsertMany/updateMany/deleteMany).
+
+### `CalculatedOptions`
+
+Options for `@Calculated()` — a SQL-projected read-only expression.
 
 ### `CallableDecl`
 
@@ -3214,6 +3219,20 @@ Destructive changes (DROP) are never emitted — DB-only objects are WARN commen
 |-----------|------|-------------|
 | input | `VectorHybridInput` |  |
 
+### `Calculated(expr, opts): PropertyDecorator`
+
+Marks a property as a calculated SQL projection — never a physical column.
+The expression lives ONCE on the entity class; the DAL injects it as
+`Project.expr` on every list/get and substitutes it into WHERE/ORDER BY,
+so calculated columns are sortable/filterable like physical ones.
+`expr` may reference the base table via the `{self}` token (rendered as
+`"schema"."table"`); correlated subqueries must be scalar (≤1 row).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| expr | `string` |  |
+| opts | `CalculatedOptions` |  |
+
 ### `calculateDelta(oldEntity, newEntity): Record<string, { old: unknown; new: unknown }>`
 
 Calculate delta between old and new records for audit.
@@ -3624,6 +3643,17 @@ meta validation throws and points to `@PartitionChildOf` for that shape.
 |-----------|------|-------------|
 | n | `number` |  |
 
+### `getCalculatedColumn(ctor, propertyKey): CalculatedRegistration \| undefined`
+
+`@Calculated` registration for `propertyKey`, or undefined when the prop
+ is a physical/non-existent column. Used by the query builder to swap the
+ column ref for the raw expression in WHERE/ORDER BY.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+| propertyKey | `string \| symbol` |  |
+
 ### `getColumnName(ctor, propertyKey): string`
 
 | Parameter | Type | Description |
@@ -3726,11 +3756,12 @@ Runtime check: does this entity metadata have auditable columns?
 
 ### `isColumnFilterable(col): boolean`
 
-Column participates in the filters sheet — absent means filterable.
+Column participates in the filters sheet — absent means filterable,
+ except `kind:"virtual"` columns: never filterable, no opt-in exists.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `Pick<MetaColumn, "filterable">` |  |
+| col | `Pick<MetaColumn, "filterable" \| "kind">` |  |
 
 ### `isColumnSearchable(col): boolean`
 
@@ -3739,15 +3770,16 @@ Column joins the search scope — absent means searchable (the caller
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `Pick<MetaColumn, "searchable">` |  |
+| col | `Pick<MetaColumn, "searchable" \| "kind">` |  |
 
 ### `isColumnSortable(col): boolean`
 
-Column supports ORDER BY — absent means sortable.
+Column supports ORDER BY — absent means sortable, except `kind:"virtual"`
+ columns (post-query enrichment): never sortable, no opt-in exists.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `Pick<MetaColumn, "sortable">` |  |
+| col | `Pick<MetaColumn, "sortable" \| "kind">` |  |
 
 ### `isColumnVisible(col): boolean`
 
