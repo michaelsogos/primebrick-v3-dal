@@ -41,6 +41,10 @@ const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
 /** Query flags a `kind:"virtual"` column can never enable. */
 const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
+/** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
+ *  (runtime guard for wire-shaped metas that never saw the TS type). */
+const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables"]);
+
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
   meta: T,
   entityClass: EntityClass,
@@ -60,6 +64,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       nullable: phys.nullable ?? false,
       ...(phys.length !== undefined ? { max_length: phys.length } : {}),
       pg_type: phys.inferredPgType,
+      // Identity-generated @Key → server-managed on write: exempt from
+      // create-required checks (`checkEntityFields`). Manual keys stay
+      // client-writable — `usePostgresIdentity` already encodes both.
+      ...(phys.usePostgresIdentity === true ? { managed: true } : {}),
     };
   };
 
@@ -74,6 +82,24 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               `virtual columns are post-query enrichments and can never be queried; remove the flag(s)`,
           );
         }
+      }
+      if (col.options_source !== undefined && !COLUMN_OPTIONS_SOURCES.has(col.options_source)) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" options_source "${col.options_source}" is not a declared vocabulary — ` +
+            `one of ${[...COLUMN_OPTIONS_SOURCES].join(", ")}`,
+        );
+      }
+      if (typeof col.options_source === "string" && col.options_source.startsWith("census.") && col.allow_create === true) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares allow_create:true on a census options_source — ` +
+            `census vocabularies are closed by definition; drop allow_create`,
+        );
+      }
+      if (col.managed !== undefined) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors managed — ` +
+            `the flag is derived from the entity class (@Key generation strategy); never declared by hand`,
+        );
       }
       const phys = persistence.columns[col.key];
       if (!phys) {

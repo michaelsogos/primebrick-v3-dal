@@ -74,6 +74,25 @@ describe("withColumnConstraints", () => {
     expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/virtual column "run_stats" forces sortable:true/);
   });
 
+  it("throws on an options_source outside the closed vocabulary", () => {
+    const meta = baseMeta();
+    meta.columns[1] = { ...meta.columns[1]!, options_source: "bogus.src" } as never;
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/options_source "bogus.src" is not a declared vocabulary/);
+  });
+
+  it("throws on census options_source + allow_create:true (closed vocabulary)", () => {
+    const meta = baseMeta();
+    meta.columns[1] = { ...meta.columns[1]!, options_source: "census.emits", allow_create: true };
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/allow_create:true on a census options_source/);
+  });
+
+  it("accepts census options_source with allow_create absent/false", () => {
+    const meta = baseMeta();
+    meta.columns[1] = { ...meta.columns[1]!, options_source: "census.emits" };
+    const out = withColumnConstraints(meta, CcRuleEntity);
+    expect(out.columns.find((c) => c.key === "event_subject")?.options_source).toBe("census.emits");
+  });
+
   it("throws when kind:\"calculated\" has no @Calculated prop on the class", () => {
     const meta = baseMeta();
     meta.columns.push({ key: "ghost_calc", label_key: "x.gc", type: "number", order: 60, kind: "calculated" });
@@ -142,6 +161,32 @@ describe("withColumnConstraints — class→meta auto-derivation", () => {
     expect(byKey.payload_map).toMatchObject({ default_visible: false });
     // derived physical props still injected
     expect(typeof byKey.created_by?.pg_type).toBe("string");
+    // identity @Key → managed: server-generated, never required on create
+    expect(byKey.id).toMatchObject({ managed: true, nullable: false });
+    expect(byKey.uuid?.managed).toBeUndefined(); // unique ≠ key
+  });
+
+  it("manual @Key stays client-writable (no managed)", () => {
+    @Entity("cc_manual", "job")
+    class CcManualEntity {
+      @Key({ generated: "manual" }) code!: string;
+      @Column({ nullable: false }) name!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_manual", translation_key: "cc_manual", uid: "code",
+      display_field: "name",
+      columns: [{ key: "name", label_key: "x.name", type: "text", order: 10 }],
+    };
+    const out = withColumnConstraints(meta, CcManualEntity);
+    const code = out.columns.find((c) => c.key === "code");
+    expect(code?.managed).toBeUndefined();
+    expect(code?.nullable).toBe(false);
+  });
+
+  it("throws when a column authors managed (class-owned derived prop)", () => {
+    const meta = baseMeta();
+    meta.columns[0] = { ...meta.columns[0]!, managed: true } as never;
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/authors managed/);
   });
 
   it("`hidden: true` suppresses a physical column entirely (no emission, no derivation)", () => {

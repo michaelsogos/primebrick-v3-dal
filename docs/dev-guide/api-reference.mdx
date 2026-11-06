@@ -1217,7 +1217,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | action_name | `string` | Action/op name — must resolve to an `entity_op`-declared route. |
 | translation_key | `string` | i18n key for the CTA label. |
 | icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
-| text_color | `string` | Optional CSS color class for the label. |
+| color | `ActionColor` | Semantic color for icon + label together — see `ActionColor`. |
 | required_permission | `string \| string[]` | Permission required to see/use the action. |
 | requires_selection | `boolean` | When true, the CTA is enabled only with rows selected and the body
  receives `selected_uuids`; false = fires with an empty body
@@ -1652,7 +1652,7 @@ UI configuration for a non-standard row CTA (route-backed bare op).
  (e.g. `change_password`). |
 | translation_key | `string` | i18n key for the CTA label. |
 | icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
-| text_color | `string` | Optional CSS color class for the label. |
+| color | `ActionColor` | Semantic color for icon + label together — see `ActionColor`. |
 | disabled_when_deleted | `boolean` | Disable the CTA on soft-deleted rows. |
 | required_permission | `string \| string[]` | Permission required to see/use the action (filtered client-side
  against the user's permission set). |
@@ -1739,12 +1739,22 @@ Audit action enum (mirrors BE's AuditAction).
 |--------|-------|
 | LAST_SYNCED_AT | "LAST_SYNCED_AT" |
 
+### `ActionColor`
+
+Closed action-color vocabulary — ONE semantic drives BOTH the icon and
+ the label of a menu CTA (impossible to drift them apart). `neutral` is
+ the default uncolored rendering; the destructive/warning/success/info/
+ primary names map to the theme's semantic text utilities. A meta may
+ never smuggle a Tailwind class here — the enum IS the contract.
+
+**Type:** `"neutral" \| "primary" \| "info" \| "success" \| "warning" \| "destructive"`
+
 ### `ActionsOverrides`
 
 Per-op overrides — `enabled` toggles route-backed ops; chrome fields
  restyle the standard CTA without touching its logic.
 
-**Type:** `Record<string, { enabled: boolean; label_key: string; icon: string; text_color: string }>`
+**Type:** `Record<string, { enabled: boolean; label_key: string; icon: string; color: ActionColor; confirm_key: string; busy_key: string }>`
 
 ### `AuditableWriteOptions`
 
@@ -2078,6 +2088,15 @@ compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
 **Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
+
+### `MetaColumnOptionsSource`
+
+Dynamic option vocabulary for combo-backed controls — declared on the
+COLUMN (`MetaColumn.options_source`), never on a form placement:
+the same contract feeds forms, list filters and docs generation.
+Closed union on purpose — an unknown source is a construction error.
+
+**Type:** `"census.emits" \| "census.callables"`
 
 ### `MetaColumnType`
 
@@ -2577,6 +2596,14 @@ Base write options — no actor (for non-auditable entities).
 
 ## Constants
 
+### `ACTION_COLORS`
+
+The full `ActionColor` vocabulary — construction/lint validation rejects
+anything outside this closed set (raw strings on the wire can never reach
+the renderer).
+
+**Type:** `readonly ActionColor[]`
+
 ### `DalErrorCodes`
 
 Stable error codes for DAL optimistic concurrency control.
@@ -2888,6 +2915,22 @@ Ordered strict → loose; documented for consumers of `diff-entities-vs-database
 
 **Type:** `readonly string[]`
 
+### `SEMANTIC_ICON_COLORS`
+
+Semantic action icons — names whose COLOR IS PART OF THE ICON's meaning.
+Each name binds to exactly one `ActionColor` (the label color); the icon
+component itself (in `@primebrick/ui`'s `SEMANTIC_ICONS` registry, which
+reads THIS table) renders the gradient surface self-colored. A meta that
+pairs a semantic icon with a different color is a contract violation —
+`validateActionChrome` rejects it at construction time, so icon and
+label can never drift apart even by accident.
+
+- `exec-start` → success   (start/enable is a positive op — deliberate
+  divergence from the standard restore-warning chrome)
+- `exec-stop`  → destructive (stop/disable is a destructive op)
+
+**Type:** `Record<string, ActionColor>`
+
 ### `SLUG_RE`
 
 `slug` — letter-leading, internal `-` allowed (`test-role`,
@@ -2978,6 +3021,18 @@ both. Shared internals still dedupe through the bundler's shared chunks.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `actionColorClass(color): string`
+
+Maps an `ActionColor` to its Tailwind text utility. `neutral`/`undefined`
+resolves to the empty string — the item keeps the theme's default muted
+appearance (what standard CTAs like "Modifica" already show). This is the
+ONLY mapping of semantic color → class; renderers never hand-roll
+`text-${color}` strings.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| color | `ActionColor \| null \| undefined` |  |
 
 ### `add(a, b): Decimal`
 
@@ -3288,12 +3343,12 @@ Smallest integer `>= d`.
 
 Validate a wire entity object against `meta.columns`.
 Required = `nullable === false` AND client-writable — `audited`
-columns and `meta.uid` (server-generated identity) are system-managed
-(filled server-side) and never arrive on the wire, so an absent one is
-NOT a violation. A PRESENT empty value still fails `nullable === false`
-— clients must not send managed fields at all. Mirrors the form, where
-required only ever applies to declared placements
-(`placement.required ?? nullable`).
+columns, `meta.uid` (server-generated identity) and `managed` columns
+(server-filled keys, e.g. an identity `@Key`) are system-managed and
+never arrive on the wire, so an absent one is NOT a violation. A
+PRESENT empty value still fails `nullable === false` — clients must
+not send managed fields at all. Mirrors the form, where required only
+ever applies to declared placements (`placement.required ?? nullable`).
 Unknown entity keys are ignored — system columns (`uuid`, `version`)
 need no column.
 
@@ -3550,17 +3605,19 @@ Strings, booleans, null are unaffected.
 |-----------|------|-------------|
 | text | `string` |  |
 
-### `extJsonStringify(data): string`
+### `extJsonStringify(data, space): string`
 
 Serialize a value to an Ext-JSON string.
 BigInt values serialize as JSON numbers (42n → "42"); floats stay numbers.
 
 Use for request bodies carrying bigint values — the BE's ext-json body
-parser revives them to native `bigint`.
+parser revives them to native `bigint`. `space` mirrors JSON.stringify's
+pretty-print indent for display/tooltip contexts.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | data | `unknown` |  |
+| space | `number` |  |
 
 ### `extractEntityAnnotations(entryFile): Promise<EntityAnnotationMap>`
 
@@ -4700,6 +4757,19 @@ Unique constraint (PostgreSQL: unique index in generated patches).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `Date` |  |
+
+### `validateActionChrome(icon, color): string \| null`
+
+Validates the icon↔color contract of a single action chrome override.
+Returns a diagnostic string on violation, `null` when the pair is legal:
+- `color` must be a member of `ACTION_COLORS`;
+- a semantic icon (`SEMANTIC_ICON_COLORS` key) must carry its bound color —
+  `icon:"exec-stop", color:"success"` is an error, not a style choice.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| icon | `string \| undefined` |  |
+| color | `string \| undefined` |  |
 
 ### `verifyManifest(manifest, keyring, allowedTrust): TrustedKey`
 
