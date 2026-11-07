@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, Calculated, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -204,4 +204,90 @@ describe("withColumnConstraints — class→meta auto-derivation", () => {
     expect(createdAt).toHaveLength(1);
     expect(createdAt[0]).toMatchObject({ label_key: "custom.label", order: 70, default_visible: true });
   });
+});
+
+// ── uom / unsigned contract ─────────────────────────────────────────────
+describe("uom + unsigned constraints", () => {
+	@Entity("cc_priced", "job")
+	class CcPricedEntity {
+		@Column({ nullable: false }) amount!: number; // float8 → kind number
+		@Column({ length: 3, nullable: false }) amount_currency!: string; // uom sibling
+		@Column({ nullable: true }) qty?: Decimal; // numeric → kind decimal
+		@Column({ length: 4, nullable: true }) qty_uom?: string;
+	}
+
+	const pricedMeta = (cols: Partial<import("@primebrick/core").MetaColumn>[]): EntityMeta => ({
+		entity: "cc_priced", translation_key: "cc_priced", uid: "amount",
+		display_field: "amount",
+		columns: cols.map((c, i) => ({
+			key: "amount", label_key: "x", type: "number", order: i + 1, ...c,
+		})) as import("@primebrick/core").MetaColumn[],
+	}) as unknown as EntityMeta;
+
+	it("percent uom needs no sibling field", () => {
+		const meta = pricedMeta([{ uom: { kind: "percent" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("percent uom with a declared field throws (transform-only)", () => {
+		const meta = pricedMeta([{ uom: { kind: "percent", field: "amount_currency" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/uom:"percent" declares a sibling field/);
+	});
+
+	it("currency uom without a physical sibling field throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "currency", field: "nope_currency" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/must name a physical column/);
+	});
+
+	it("currency uom with a real sibling passes", () => {
+		const meta = pricedMeta([{ uom: { kind: "currency", field: "amount_currency" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("currency uom with a bogus source throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "currency", field: "amount_currency", source: "bogus" as never } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not a declared vocabulary/);
+	});
+
+	it("custom uom requires a valid source", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", field: "qty_uom", source: "nope" as never } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/no valid source/);
+		const ok = pricedMeta([
+			{ key: "qty", type: "number", uom: { kind: "custom", field: "qty_uom", source: { entity: "uom" } } },
+		]);
+		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
+	});
+
+	it("unknown uom kind throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "volume" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not a declared vocabulary/);
+	});
+
+	it("uom on a non-numeric column throws", () => {
+		@Entity("cc_text", "job")
+		class CcTextEntity {
+			@Column({ nullable: false }) name!: string;
+			@Column({ length: 3, nullable: false }) name_uom!: string;
+		}
+		const meta: EntityMeta = {
+			entity: "cc_text", translation_key: "cc_text", uid: "name",
+			display_field: "name",
+			columns: [{
+				key: "name", label_key: "x", type: "text", order: 1,
+				uom: { kind: "custom", field: "name_uom", source: { entity: "uom" } },
+			} as import("@primebrick/core").MetaColumn],
+		} as unknown as EntityMeta;
+		expect(() => withColumnConstraints(meta, CcTextEntity)).toThrow(/non-numeric column/);
+	});
+
+	it("unsigned on a non-numeric column throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = { ...meta.columns[0]!, unsigned: true } as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/non-numeric column/);
+	});
+
+	it("unsigned on a numeric column passes", () => {
+		const meta = pricedMeta([{ unsigned: true }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
 });

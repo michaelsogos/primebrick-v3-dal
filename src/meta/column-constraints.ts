@@ -33,6 +33,7 @@
  *      construction error (opting OUT is legal but redundant).
  */
 import type { MetaColumn } from "@primebrick/core";
+import { numericKindOf } from "@primebrick/core";
 import { AuditableFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
@@ -105,6 +106,62 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `the flag is derived from the entity class (@Key generation strategy); never declared by hand`,
         );
       }
+      // ── uom / unsigned — the unit-of-measure and sign contract live only
+      //    on NUMERIC columns. `percent` is a display transform (no sibling);
+      //    `currency`/`custom` require `uom.field` naming a PHYSICAL sibling
+      //    column on the class that persists the code per row.           */
+      const physForKind = persistence.columns[col.key];
+      if (col.uom !== undefined || col.unsigned === true) {
+        const numeric =
+          numericKindOf({ ...col, pg_type: col.pg_type ?? physForKind?.inferredPgType }) !== null;
+        if (!numeric) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares uom/unsigned on a non-numeric column — ` +
+              `the unit/sign contract applies to number/money formats and numeric pg types only`,
+          );
+        }
+      }
+      if (col.uom !== undefined) {
+        const uom = col.uom;
+        if (uom.kind === "percent") {
+          if ("field" in uom) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"percent" declares a sibling field — ` +
+                `percent is a pure display transform (×100/÷100) and persists no code`,
+            );
+          }
+        } else if (uom.kind === "currency" || uom.kind === "custom") {
+          if (!persistence.columns[uom.field] || hiddenKeys.has(uom.field)) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
+                `the UoM code is persisted per row on that sibling column`,
+            );
+          }
+          if (uom.kind === "currency" && uom.source !== undefined && uom.source !== "currencies") {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"currency" source "${String(uom.source)}" is not a declared vocabulary — ` +
+                `only "currencies" (the ISO 4217 list) is valid`,
+            );
+          }
+          if (uom.kind === "custom") {
+            const src = uom.source;
+            const ok =
+              src === "currencies" ||
+              (typeof src === "object" && src !== null && ("entity" in src || "api_url" in src));
+            if (!ok) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" has no valid source — ` +
+                  `one of "currencies" | { entity } | { api_url }`,
+              );
+            }
+          }
+        } else {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.kind "${String((uom as { kind?: unknown }).kind)}" is not a declared vocabulary — ` +
+              `one of percent | currency | custom`,
+          );
+        }
+      }
       const phys = persistence.columns[col.key];
       if (!phys) {
         if (col.kind === "virtual") return col;
@@ -168,10 +225,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       sticky: isUid || undefined,
       default_visible: false,
       audited: isAudit || undefined,
-      // uid/version are never filter criteria: a uuid text-filter is
-      // debug noise (relationships use `ref`), version is the
+      // uid/id/version are never filter criteria: a uuid/id text-filter
+      // is debug noise (relationships use `ref`), version is the
       // optimistic-lock counter — meaningless as a matcher.
-      filterable: isUid || key === "version" ? false : undefined,
+      filterable: isUid || key === "id" || key === "version" ? false : undefined,
       // Audit actor columns feed the governed multi-select: the
       // distinct vocab of THIS table's actors, label-resolved through
       // user_profile by the entity's /audit-actors route.
