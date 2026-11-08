@@ -39,6 +39,16 @@ Two artifacts travel with the patches:
   generated from git hooks.
 - **Advisory lock** — `pg_advisory_lock` keyed per schema serializes
   concurrent runners (multi-instance boot); `lockWaitMs` bounds the wait.
+- **Seeds write the audit trail** — every seed `INSERT` must be followed
+  by the matching `<table>_audit` rows. SQL seeds bypass the DAL, so
+  `@AuditTrail` never fires for them; without the explicit block the
+  version-history surface renders EMPTY for every seeded row. Convention
+  (`config_entries` precedent): `action='INSERT'`,
+  `changed_at`=row `created_at`, `changed_by='initial-setup'`,
+  `version`=row `version`, `delta` = every column as
+  `{old:null, new:value}` (`to_jsonb(t)` + `jsonb_each` covers all
+  columns without enumerating them), idempotent via
+  `WHERE NOT EXISTS` on the audit table.
 
 `runMigrations` returns `{ mode, nextMode?, degraded, applied[], failed[],
 pendingReview[], skipped[], securityEvents[] }` — the service maps
