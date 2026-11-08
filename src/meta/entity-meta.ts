@@ -15,6 +15,8 @@ export {
   AuditTrailEntity,
   PartitionField,
   PartitionChildOf,
+  Dict,
+  getDictFacet,
   Index,
   ForeignKey,
   Calculated,

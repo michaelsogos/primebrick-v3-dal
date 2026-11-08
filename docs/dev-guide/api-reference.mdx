@@ -553,6 +553,55 @@ Code: `ERR05`. HTTP 409.
 |-----------|------|-------------|
 | message | `string` |  |
 
+### `DictEntityBase`
+
+DictEntityBase — standard dictionary/enum-table entity.
+
+Every Primebrick dict table (lookup/enum vocabularies: customer_types,
+contact_types, account_kinds…) extends this base to get the shared
+column set without copy-paste AND the `@Dict` marker — the class-level
+flag that propagates through the prototype chain (`collectMetaChain`
+parent-first, subclass wins) so `getDictFacet(ConcreteEntity)` resolves
+it without ever instantiating. The served meta `dict` facet and the
+`kind:"dict"` page archetype derive from this ONE declaration point.
+
+Columns carried by the base:
+  id    bigint PK (identity)
+  uuid  uuid UNIQUE — wire uid
+  code  varchar(50) NOT NULL UNIQUE — stable business key
+  sort  int NOT NULL — dictionary ordering (order_field convention)
+
+`label_key` is deliberately NOT on the base: ISO/seed-managed dicts
+(legal_forms) carry `name_local` as their label instead — declare
+`label_key` per-entity when the rows are i18n-keyed.
+
+The consumer creates a concrete subclass:
+  @Entity("customer_types", "crm")
+  @Cached(300_000)              // sdk-side decorator — stays per-class
+  export class CustomerTypeEntity extends DictEntityBase &#123;&#125;
+  // + extras: label_key, value_kind, category, min_size, …
+
+ConfigEntityBase remains its own base (divergent `key`/`value`/`type`
+columns); re-basing it onto DictEntityBase — with the `key`→`code`
+rename — is the config-entry migration step's decision.
+
+This class is DB-agnostic — it does NOT import from @primebrick/sdk.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| id | `bigint` |  |
+| uuid | `UUID` |  |
+| code | `string` | Stable business key (e.g. "private", "email"). Unique per table. |
+| sort | `number` | Dictionary ordering — the `order_field` convention the dict page's
+ reorder CTAs mutate; persists through the atomic bulk save. |
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+
 ### `DomainService`
 
 The contract every entity service must satisfy — enforced on the router.
@@ -1316,6 +1365,21 @@ repositories. Tx-scoped repositories handed to `dal.transaction(fn)`
 callbacks are NOT decorated — writes inside an open transaction must
 not trigger cache writes/invalidation before commit. |
 
+### `DictFacet`
+
+The `dict` facet — runtime-injected on served meta when the entity
+class carries the `@Dict` marker (a dict base such as
+dal-pg `DictEntityBase`). Drives the `kind:"dict"` page archetype:
+a compact inline-editable list (rows add/edit in place).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| group_field | `string` | Column key grouping rows into fieldsets — absent renders a FLAT
+ sequence; grouping is opt-in per entity, never inferred. |
+| order_field | `string` | Column key owning row ordering (convention default: `sort` when the
+ entity declares it). Reorder CTAs mutate it and persist through the
+ page's atomic bulk save — no dedicated reorder endpoint. |
+
 ### `DuplicateResult`
 
 | Field | Type | Description |
@@ -1417,6 +1481,11 @@ comboboxes, lists, chips. |
 ### `EntityService`
 
 The contract every entity service must satisfy — enforced on the router.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| dictFacet | `DictFacet` | The entity's `dict` facet when the class carries `@Dict` — the
+ entity-router injects it into served meta (`dict`). |
 
 ### `EntityServiceConfig`
 
@@ -1935,7 +2004,7 @@ contracts, not column sets.
 The served `GET /api/v1/entities/{entity}/meta` response:
 static meta + runtime-injected `display_name`, `actions`, `collaboration`.
 
-**Type:** `EntityMeta & { display_name: string; actions: EntityAction[]; collaboration: CollaborationMeta }`
+**Type:** `EntityMeta & { display_name: string; actions: EntityAction[]; collaboration: CollaborationMeta; dict: DictFacet }`
 
 ### `EntityPersistenceMeta`
 
@@ -2099,6 +2168,15 @@ implicit index signature, keeping `MetaColumn` assignable to
 `Record<string, unknown>` — host/remotes pass columns through generic
 cell-snippet args typed as `Record<string, unknown>`.
 
+### `MetaColumnDependsCondition`
+
+A sibling-value condition — the SAME vocabulary `null_label.when` and
+`visible_on` already use for row-gated rendering, lifted to form scope.
+`prop` compares against the pivot ROW's prop (the picked ref option's
+raw row — e.g. its `code`); absent `prop` compares the pivot's stored
+value directly. `equals`/`not` take a single literal, `values` a set
+(IN semantics).
+
 ### `MetaColumnFormat`
 
 Authored field-format vocabulary — the SEMANTIC input contract of a
@@ -2221,6 +2299,18 @@ module, not to the module owning the broader `/system` prefix).
 One sidebar navigation link contributed by a module. `children` is the
 collapsible-group mechanism (the shell renders children under the parent).
 
+### `ModuleNavSibling`
+
+A sidebar-sibling declaration — lifts a SECOND module node next to the
+owning module under the same launcher root (e.g. CRM's "Impostazioni"
+node sibling of the CRM module). The owning service declares it inside
+`endpoints.nav.siblings`; discovery emits it as an extra module entry
+(`id: "<code>-<id>"`, `part_of` inherited) whose `route_prefixes` MUST
+nest strictly under one of the owner's — longest-prefix ownership then
+resolves the sibling's pages to the sibling node, never the parent.
+The access namespace derives as `<moduleNs>.<id>` (e.g.
+`access.crm.settings`) — leaf keys keep the standard route-derived form.
+
 ### `ModuleNotifyInput`
 
 Notification payload accepted by `ctx.notify` — the minimal shape of the
@@ -2340,7 +2430,7 @@ conventions — the AI route census (derived from the consolidated
 
 Page archetype vocabulary — what the route renders, regardless of delivery.
 
-**Type:** `"list" \| "detail" \| "create" \| "page"`
+**Type:** `"list" \| "detail" \| "create" \| "page" \| "dict"`
 
 ### `PageRouteProps`
 
@@ -3582,6 +3672,17 @@ Marks a field as deletable (deleted_at, deleted_by).
 |-----------|------|-------------|
 | what | `DeletableFieldType` |  |
 
+### `Dict(opts): ClassDecorator`
+
+Marks an entity as a dictionary/enum surface — typically set ONCE on a
+shared base class (e.g. DictEntityBase) so every subclass inherits the
+marker through collectMetaChain. `opts` becomes the served meta `dict`
+facet; redeclaring on a concrete class replaces it wholesale.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `DictFacet` |  |
+
 ### `diffVendorRequirements(requires, manifest): VendorMismatch[]`
 
 Vendor compatibility check — exact-match policy. A remote chunk compiled
@@ -3795,6 +3896,16 @@ For multi-DB: construct `new Dal(config)` directly (bypasses the singleton).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | config | `DalConfig` |  |
+
+### `getDictFacet(ctor): DictFacet \| undefined`
+
+The entity's resolved `dict` facet — subclass-first walk of the meta
+chain (same precedence as every class-level flag). `undefined` when no
+ancestor carries `@Dict()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
 
 ### `getEntityName(ctor): string`
 

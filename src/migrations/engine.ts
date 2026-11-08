@@ -81,6 +81,7 @@ type PatchFile = {
   sha256Raw: string;
   requiresReview: boolean;
   noTransaction: boolean;
+  noAuditTrail: boolean;
 };
 
 const noopLogger: LoggerPort = { error() {}, warn() {}, info() {} };
@@ -89,16 +90,64 @@ const noopLogger: LoggerPort = { error() {}, warn() {}, info() {} };
 export function parsePatchPragmas(raw: string): {
   requiresReview: boolean;
   noTransaction: boolean;
+  noAuditTrail: boolean;
 } {
   let requiresReview = false;
   let noTransaction = false;
+  let noAuditTrail = false;
   for (const line of raw.split("\n").slice(0, 40)) {
     const m = /^\s*--\s*pb:([a-z-]+)(?:\s+(\S+))?/.exec(line);
     if (!m) continue;
     if (m[1] === "requires-review") requiresReview = true;
     if (m[1] === "no-transaction") noTransaction = true;
+    if (m[1] === "no-audit-trail") noAuditTrail = true;
   }
-  return { requiresReview, noTransaction };
+  return { requiresReview, noTransaction, noAuditTrail };
+}
+
+/**
+ * Seed audit-trail enforcement — SQL seeds bypass the DAL, so `@AuditTrail`
+ * never fires for them: a patch that INSERTs into a table that HAS an audit
+ * twin (`<schema>.<table>_audit` exists in the catalog) must carry the
+ * matching audit INSERT rows itself, or opt out with
+ * `-- pb:no-audit-trail`. Missing trail = failed patch (fail-closed, same
+ * as a SQL error — caught before any of the file's SQL executes).
+ */
+const SEED_TARGET = /\bINSERT\s+INTO\s+"?(\w+)"?\s*\.\s*"?(\w+)"?/gi;
+/** Registry + internal tables — never audited, never flagged. */
+const SEED_AUDIT_EXEMPT_TABLES = new Set(["primebrick_database_patches"]);
+
+async function assertSeedAuditTrail(client: PoolClient, f: PatchFile): Promise<void> {
+  const targets = new Map<string, string>(); // "schema.table" → "schema.table_audit"
+  SEED_TARGET.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SEED_TARGET.exec(f.raw))) {
+    const schema = m[1]!.toLowerCase();
+    const table = m[2]!.toLowerCase();
+    if (table.endsWith("_audit") || SEED_AUDIT_EXEMPT_TABLES.has(table)) continue;
+    targets.set(`${schema}.${table}`, `${schema}.${table}_audit`);
+  }
+  if (!targets.size) return;
+  const auditNames = [...targets.values()];
+  const found = await client.query<{ a: string; oid: string | null }>(
+    `SELECT a, to_regclass(a) AS oid FROM unnest($1::text[]) AS a`,
+    [auditNames],
+  );
+  const existing = new Set(found.rows.filter((r) => r.oid !== null).map((r) => r.a));
+  const missing: string[] = [];
+  for (const [fq, auditFq] of targets) {
+    if (!existing.has(auditFq)) continue;
+    const auditInsert = new RegExp(
+      `\\bINSERT\\s+INTO\\s+"?${fq.split(".")[0]}"?\\s*\\.\\s*"?${fq.split(".")[1]}_audit"?`,
+      "i",
+    );
+    if (!auditInsert.test(f.raw)) missing.push(fq);
+  }
+  if (missing.length) {
+    throw new Error(
+      `db-migration: ${f.filename} seeds auditable table(s) ${missing.join(", ")} without an audit trail — SQL seeds bypass the DAL so @AuditTrail never fires; add the <table>_audit INSERT rows or opt out with '-- pb:no-audit-trail'`,
+    );
+  }
 }
 
 function listPatchFiles(dir: string): string[] {
@@ -280,6 +329,7 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
 
       const startedAt = Date.now();
       try {
+        if (!f.noAuditTrail) await assertSeedAuditTrail(client, f);
         const segments = parsePatchSegments(f.raw);
         const atomic = segments.length === 1 && segments[0]!.kind === "tx";
         if (atomic) {

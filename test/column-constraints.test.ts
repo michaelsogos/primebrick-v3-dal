@@ -290,4 +290,124 @@ describe("uom + unsigned constraints", () => {
 		const meta = pricedMeta([{ unsigned: true }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
 	});
+
+	// ── depends_on ─────────────────────────────────────────────────────
+	it("depends_on.field naming a non-physical column throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "ghost_pivot" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/depends_on\.field "ghost_pivot" must name a physical column/);
+	});
+
+	it("depends_on.filter_field on a non-ref column throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", filter_field: "country" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/filter_field on type "text"/);
+	});
+
+	it("depends_on.filter_field on a ref column passes", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "legal_form" },
+			depends_on: { field: "event_subject", filter_field: "event_subject" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	it("depends_on.control_prop on a ref column throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "contact_type" },
+			depends_on: { field: "event_subject", control_prop: "value_kind" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/control_prop on a type:"ref" column/);
+	});
+
+	it("prop-reading facets require a ref-declared pivot", () => {
+		const meta = baseMeta();
+		// pivot `event_subject` is a plain text column — prop reads need its ROW
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", control_prop: "value_kind" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/must be declared type:"ref" with ref\.entity/);
+	});
+
+	it("disabled_when.prop requires a ref-declared pivot too", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { equals: "private" } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "private" } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/must be declared type:"ref" with ref\.entity/);
+	});
+
+	it("prop facets pass when the pivot is a declared ref column", () => {
+		const meta = baseMeta();
+		meta.columns[1] = {
+			...meta.columns[1]!,
+			type: "ref",
+			ref: { entity: "customer_type" },
+		} as never;
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "private" } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	// ── ref.value_field — non-uid stored values can't detail-link ──────
+	it("ref.value_field with route:'detail' (default) throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", value_field: "id" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/cannot feed a \[param\] detail route/);
+	});
+
+	it("ref.value_field + route:'list' without filter_field throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", value_field: "id", route: "list" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/no filter_field/);
+	});
+
+	it("ref.value_field + route:'list' + filter_field passes", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", value_field: "id", route: "list", filter_field: "id" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	it("ref.value_field + route:'none' passes", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", value_field: "id", route: "none" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
 });

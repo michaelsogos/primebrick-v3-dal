@@ -162,6 +162,65 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           );
         }
       }
+      // ── depends_on — ONE declared edge to a PHYSICAL sibling column
+      //    (the pivot is a stored value on the same record — same rule as
+      //    `uom.field`). `filter_field` parametrizes the options `/list`
+      //    of a `type:"ref"` column — meaningless elsewhere. The
+      //    prop-reading facets (`disabled_when.prop`, `control_prop`)
+      //    resolve the pivot's picked ROW — legal only when the pivot is
+      //    itself declared `type:"ref"` (its options carry the row).   */
+      if (col.depends_on !== undefined) {
+        const dep = col.depends_on;
+        if (!persistence.columns[dep.field] || hiddenKeys.has(dep.field)) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on.field "${dep.field}" must name a physical column on the entity class — ` +
+              `the pivot is a stored sibling value on the same record`,
+          );
+        }
+        if (dep.filter_field !== undefined && col.type !== "ref") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares depends_on.filter_field on type "${col.type}" — ` +
+              `filter_field parametrizes the options /list of a type:"ref" column only`,
+          );
+        }
+        if (dep.control_prop !== undefined && col.type === "ref") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares depends_on.control_prop on a type:"ref" column — ` +
+              `a ref column's control is structurally entity_ref; a data-driven format is meaningless here`,
+          );
+        }
+        if (dep.control_prop !== undefined || dep.disabled_when?.prop !== undefined) {
+          const pivotCol = meta.columns.find((c) => c.key === dep.field && !c.hidden);
+          if (pivotCol?.type !== "ref" || !pivotCol.ref?.entity) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on reads a prop of the pivot row (control_prop/disabled_when.prop) — ` +
+                `pivot "${dep.field}" must be declared type:"ref" with ref.entity (the row is fetched from its options delegate)`,
+            );
+          }
+        }
+      }
+      // ── ref.value_field — a non-uid stored value cannot feed a
+      //    `[param]` detail route (params are uids). The author must
+      //    pick the truthful alternative explicitly: route:"list" +
+      //    filter_field (a real filtered link) or route:"none" (a
+      //    declared label-only cell). route:"list" also needs an explicit
+      //    filter_field — the 'uuid' default would filter the wrong
+      //    column on a non-uid value.   */
+      if (col.ref?.value_field !== undefined) {
+        const route = col.ref.route ?? "detail";
+        if (route === "detail") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares ref.value_field "${col.ref.value_field}" with route:"detail" (explicit or default) — ` +
+              `a non-uid stored value cannot feed a [param] detail route; declare route:"list" + filter_field or route:"none"`,
+          );
+        }
+        if (route === "list" && col.ref.filter_field === undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares ref.value_field "${col.ref.value_field}" with route:"list" but no filter_field — ` +
+              `the 'uuid' default would filter the wrong column on a non-uid value`,
+          );
+        }
+      }
       const phys = persistence.columns[col.key];
       if (!phys) {
         if (col.kind === "virtual") return col;

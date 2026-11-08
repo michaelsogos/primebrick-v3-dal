@@ -203,6 +203,9 @@ export interface EntityService<TEntity> {
    *  `[]` on entities with no audit actor columns. */
   auditActors(): Promise<{ value: string; label: string }[]>;
   stream(query: EntityListQuery): AsyncGenerator<TEntity>;
+  /** The entity's `dict` facet when the class carries `@Dict` — the
+   *  entity-router injects it into served meta (`dict`). */
+  dictFacet?: import("@primebrick/core").DictFacet;
 }
 
 // ─── Standard audit port ─────────────────────────────────────────────────────

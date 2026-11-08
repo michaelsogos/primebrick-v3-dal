@@ -1,5 +1,7 @@
 import "reflect-metadata";
 
+import type { DictFacet } from "@primebrick/core";
+
 import { inferPgTypeFromEntityColumn } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
 import { getSchemaDomain, resolveEntitySchema } from "./schema-domain.js";
@@ -177,6 +179,11 @@ type ClassEntityMeta = {
   /** `@PartitionChildOf()` — this entity is a logical child of a partitioned
    *  parent: it participates in the parent's atomic delete + retention purge. */
   partitionChildOf?: PartitionChildOfOptions;
+  /** `@Dict()` — the entity is a dictionary/enum surface: the served meta
+   *  carries the `dict` facet and nav derives `kind:"dict"` routes. Set on a
+   *  shared base (e.g. DictEntityBase), inherited via collectMetaChain;
+   *  redeclaring on the concrete class replaces the facet wholesale. */
+  dict?: DictFacet;
 };
 
 /** Options for `@PartitionField()` — the RANGE partition key declaration. */
@@ -635,6 +642,37 @@ export function PartitionChildOf(opts: PartitionChildOfOptions): ClassDecorator 
     m.partitionChildOf = opts;
     return target;
   };
+}
+
+/**
+ * Marks an entity as a dictionary/enum surface — typically set ONCE on a
+ * shared base class (e.g. DictEntityBase) so every subclass inherits the
+ * marker through collectMetaChain. `opts` becomes the served meta `dict`
+ * facet; redeclaring on a concrete class replaces it wholesale.
+ */
+export function Dict(opts?: DictFacet): ClassDecorator {
+  return function <T extends Function>(target: T): T {
+    const m = ensureMeta(target);
+    m.dict = opts ?? {};
+    return target;
+  };
+}
+
+/**
+ * The entity's resolved `dict` facet — subclass-first walk of the meta
+ * chain (same precedence as every class-level flag). `undefined` when no
+ * ancestor carries `@Dict()`.
+ */
+export function getDictFacet(ctor: EntityClass): DictFacet | undefined {
+  for (
+    let p = ctor as Function;
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    const d = META.get(p)?.dict;
+    if (d !== undefined) return d;
+  }
+  return undefined;
 }
 
 export function isEntityClass(value: unknown): value is EntityClass {

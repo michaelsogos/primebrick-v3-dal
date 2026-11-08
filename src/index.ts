@@ -46,6 +46,8 @@ export {
   AuditTrailEntity,
   PartitionField,
   PartitionChildOf,
+  Dict,
+  getDictFacet,
   Index,
   ForeignKey,
   Calculated,
@@ -222,6 +224,7 @@ export {
 
 // Config entity base — standard dictionary-style config table entity
 export { ConfigEntityBase } from "./entities/config-entity-base.js";
+export { DictEntityBase } from "./entities/dict-entity-base.js";
 
 // Translation entity base — standard i18n translations table entity
 export { TranslationEntityBase } from "./entities/translation-entity-base.js";

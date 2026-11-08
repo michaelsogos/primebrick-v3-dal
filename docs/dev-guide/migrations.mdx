@@ -49,6 +49,13 @@ Two artifacts travel with the patches:
   `{old:null, new:value}` (`to_jsonb(t)` + `jsonb_each` covers all
   columns without enumerating them), idempotent via
   `WHERE NOT EXISTS` on the audit table.
+  **Enforced at two levels**: the migration engine fails any pending
+  patch that seeds a table whose `<t>_audit` twin exists in the catalog
+  without carrying the audit rows (pre-SQL check — nothing executes),
+  and check-standards' `seed-audit-trail` rule flags the same at lint
+  time (auditable tables come from `snapshot-entities.json`). Escape
+  hatch for legitimately non-audited seeds: `-- pb:no-audit-trail`.
+  `seed_audit_exempt` grandfathers shipped pre-rule patches.
 
 `runMigrations` returns `{ mode, nextMode?, degraded, applied[], failed[],
 pendingReview[], skipped[], securityEvents[] }` — the service maps
