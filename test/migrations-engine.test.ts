@@ -460,4 +460,73 @@ ALTER TABLE t ADD COLUMN y int;`
     expect(stmts[1]).toContain("'a;b'");
     expect(stmts[2]).toContain("CREATE INDEX CONCURRENTLY");
   });
+
+  it("translation-key grammar: valid INSERT into public.translations applies", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('app.common.move_up', 'en-GB', 'Move up'),
+       ('app.common.move_down', 'en-GB', 'Move down');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual(["20260101000000_i18n"]);
+  });
+
+  it("translation-key grammar: camelCase tuple key fails BEFORE any SQL runs", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('app.common.moveUp', 'en-GB', 'Move up');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual([]);
+    expect(res.failed[0]!.error).toMatch(/malformed\/mis-scoped/);
+    expect(res.failed[0]!.error).toMatch(/moveUp/);
+    expect(c.queries.some((q) => q.text.includes("moveUp"))).toBe(false);
+  });
+
+  it("translation-key grammar: wrong-ns key into a schema fails (ns = owning schema)", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('system.entities.list.title', 'en-GB', 'x');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.error).toMatch(/must start with 'app\.'/);
+  });
+
+  it("translation-key grammar: UPDATE SET key to a malformed value fails; WHERE key untouched", async () => {
+    writePatch(
+      "20260101000000_bad",
+      `UPDATE "crm"."translations" SET key = 'crm.entities.BadKey.rows.x' WHERE key = 'crm.entities.ok.rows.x';`,
+    );
+    writePatch(
+      "20260101000001_good",
+      `UPDATE "crm"."translations" SET key = 'crm.entities.ok.rows.y' WHERE key = 'crm.entities.ok.rows.x';`,
+    );
+    await writeManifestAndKeys(["20260101000000_bad", "20260101000001_good"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.patch_name).toBe("20260101000000_bad");
+    expect(res.failed[0]!.error).toMatch(/BadKey/);
+    expect(res.applied).toEqual([]); // ordering stops at the failed patch
+  });
+
+  it("translation-key grammar: service-schema ns enforced (crm accepts crm.*, rejects app.*)", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "crm"."translations" ("key", "language", "value") VALUES
+       ('app.widgets.numeric_input.increment', 'en-GB', 'x');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.error).toMatch(/must start with 'crm\.'/);
+  });
 });
