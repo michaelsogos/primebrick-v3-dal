@@ -2,7 +2,7 @@ import "reflect-metadata";
 
 import type { DictFacet } from "@primebrick/core";
 
-import { inferPgTypeFromEntityColumn } from "./entity-ts-to-pg.js";
+import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
 import { getSchemaDomain, resolveEntitySchema } from "./schema-domain.js";
 
@@ -108,14 +108,17 @@ type ColumnRegistration = {
    * - `"decimal"` → `"N.Nd"` string → `Decimal`
    * - `"vector"`  → array/`"[…]"` → `Vector`
    * - `"bigint"`  → number/`"N"` → `bigint`
+   * - `SomeClass` → jsonb payload revives to a real class instance
+   *   (`cls.fromJson(v)` when exposed, else prototype graft; element-wise
+   *   for array props) — the ctor IS the runtime JS type, same channel.
    * Also pins storage (`instant`→timestamptz, `decimal`→numeric,
-   * `vector`→vector, `bigint`→int8) — it is the runtime-visible
+   * `vector`→vector, `bigint`→int8, `Ctor`→jsonb) — it is the runtime-visible
    * counterpart of the erased TS annotation.
    * DB reads never need this — pg parsers return the right shape by OID.
    * Required (lint) on `Decimal`, `Vector`, `bigint`, and non-audit
    * `Date` props.
    */
-  jsType?: "instant" | "decimal" | "vector" | "bigint";
+  jsType?: JsType;
   /** Auditable field metadata */
   isAuditable?: boolean;
   auditableType?: AuditableFieldType;
@@ -150,7 +153,7 @@ export type ColumnOptions = {
   /** SQL DEFAULT expression (raw). */
   defaultSql?: string;
   /** Runtime hydration hint for JSON round-trips — see `ColumnRegistration.jsType`. */
-  jsType?: "instant" | "decimal" | "vector" | "bigint";
+  jsType?: JsType;
   /** Cast type to apply when this field is used in JOIN ON clause (e.g., 'uuid') */
   castInJoin?: string;
 };
@@ -794,7 +797,7 @@ export type EntityPersistenceMeta = {
       uniqueIndexOrder?: number;
       nullable?: boolean;
       pgType?: string;
-      jsType?: "instant" | "decimal" | "vector" | "bigint";
+      jsType?: JsType;
       defaultSql?: string;
       length?: number;
       precision?: number;

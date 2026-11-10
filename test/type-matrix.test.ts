@@ -310,6 +310,14 @@ describe("inferPgTypeFromEntityColumn — runtime cascade", () => {
     expect(inferPgTypeFromEntityColumn(hints({ jsType: "bigint" }))).toBe("int8");
   });
 
+  it("jsType class ctor pins jsonb — a class instance IS a jsonb document", () => {
+    class Envelope { to = ""; }
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: Envelope }))).toBe("jsonb");
+    expect(
+      inferPgTypeFromEntityColumn(hints({ jsType: Envelope, annotation: ann("Envelope") })),
+    ).toBe("jsonb");
+  });
+
   it("jsType beats the static annotation — it is the runtime counterpart", () => {
     expect(inferPgTypeFromEntityColumn(hints({ jsType: "instant", annotation: ann("string") }))).toBe("timestamptz");
   });

@@ -39,10 +39,10 @@ export type EntityColumnTypeHints = {
   /** `@Key({ generated })` — `"identity"` keys are surrogate int8 columns
    *  by construction: the decorator semantics already pin the storage. */
   keyGenerated?: string;
-  /** `@Column({ jsType })` runtime codec hint — also pins storage
-   *  (`instant` → `timestamptz`, `decimal` → `numeric`, `vector` → `vector`)
-   *  since the TS annotation is erased at transpile. */
-  jsType?: string;
+  /** `@Column({ jsType })` runtime type hint — a builtin codec name or a
+   *  class ctor (jsonb instance revival). Also pins storage since the TS
+   *  annotation is erased at transpile. */
+  jsType?: JsType;
   /** Static source annotation (present in the schema pipeline; absent at
    *  runtime — runtime io never needs it, it drives params via value shape). */
   annotation?: EntityAnnotationInfo;
@@ -74,6 +74,19 @@ const JS_TYPE_PINS: Record<string, string> = {
   vector: "vector",
   bigint: "int8",
 };
+
+/** A class constructor usable as `@Column({ jsType })`: the runtime JS type
+ *  of the prop. Revival on read: `cls.fromJson(v)` when the class exposes it,
+ *  else `Object.assign(Object.create(cls.prototype), v)` — element-wise for
+ *  array props. Pins jsonb storage (a class instance IS a jsonb document). */
+export type JsTypeCtor = (new (...args: any[]) => unknown) & {
+  readonly prototype: object;
+  fromJson?: (value: unknown) => unknown;
+};
+/** `jsType` builtin codec names (`instant`/`decimal`/`vector`/`bigint` —
+ *  revive aliases for Date/Decimal/Vector/BigInt) or a class constructor
+ *  for jsonb-typed props. */
+export type JsType = "instant" | "decimal" | "vector" | "bigint" | JsTypeCtor;
 
 function applyTypeModifiers(baseType: string, h: EntityColumnTypeHints): string {
   const t = baseType.trim();
@@ -205,7 +218,7 @@ export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
   const base =
     h.explicitPgType?.trim() ??
     semanticPin(h) ??
-    (h.jsType ? JS_TYPE_PINS[h.jsType] : undefined) ??
+    (h.jsType ? (typeof h.jsType === "function" ? "jsonb" : JS_TYPE_PINS[h.jsType]) : undefined) ??
     (h.annotation ? pgTypeFromAnnotation(h.annotation) : null) ??
     "text"; // runtime-only fallback when no static info — non-authoritative
   return applyTypeModifiers(base, h);
