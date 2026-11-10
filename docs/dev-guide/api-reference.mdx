@@ -112,7 +112,7 @@ The SDK's IConfigEntity interface mirrors the field names for port-level use.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| config | `Required<Pick<DalConfig, "connectionString" \| "schemas" \| "max" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
+| config | `Required<Pick<DalConfig, "max" \| "connectionString" \| "schemas" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
 
 #### `Dal(config)`
 
@@ -2780,6 +2780,19 @@ Alias of `dec()` — parse a PostgreSQL `numeric`/`decimal` text value.
 
 **Type:** `typeof dec`
 
+### `DEFAULT_PAGE_ICON`
+
+Leaf-page icon defaults — the maximum fallback is `file-box`, applied
+whenever `kind` carries no specific default. A declaration's explicit
+`icon` ALWAYS wins: these fill `icon: null` at emission, they never
+override an authored value. Devs are never required to author one.
+
+**Type:** `"file-box"`
+
+### `DEFAULT_ROUTE_ICONS`
+
+**Type:** `Record<PageRouteKind, string>`
+
 ### `DOTTED_GLOB_RE`
 
 `dotted_glob` — dotted_key where a whole segment may be the `*`
@@ -2818,6 +2831,16 @@ Canonical `FilterOperator → Lucide icon` map — the ONE operator-icon
 vocabulary every filter surface renders (advanced operator combobox,
 filter chips, summaries). Values are `@lucide/svelte` icon names,
 consumed via `DynamicIcon`.
+
+**Type:** `Record<FilterOperator, string>`
+
+### `FILTER_OPERATOR_KEY`
+
+Canonical `FilterOperator → translation-key segment` map — the ONE
+vocabulary joining filter operators to `system.entities.list.operators.*`
+keys. Key segments are `[a-z0-9_]+` (translation-key grammar) — the bare
+operator symbols (`=`, `!=`, `<`, …) can never be segments, so labels are
+looked up through this map, never through the raw operator value.
 
 **Type:** `Record<FilterOperator, string>`
 
@@ -3118,6 +3141,22 @@ with `enabled: false` (explicitly unavailable) instead of being omitted.
 ### `TEN`
 
 **Type:** `Decimal`
+
+### `TRANSLATION_KEY_GRAMMAR`
+
+The ONE key grammar — `[a-z0-9_]+` dot-separated segments, ≥2 segments.
+Shared contract: BE guards, check-standards rules and the per-schema
+`translations_key_shape` CHECK constraint all enforce this exact shape
+(DAL engine and the zero-dep lint keep byte-identical local copies —
+change here, mirror there).
+
+**Type:** `RegExp`
+
+### `TRANSLATION_KEY_SEGMENT`
+
+Single-segment grammar — the unit the full-key grammar repeats.
+
+**Type:** `RegExp`
 
 ### `UUID_REGEX`
 
@@ -3566,7 +3605,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; nullable: boolean; pgType: string; jsType: "vector" \| "decimal" \| "instant"; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -3574,8 +3613,12 @@ Authoring warnings for one column:
 - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
   The name SAYS uuid; either the column should be `uuid` (retype the prop
   to `UUID` or set `pgType:"uuid"`) or the name lies.
-- `redundant-pgType` — explicit `pgType` equal to what the annotation
-  already infers; drop it (we never spell out the default).
+- `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
+  would resolve without it (annotation stripped — erased at runtime, so
+  a restatement of the annotation default is NOT redundant: it is the
+  required runtime declaration). Truly redundant only when the type
+  comes from another runtime-visible channel — e.g. `pgType:"text"` on
+  a string prop, or a pgType already covered by a semantic/jsType pin.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -3632,6 +3675,14 @@ PostgreSQL parameter form — plain canonical decimal string, no `d` suffix.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `defaultRouteIcon(kind): string`
+
+The resolved default icon for `kind` — `file-box` outside the map.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| kind | `string \| undefined` |  |
 
 ### `defaultSearchGate(trimmed): boolean`
 
@@ -4153,6 +4204,16 @@ Type guard — validates RFC 4122 layout (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 |-----------|------|-------------|
 | raw | `unknown` |  |
 
+### `isValidTranslationKey(key): boolean`
+
+`true` when every segment is `[a-z0-9_]+` and the key is namespaced
+(≥2 segments). Namespace *ownership* is a separate check —
+compare `keyNamespaceOf(key)` against `translationKeyNamespace(schema)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| key | `string` |  |
+
 ### `isValidUrl(v): boolean`
 
 | Parameter | Type | Description |
@@ -4209,6 +4270,17 @@ First dotted segment of a translation key — `job.entities.x` → `job`.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | key | `string` |  |
+
+### `listColumnKeys(columns): { sortable: string[]; searchable: string[]; filterable: string[] }`
+
+Wire key sets derived from the RESOLVED `meta.columns` — sort_key enum,
+`search_in` scope, and `filters[i][field]` allowlists must mirror the
+served contract (system columns are injected by derivation; never
+compute these from the authored column list, which lacks them).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `MetaColumn[]` |  |
 
 ### `listEntityPersistencePropertyKeys(ctor): string[]`
 
@@ -4391,7 +4463,7 @@ explicitly** (a declared placeholder must be filled):
 |-----------|------|-------------|
 | raw | `unknown` |  |
 
-### `parsePatchPragmas(raw): { requiresReview: boolean; noTransaction: boolean }`
+### `parsePatchPragmas(raw): { requiresReview: boolean; noTransaction: boolean; noAuditTrail: boolean }`
 
 Parse the `-- pb:*` pragma header of a patch file.
 
@@ -4597,9 +4669,9 @@ Minimal JSONPath resolver: `$` = root, `$.a.b.c` = nested lookup.
 ### `resolvePgTypeForSchema(h): string`
 
 Authoritative resolve for the schema pipeline: explicit `pgType`, else
-semantic decorator pin, else annotation inference. Throws when none can
-produce a type — an unmappable entity property must never silently
-become `text`.
+semantic decorator pin, else `jsType` pin (codec names + class ctor →
+jsonb), else annotation inference. Throws when none can produce a type —
+an unmappable entity property must never silently become `text`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4877,6 +4949,16 @@ Wire form — `"…d"` suffixed string.
 | entity | `EntityClass` |  |
 | conditions | `ListFilterCondition[] \| null \| undefined` |  |
 | options | `ListFilterOptions` |  |
+
+### `translationKeyGrammarError(key): string \| null`
+
+First grammar violation as a human-readable reason, `null` when legal.
+Consumers compose it into their own error shape (HTTP 400, engine
+throw, lint hint).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| key | `string` |  |
 
 ### `translationKeyNamespace(schema): string`
 

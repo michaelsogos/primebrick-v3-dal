@@ -332,6 +332,13 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     ...wireAlwaysFilterable,
   ]);
   const auditable = isAuditableEntity(meta);
+  /** Audit actor column → user_profile join alias + the `*_by_name` display
+   *  column the join auto-projects (COALESCE display_name → raw actor). */
+  const AUDIT_ACTOR_JOIN_ALIAS: Readonly<Record<string, { join: string; nameAlias: string }>> = {
+    created_by: { join: "creator", nameAlias: "created_by_name" },
+    updated_by: { join: "updater", nameAlias: "updated_by_name" },
+    deleted_by: { join: "deleter", nameAlias: "deleted_by_name" },
+  };
   const joinsFor = (): JoinExpr[] =>
     auditable
       ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
@@ -345,7 +352,11 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
    *  aliases, aggregate aliases — optionally narrowed by
    *  `cfg.list.sortableKeys`. Anything else is a 400, never a 42703. */
   const sortableUniverse = new Set<string>([
-    ...Object.keys(meta.columns),
+    // the surrogate PK never enters the wire contract — unless it IS the
+    // entity's uid (legacy id-keyed tables, where id is also @Unique).
+    ...Object.values(meta.columns)
+      .filter((c) => !c.isKey || c.isUnique)
+      .map((c) => c.propertyKey),
     ...Object.keys(meta.calculated),
     ...(cfg.list.aggregates ?? []).map((a) => a.name),
   ]);
@@ -399,6 +410,19 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
               return looksLikeUuid
                 ? [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", raw, "OR")]
                 : [Filter.fieldValue(field(cfg.entity, "uuid" as never), "ILIKE", needle, "OR")];
+            }
+            const actorJoin = auditable ? AUDIT_ACTOR_JOIN_ALIAS[f] : undefined;
+            if (actorJoin) {
+              // Actor search resolves the user_profile join display_name —
+              // the searchable surface — COALESCE'd onto the raw actor value
+              // (same fallback as the `*_by_name` projection; a uuid column
+              // cannot serve ILIKE directly → 42883).
+              return [Filter.expr(
+                { sql: `COALESCE("${actorJoin.join}".display_name, ${selfRef}."${f}"::text)` },
+                "ILIKE",
+                { sql: "? ESCAPE '#'", params: [needle] },
+                "OR",
+              )];
             }
             return [Filter.fieldValue(field(cfg.entity, f as never), "ILIKE", needle, "OR")];
           });
@@ -463,6 +487,9 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       assertSortableKey(sort_key);
 
       const shape = buildListShape();
+      // Actor sort orders on the projected `*_by_name` display column (the
+      // sorted surface the FE shows), not the raw uuid.
+      const sortActor = auditable ? AUDIT_ACTOR_JOIN_ALIAS[sort_key] : undefined;
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
@@ -470,7 +497,11 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         shape.fields as never,
         {
           filters: buildListFilters(q),
-          sorting: [Sort.by(field(cfg.entity, sort_key as never), sort_dir)],
+          sorting: [
+            sortActor
+              ? Sort.byAlias(sortActor.nameAlias, sort_dir)
+              : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
+          ],
           deletedRecords: q.deleted_records ?? "EXCLUDED",
           joins: shape.joins,
           groupBy: shape.groupBy,

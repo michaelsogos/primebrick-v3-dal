@@ -181,13 +181,27 @@ function renderJoins(joins: JoinExpr[] | undefined, baseEntity?: EntityClass, ta
   return out;
 }
 
+/** LIKE/ILIKE need a text operand — PG has no `<nontext> ~~* text` operator
+ *  (42883: uuid/timestamptz/int8 … ILIKE crashes). Any non-text-family column
+ *  is CAST to text so the wire can match it; @Calculated expressions have an
+ *  unknown result type → cast is the safe rendering. */
+function likeNeedsTextCast(ref: FieldRef<any, any>): boolean {
+  const key = String(ref.key);
+  if (key === "uuid") return true;
+  const meta = getEntityPersistenceMeta(ref.entity);
+  if (meta.calculated[key]) return true;
+  const col = meta.columns[getColumnName(ref.entity, key)];
+  if (!col?.inferredPgType) return false;
+  return !/^(text|varchar|character varying|character|char|bpchar|citext|name)$/i.test(col.inferredPgType);
+}
+
 function renderFilterExpr(w: ParamWriter, f: FilterExpr, baseEntity?: EntityClass, tableNameOverride?: string): string {
   switch (f.kind) {
     case "field_value": {
       const useOverride = tableNameOverride && f.left.entity === baseEntity ? tableNameOverride : undefined;
       const baseLeft = qQualifiedField(f.left.entity, f.left.key, useOverride);
       const left =
-        (f.op === "ILIKE" || f.op === "LIKE") && String(f.left.key) === "uuid"
+        (f.op === "ILIKE" || f.op === "LIKE") && likeNeedsTextCast(f.left)
           ? `CAST(${baseLeft} AS text)`
           : baseLeft;
       if (f.op === "IN" || f.op === "NOT IN") {
