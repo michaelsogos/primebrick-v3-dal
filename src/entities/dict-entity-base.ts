@@ -63,6 +63,6 @@ export abstract class DictEntityBase
 
   /** Dictionary ordering — the `order_field` convention the dict page's
    *  reorder CTAs mutate; persists through the atomic bulk save. */
-  @Column({ nullable: false })
+  @Column({ pgType: "int4", nullable: false })
   sort!: number;
 }
