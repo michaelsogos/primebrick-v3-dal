@@ -71,7 +71,7 @@ export abstract class ConfigEntityBase
   description_key?: string;
 
   /** If true, the row is system-critical: editable but not deletable. */
-  @Column({ nullable: false, defaultSql: "false" })
+  @Column({ pgType: "boolean", nullable: false, defaultSql: "false" })
   reserved!: boolean;
 
   /** Optional grouping key for UI display. null/empty = ungrouped (top of list). */
