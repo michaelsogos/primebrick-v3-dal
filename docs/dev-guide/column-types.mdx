@@ -12,15 +12,29 @@ runtime reflection could not be trusted anyway). The TypeScript compiler API
 reads the real annotation, with aliases resolved, and the result is identical
 under `tsc`, `tsx`, and Bun.
 
-The resolution order for every `@Column` is:
+There are two cascades, one per consumer:
+
+**Schema pipeline** (`primebrick-db check`, snapshot/patch generation —
+sees the real annotation via the TS compiler API):
 
 1. explicit `@Column({ pgType })` — must be a canonical `PgColumnType` literal
 2. a semantic decorator pin (`@AuditableField(VERSION)` is always `int4`,
    `*_AT` fields are always `timestamptz`, `@DeletableField(DELETED_AT)` is
-   `timestamptz`, `@SynchronizableField(LAST_SYNCED_AT)` is `timestamptz`)
-3. the TS type annotation
-4. `throw` — an unmappable annotation is a contract violation, it never
+   `timestamptz`, `@SynchronizableField(LAST_SYNCED_AT)` is `timestamptz`,
+   `@Key()` with `keyGenerated:"identity"` — the default — is always `int8`)
+3. `jsType` (`instant`→timestamptz, `decimal`→numeric, `vector`→vector,
+   `bigint`→int8)
+4. the TS type annotation
+5. `throw` — an unmappable annotation is a contract violation, it never
    silently becomes `text`
+
+**Runtime** (`inferPgTypeFromEntityColumn` — the annotation is erased at
+transpile, so only decorator arguments survive): same order, but the
+annotation step is absent and the last step is a non-authoritative
+`"text"` fallback instead of a throw. That fallback is why a non-string
+prop without a runtime-visible declaration (`jsType`/`pgType`/pin)
+silently serves `pg_type:"text"` — enforced by the
+`entity-type-declared` standards lint.
 
 ## The annotation → type matrix
 
@@ -193,15 +207,62 @@ is a real class instance need a marker for JSON/deferred-transaction
 round-trips (plain DB reads already come back correctly typed through the pg
 type parsers):
 
-| `jsType` | Hydrates to |
-|---|---|
-| `"instant"` | `Date` from an ISO string |
-| `"decimal"` | `Decimal` from `"12.34"` or `"12.34d"` |
-| `"vector"` | `Vector` from `"[1,2,…]"` or `number[]` |
+| `jsType` | Hydrates to | Pins storage |
+|---|---|---|
+| `"instant"` | `Date` from an ISO string | `timestamptz` |
+| `"decimal"` | `Decimal` from `"12.34"` or `"12.34d"` | `numeric` |
+| `"vector"` | `Vector` from `"[1,2,…]"` or `number[]` | `vector` |
+| `"bigint"` | `bigint` (native, via the INT8 driver parser) | `int8` |
 
-Required on `Decimal` and `Vector` props, and on non-audit `Date` props that
-must survive a JSON round-trip as `Date`. Not needed for `UUID`/`ISODate`/
-`ISOTime` — those are plain strings at runtime by design.
+`jsType` is the runtime counterpart of the erased annotation — the prop
+declares the JS type of its hydrated value once, and the pg-type mapping
+lives in one place (`JS_TYPE_PINS`). Required on `Decimal`/`Vector`/`bigint`
+props, and on non-audit `Date` props — semantic pins (`@AuditableField`,
+`@DeletableField`, `@SynchronizableField`) and `@Key()` identity columns
+already carry their storage contract and need no `jsType`. Not needed for
+`UUID`/`ISODate`/`ISOTime` — those are plain strings at runtime by design
+(declare the physical type with `pgType` instead when the annotation can't
+be trusted: `UUID` props should say `pgType: "uuid"`).
+
+## What one declaration feeds — the cascade
+
+A single decorator fact on the entity prop drives every downstream
+consumer — that is the point of the metadata-driven architecture:
+
+- **schema patches** — annotation + pins resolve to the column DDL that
+  `snapshot-entities.json` and `db:meta:compare` diff into patches;
+- **served meta** — `inferredPgType` produces `pg_type`, the derived
+  `type` (datetime/number/boolean/text), and the `searchable`/
+  `filterable`/`sortable` defaults the FE turns into widgets and filter
+  surfaces;
+- **query rendering** — `likeNeedsTextCast` casts non-text columns to
+  text under ILIKE; a `"text"` lie skips the cast and `?search=` on a
+  uuid/int8/timestamptz/jsonb column fails with PG `42883`;
+- **ext-json / JSON hydration** — `jsType` revives `Date`/`Decimal`/
+  `Vector` on cache and deferred-transaction round-trips (plain DB reads
+  are already typed by the pg OID parsers);
+- **pg param conversion** — `jsValueToPgParam` serializes values by codec
+  pin + value shape (`Date` passthrough, `Decimal` → numeric string,
+  jsonb → JSON with bigint→number coercion);
+- **entity catalog / docs KB** — the decoration is the single source the
+  catalog and generated documentation derive from.
+
+## Illegal — what the contract forbids
+
+- a non-string annotation **without** a runtime-visible declaration
+  (`jsType`, `pgType`, semantic pin, or non-manual `@Key`) — silent
+  `pg_type:"text"` drift, enforced by `entity-type-declared`;
+- a `pgType` restating what the annotation/`jsType`/pin already infers —
+  `redundant-pgType` warning; declare the fact once;
+- prop-name inference — `id`, `*_uuid`, `*_at` carry no type meaning;
+- `design:type`/reflect-metadata — transpiler-dependent, removed;
+- runtime dependence on `snapshot-entities.json` or any generated file —
+  the code must carry the fact;
+- `pgType` overriding a semantic pin's protected storage;
+- non-canonical `pgType` spellings (`"integer"`, `"timestamp with time
+  zone"`) — compile errors;
+- `nullable: true` on a non-optional prop, or an optional prop without it
+  — `entity-nullable-explicit`.
 
 ## Nullability
 

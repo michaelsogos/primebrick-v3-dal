@@ -6,6 +6,7 @@ import { buildEntitySnapshot } from "../src/schema-diff/build-entity-snapshot.js
 import {
   assertPgTypeCompatible,
   columnTypeWarnings,
+  inferPgTypeFromEntityColumn,
   pgTypeFromAnnotation,
   resolvePgTypeForSchema,
   type EntityColumnTypeHints,
@@ -271,6 +272,51 @@ describe("resolvePgTypeForSchema", () => {
     expect(() =>
       resolvePgTypeForSchema(hints({ explicitPgType: "int8", annotation: ann("number") })),
     ).toThrow(/incompatible/);
+  });
+});
+
+// ─── 2b′. inferPgTypeFromEntityColumn — the runtime cascade ──────────────────
+// Same pin levels as the schema pipeline, but the annotation is erased at
+// transpile: decorator arguments (pgType, semantic pins, jsType, @Key) are
+// the only facts that survive — the last resort is the non-authoritative
+// "text" fallback, not a throw.
+
+describe("inferPgTypeFromEntityColumn — runtime cascade", () => {
+  it("explicit pgType wins", () => {
+    expect(inferPgTypeFromEntityColumn(hints({ explicitPgType: "int4" }))).toBe("int4");
+  });
+
+  it("semantic pins beat jsType and annotation", () => {
+    expect(
+      inferPgTypeFromEntityColumn(hints({ auditableType: "VERSION", jsType: "bigint", annotation: ann("number") })),
+    ).toBe("int4");
+    expect(
+      inferPgTypeFromEntityColumn(hints({ auditableType: "CREATED_AT", jsType: "bigint" })),
+    ).toBe("timestamptz");
+  });
+
+  it("@Key identity pins int8 — surrogate keys need no jsType", () => {
+    expect(inferPgTypeFromEntityColumn(hints({ isKey: true }))).toBe("int8");
+    expect(inferPgTypeFromEntityColumn(hints({ isKey: true, keyGenerated: "manual" }))).toBe("text");
+    expect(
+      inferPgTypeFromEntityColumn(hints({ isKey: true, keyGenerated: "identity", jsType: "vector" })),
+    ).toBe("int8");
+  });
+
+  it("jsType pins storage: instant/decimal/vector/bigint", () => {
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: "instant" }))).toBe("timestamptz");
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: "decimal" }))).toBe("numeric");
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: "vector" }))).toBe("vector");
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: "bigint" }))).toBe("int8");
+  });
+
+  it("jsType beats the static annotation — it is the runtime counterpart", () => {
+    expect(inferPgTypeFromEntityColumn(hints({ jsType: "instant", annotation: ann("string") }))).toBe("timestamptz");
+  });
+
+  it("annotation still wins over the fallback; undeclared props fall to text", () => {
+    expect(inferPgTypeFromEntityColumn(hints({ annotation: ann("boolean") }))).toBe("boolean");
+    expect(inferPgTypeFromEntityColumn(hints())).toBe("text");
   });
 });
 
