@@ -331,8 +331,12 @@ const UUID_NAME_RE = /(^|_)uuid$/i;
  * - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
  *   The name SAYS uuid; either the column should be `uuid` (retype the prop
  *   to `UUID` or set `pgType:"uuid"`) or the name lies.
- * - `redundant-pgType` — explicit `pgType` equal to what the annotation
- *   already infers; drop it (we never spell out the default).
+ * - `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
+ *   would resolve without it (annotation stripped — erased at runtime, so
+ *   a restatement of the annotation default is NOT redundant: it is the
+ *   required runtime declaration). Truly redundant only when the type
+ *   comes from another runtime-visible channel — e.g. `pgType:"text"` on
+ *   a string prop, or a pgType already covered by a semantic/jsType pin.
  */
 export function columnTypeWarnings(
   entityName: string,
@@ -356,20 +360,20 @@ export function columnTypeWarnings(
         `or declare pgType:"text" explicitly if the loose reference is intended)`,
     });
   }
-  if (h.explicitPgType !== undefined && h.annotation && !uuidNamed) {
-    const inferred = pgTypeFromAnnotation(h.annotation);
-    if (
-      inferred !== null &&
-      canonicalPgType(stripTypeModifiers(h.explicitPgType)) ===
-        canonicalPgType(stripTypeModifiers(applyTypeModifiers(inferred, { ...h, explicitPgType: undefined })))
-    ) {
+  if (h.explicitPgType !== undefined && !uuidNamed) {
+    const runtimeDefault = canonicalPgType(
+      stripTypeModifiers(
+        inferPgTypeFromEntityColumn({ ...h, explicitPgType: undefined, annotation: undefined }),
+      ),
+    );
+    if (runtimeDefault === canonResolved) {
       out.push({
         kind: "redundant-pgType",
         entity: entityName,
         column: h.sqlName,
         message:
-          `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" restates the ` +
-          `${h.annotation.annotation} default (${inferred}) — remove it`,
+          `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" is what runtime ` +
+          `inference resolves anyway (${runtimeDefault}) — remove it`,
       });
     }
   }
