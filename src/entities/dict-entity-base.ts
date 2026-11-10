@@ -53,6 +53,7 @@ export abstract class DictEntityBase
   id!: bigint;
 
   @Unique()
+  @Column({ pgType: "uuid" })
   uuid!: UUID;
 
   /** Stable business key (e.g. "private", "email"). Unique per table. */
