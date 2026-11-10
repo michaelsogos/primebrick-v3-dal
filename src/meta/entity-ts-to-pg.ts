@@ -213,12 +213,20 @@ function semanticPin(h: EntityColumnTypeHints): string | undefined {
   );
 }
 
+/** `jsType` pins storage too — a builtin codec name maps through
+ *  `JS_TYPE_PINS`, a class ctor pins `jsonb` (a class instance IS a jsonb
+ *  document). Shared by the runtime cascade and the schema resolver. */
+function jsTypePin(h: EntityColumnTypeHints): string | undefined {
+  if (!h.jsType) return undefined;
+  return typeof h.jsType === "function" ? "jsonb" : JS_TYPE_PINS[h.jsType];
+}
+
 /** Resolved SQL type name for compare + snapshot (not full column DDL). */
 export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
   const base =
     h.explicitPgType?.trim() ??
     semanticPin(h) ??
-    (h.jsType ? (typeof h.jsType === "function" ? "jsonb" : JS_TYPE_PINS[h.jsType]) : undefined) ??
+    jsTypePin(h) ??
     (h.annotation ? pgTypeFromAnnotation(h.annotation) : null) ??
     "text"; // runtime-only fallback when no static info — non-authoritative
   return applyTypeModifiers(base, h);
@@ -226,15 +234,15 @@ export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
 
 /**
  * Authoritative resolve for the schema pipeline: explicit `pgType`, else
- * semantic decorator pin, else annotation inference. Throws when none can
- * produce a type — an unmappable entity property must never silently
- * become `text`.
+ * semantic decorator pin, else `jsType` pin (codec names + class ctor →
+ * jsonb), else annotation inference. Throws when none can produce a type —
+ * an unmappable entity property must never silently become `text`.
  */
 export function resolvePgTypeForSchema(h: EntityColumnTypeHints): string {
   if (h.explicitPgType !== undefined && h.annotation) {
     assertPgTypeCompatible(h.annotation, h.explicitPgType, h.propertyKey);
   }
-  const base = h.explicitPgType?.trim() ?? semanticPin(h);
+  const base = h.explicitPgType?.trim() ?? semanticPin(h) ?? jsTypePin(h);
   if (base) return applyTypeModifiers(base, h);
   if (!h.annotation) {
     throw new Error(`No type information for ${h.propertyKey} — run the schema pipeline with static annotation extraction`);
