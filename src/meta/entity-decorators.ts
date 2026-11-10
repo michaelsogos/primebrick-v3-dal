@@ -166,6 +166,16 @@ type CalculatedRegistration = {
    *  ref (`"schema"."table"`) at render time — correlation-safe across
    *  schema overrides and table-name overrides. */
   expr: string;
+  /** Declared SQL result type of `expr` ("int4", "timestamptz", …) — same
+   *  contract as `@Column({ pgType })`: the TS annotation is erased at
+   *  transpile, so the runtime type must be declared. Drives meta `type`/
+   *  `pg_type` derivation and read-path hydration hints. */
+  pgType?: string;
+  /** Whether `expr` can evaluate to NULL — projected presence is never
+   *  guaranteed (write paths don't project calculated props), so `?` on
+   *  the annotation means "may be absent"; THIS flag is the NULL-value
+   *  declaration feeding meta `nullable`. */
+  nullable?: boolean;
 };
 
 type ClassEntityMeta = {
@@ -406,6 +416,15 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
 export type CalculatedOptions = {
   /** Result alias — defaults to the property key. */
   sqlName?: string;
+  /** Declared SQL result type of `expr` — e.g. `"int4"` for `count(*)::int`,
+   *  `"timestamptz"` for `max(created_at)`. The annotation is erased at
+   *  transpile; without it the column resolves `type:"text"` in meta and
+   *  hydrates by driver default. */
+  pgType?: string;
+  /** `expr` may evaluate to NULL — declare it so meta `nullable` is honest.
+   *  (`?` on the prop means "may be absent on non-read paths" — a different
+   *  fact; both are legal together.) */
+  nullable?: boolean;
 };
 
 /**
@@ -427,6 +446,8 @@ export function Calculated(expr: string, opts?: CalculatedOptions): PropertyDeco
     m.calculated.set(propertyKey, {
       sqlName: opts?.sqlName ?? String(propertyKey),
       expr,
+      pgType: opts?.pgType,
+      nullable: opts?.nullable,
     });
   };
 }
@@ -818,8 +839,12 @@ export type EntityPersistenceMeta = {
     }
   >;
   /** `@Calculated` SQL projections — keyed by **result alias** (`sqlName`).
-   *  Not physical columns: absent from DDL, present in read projections. */
-  calculated: Record<string, { propertyKey: string; sqlName: string; expr: string }>;
+   *  Not physical columns: absent from DDL, present in read projections.
+   *  `pgType`/`nullable` are the declared result-type contract (meta + hydration). */
+  calculated: Record<
+    string,
+    { propertyKey: string; sqlName: string; expr: string; pgType?: string; nullable?: boolean }
+  >;
   /** Resolved partition declaration — present when a `@PartitionField` exists. */
   partition?: {
     column: string;
@@ -971,7 +996,13 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         `${entityClassName}.${propertyKey}: @Calculated property is also registered as a physical column — remove the conflicting @Column/@Key/@Unique (or @IsNotColumn-style) registration`,
       );
     }
-    calculated[reg.sqlName] = { propertyKey, sqlName: reg.sqlName, expr: reg.expr };
+    calculated[reg.sqlName] = {
+      propertyKey,
+      sqlName: reg.sqlName,
+      expr: reg.expr,
+      pgType: reg.pgType,
+      nullable: reg.nullable,
+    };
   }
 
   // ── @PartitionField resolution + non-eludible validation ──────────────

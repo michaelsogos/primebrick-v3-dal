@@ -73,6 +73,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // derived, never authored (the vocab is the table's own writers
       // by definition; an authored options_source on `*_by` is drift).
       ...(isAuditActorColumn(phys) ? { options_source: "audit.actors" as const } : {}),
+      // `audited` is a class fact too (audit/deletion decorators) — inject
+      // even on authored columns so a mere relabel can't drop the flag
+      // (it gates dict inline-editability and soft-delete detection).
+      ...(phys.isAuditable === true || phys.isDeletable === true ? { audited: true } : {}),
     };
   };
 
@@ -225,11 +229,29 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       if (!phys) {
         if (col.kind === "virtual") return col;
         if (col.kind === "calculated") {
-          if (persistence.calculated[col.key]) return col;
-          throw new Error(
-            `withColumnConstraints[${persistence.entityClassName}]: calculated column "${col.key}" has no @Calculated property on the entity class — ` +
-              `declare @Calculated("<expr>") on ${persistence.entityClassName}.${col.key} (the class owns the SQL expression)`,
-          );
+          const calc = persistence.calculated[col.key];
+          if (!calc) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: calculated column "${col.key}" has no @Calculated property on the entity class — ` +
+                `declare @Calculated("<expr>") on ${persistence.entityClassName}.${col.key} (the class owns the SQL expression)`,
+            );
+          }
+          // `nullable`/`pg_type` are class facts like on physical columns —
+          // inject them; authored restatement is drift. `type` stays authored
+          // (it may refine the display format, e.g. "ref_count" over int4);
+          // when absent the auto-derived path resolves it from pgType.
+          const restated = DERIVED_PROPS.filter((p) => col[p] !== undefined);
+          if (restated.length > 0) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: calculated column "${col.key}" authors ${restated.join(", ")} — ` +
+                `declared via @Calculated(expr, { pgType, nullable }) on the entity class`,
+            );
+          }
+          return {
+            ...col,
+            nullable: calc.nullable ?? false,
+            ...(calc.pgType !== undefined ? { pg_type: calc.pgType } : {}),
+          };
         }
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: meta column "${col.key}" has no matching column on the entity class — ` +
@@ -255,6 +277,74 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `options_source:"audit.actors" is derived from the entity class; remove the authored value`,
         );
       }
+      // ── The surrogate PK is join/fkey plumbing — never part of the wire
+      //    contract (read projections already exclude isKey); authoring it
+      //    re-exposes what the derivation deliberately omits. Checked
+      //    BEFORE the system-field facets so the error is deterministic. */
+      if (col.key === "id" && col.key !== meta.uid) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: system column "id" must never be authored — ` +
+            `the surrogate PK is join/fkey plumbing only and stays out of the served contract`,
+        );
+      }
+      // ── System columns are class-derived — the class owns their FACTS
+      //    and their GOVERNED mechanisms (audit.actors vocab, ref links).
+      //    `type` is a required field, so an authored value can't be absent:
+      //    it must EQUAL the pg-derived type — a mismatch is a physical lie
+      //    (the "version declared text" bug). Authored SEMANTICS stay legal
+      //    (label_key relabels like job_run's started_at, format, query
+      //    flags, visibility, tooltips); FORBIDDEN = structural/vocab
+      //    facets + type payloads that only cohere with an authored type +
+      //    the writable-validation contract (system cols never enter
+      //    create/edit forms).                                         */
+      if (COMMON_SYSTEM_FIELD_KEYS.has(col.key)) {
+        const derivedType = columnTypeForPg(phys.inferredPgType);
+        if (col.type !== derivedType) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: system column "${col.key}" authors type:"${col.type}" but ` +
+              `the entity class ${col.key} is ${phys.inferredPgType} (→ "${derivedType}") — drop the authored type or fix the declaration`,
+          );
+        }
+        const SYSTEM_COL_FORBIDDEN = [
+          "kind", "options_source", "allow_create", "ref", "reverse_ref",
+          "uom", "unsigned", "depends_on", "audited", "managed", "widget",
+          "pattern", "min_length", "min", "max", "json_schema", "badge", "sparkline",
+        ] as const;
+        const forged = SYSTEM_COL_FORBIDDEN.filter((p) => col[p] !== undefined);
+        if (forged.length > 0) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: system column "${col.key}" authors ${forged.join(", ")} — ` +
+              `system columns derive their facts and governed vocabularies from the entity class; ` +
+              `authored overrides are label_key/format/datetime_iana_toggle/null_label/query flags/visibility/tooltips only — drop the rest`,
+          );
+        }
+      }
+      // ── Anti-restatement + flag defaulting: the effective default for a
+      //    query flag is TYPE-AWARE — absent resolves to the derived value,
+      //    not blindly ON (a type:"date"/"datetime" column defaults
+      //    searchable:false; `version` additionally sortable:false). An
+      //    authored flag EQUAL to the derived default is dead weight — it
+      //    reads as intent, survives review, and silently forks semantics
+      //    the day the derivation changes: rejected. Flags exist to NARROW
+      //    the default or to override a derived false. Absent flags then
+      //    resolve to the derived value — explicit `false` is injected so
+      //    the served meta states the real contract, not a misleading ON. */
+      const physCol = persistence.columns[col.key];
+      if (physCol && col.kind === undefined) {
+        const restated = QUERY_FLAGS.filter(
+          (f) => col[f] !== undefined && col[f] === defaultQueryFlag(f, col.key, col.type),
+        );
+        if (restated.length > 0) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors ${restated.map((f) => `${f}:${String(col[f])}`).join(", ")} — ` +
+              `${restated.length === 1 ? "that is" : "those are"} the derived default; drop the flag${restated.length === 1 ? "" : "s"} (author flags only to narrow or to override a derived false)`,
+          );
+        }
+        const flagDefaults: Record<string, boolean> = {};
+        for (const f of QUERY_FLAGS)
+          if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type)) flagDefaults[f] = false;
+        return injectDerived({ ...col, ...flagDefaults });
+      }
       return injectDerived(col);
     });
 
@@ -271,23 +361,34 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   let derivedIdx = 0;
   for (const [key, phys] of Object.entries(persistence.columns)) {
     if (declared.has(key) || hiddenKeys.has(key)) continue;
+    // The surrogate PK is join/fkey plumbing — it never enters the wire
+    // contract (read projections already exclude isKey). Excluded unless it
+    // IS the entity's public uid (legacy id-keyed tables).
+    if (phys.isKey === true && key !== meta.uid) continue;
     const isAudit = phys.isAuditable === true || phys.isDeletable === true;
     const isUid = key === meta.uid;
+    const colType = columnTypeForPg(phys.inferredPgType);
     const derived: MetaColumn = {
       key,
       // System columns share ONE translation dict (`system.common.fields.*`)
       // — a per-entity key for `uuid`/`created_by`/… is dict duplication:
       // the label is identical for every entity by definition.
       label_key: isAudit || isUid || COMMON_SYSTEM_FIELD_KEYS.has(key) ? `system.common.fields.${key}` : labelFor(key),
-      type: columnTypeForPg(phys.inferredPgType),
+      type: colType,
       order: isUid ? -1 : 1000 + derivedIdx++,
       sticky: isUid || undefined,
       default_visible: false,
       audited: isAudit || undefined,
-      // uid/id/version are never filter criteria: a uuid/id text-filter
-      // is debug noise (relationships use `ref`), version is the
-      // optimistic-lock counter — meaningless as a matcher.
-      filterable: isUid || key === "id" || key === "version" ? false : undefined,
+      // Every emitted column is filter criteria-eligible (the uid powers
+      // ref/actor `IN` lookups; version supports "changed since" filters)
+      // and sortable — audit actor uuids resolve `*_display_name` through
+      // the DAL's automatic user_profile join, so they sort and text-search
+      // like any label column. `version` is the optimistic-lock counter:
+      // never sorted, never text-searched (a numeric LIKE is noise); the
+      // same applies to every date/datetime column — a timestamp matched
+      // as text is noise, range filters are the query contract.
+      searchable: defaultQueryFlag("searchable", key, colType) ? undefined : false,
+      sortable: defaultQueryFlag("sortable", key, colType) ? undefined : false,
       // Audit actor columns feed the governed multi-select: the
       // distinct vocab of THIS table's actors, label-resolved through
       // user_profile by the entity's /audit-actors route.
@@ -295,12 +396,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     };
     columns.push(injectDerived(derived));
   }
-  for (const [key] of Object.entries(persistence.calculated)) {
+  for (const [key, reg] of Object.entries(persistence.calculated)) {
     if (declared.has(key) || hiddenKeys.has(key)) continue;
     columns.push({
       key,
       label_key: labelFor(key),
-      type: "text",
+      type: reg.pgType ? columnTypeForPg(reg.pgType) : "text",
+      nullable: reg.nullable ?? false,
+      ...(reg.pgType !== undefined ? { pg_type: reg.pgType } : {}),
       order: 1000 + derivedIdx++,
       default_visible: false,
       kind: "calculated",
@@ -330,6 +433,25 @@ function isAuditActorColumn(phys: {
     phys.auditableType === AuditableFieldType.UPDATED_BY ||
     phys.deletableType === DeletableFieldType.DELETED_BY
   );
+}
+
+/** The derived default for a query flag — driven by the column's META `type`
+ *  (authored for declared columns, `columnTypeForPg`-resolved for auto-derived
+ *  ones; never by pg-type alone: un-pinned business `Date` props infer "text"
+ *  at runtime, but their authored type is the contract). An authored flag
+ *  equal to this value is a restatement (rejected); a different value is a
+ *  real override (allowed). `filterable` is ON for every column; `sortable`
+ *  is OFF only on `version`; `searchable` is OFF on `version` and every
+ *  date/datetime column — a timestamp matched as text is noise, range
+ *  filters are the query contract. */
+function defaultQueryFlag(
+  flag: (typeof QUERY_FLAGS)[number],
+  key: string,
+  metaType: MetaColumn["type"],
+): boolean {
+  if (flag === "filterable") return true;
+  if (flag === "sortable") return key !== "version";
+  return key !== "version" && metaType !== "date" && metaType !== "datetime";
 }
 
 /** Entity-class `inferredPgType` → MetaColumn `type` for auto-derived columns. */

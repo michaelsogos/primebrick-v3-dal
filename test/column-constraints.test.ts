@@ -121,6 +121,55 @@ describe("withColumnConstraints", () => {
     // undeclared @Calculated prop auto-derives as a hidden calculated column
     expect(byKey.ghost).toMatchObject({ kind: "calculated", default_visible: false });
   });
+
+  it("injects declared pgType/nullable onto calculated columns — authored and auto-derived", () => {
+    @Entity("cc_calc_typed", "job")
+    class CcCalcTypedEntity {
+      @Key() id!: bigint;
+      @Column({ nullable: false }) name!: string;
+      @Calculated(`(SELECT count(*)::int FROM job.cc_calc_typed)`, { pgType: "int4" })
+      run_count?: number;
+      @Calculated(`(SELECT max(c.created_at) FROM job.cc_calc_typed c)`, { pgType: "timestamptz", nullable: true })
+      latest_at?: Date;
+      @Calculated(`(SELECT 'x')`) ghost?: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_calc_typed", translation_key: "cc_calc_typed", uid: "id",
+      display_field: "name",
+      columns: [
+        { key: "name", label_key: "x.name", type: "text", order: 10 },
+        // authored `type` may refine the display format (ref_count over int4)
+        { key: "run_count", label_key: "x.runs", type: "ref_count", order: 20, kind: "calculated" },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcCalcTypedEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    // authored: pg_type/nullable injected from the class, authored type kept
+    expect(byKey.run_count).toMatchObject({ kind: "calculated", type: "ref_count", pg_type: "int4", nullable: false });
+    // auto-derived: type resolved from declared pgType, nullable honest
+    expect(byKey.latest_at).toMatchObject({ kind: "calculated", type: "datetime", pg_type: "timestamptz", nullable: true });
+    // undeclared pgType → "text" as before, nullable false
+    expect(byKey.ghost).toMatchObject({ kind: "calculated", type: "text", nullable: false });
+  });
+
+  it("rejects authored nullable/pg_type on calculated columns — the class declares them", () => {
+    @Entity("cc_calc_restate", "job")
+    class CcCalcRestateEntity {
+      @Key() id!: bigint;
+      @Column({ nullable: false }) name!: string;
+      @Calculated(`(SELECT count(*)::int FROM job.cc_calc_restate)`, { pgType: "int4", nullable: true })
+      n?: number;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_calc_restate", translation_key: "cc_calc_restate", uid: "id",
+      display_field: "name",
+      columns: [
+        { key: "name", label_key: "x.name", type: "text", order: 10 },
+        { key: "n", label_key: "x.n", type: "number", order: 20, kind: "calculated", nullable: true },
+      ],
+    };
+    expect(() => withColumnConstraints(meta, CcCalcRestateEntity)).toThrow(/authors.*nullable/);
+  });
 });
 
 // ── Class → meta completeness (auto-derivation) ────────────────────────────
@@ -145,12 +194,14 @@ const auditableMeta = (): EntityMeta => ({
 });
 
 describe("withColumnConstraints — class→meta auto-derivation", () => {
-  it("auto-derives every physical column missing from meta (audit, delete, uuid, version)", () => {
+  it("auto-derives every physical column missing from meta (audit, delete, uuid, version) — PK `id` is never emitted", () => {
     const out = withColumnConstraints(auditableMeta(), CcJobEntity);
     const keys = out.columns.map((c) => c.key);
-    for (const k of ["uuid", "id", "name", "created_at", "created_by", "updated_at", "updated_by", "version", "deleted_at", "deleted_by", "payload_map"]) {
+    for (const k of ["uuid", "name", "created_at", "created_by", "updated_at", "updated_by", "version", "deleted_at", "deleted_by", "payload_map"]) {
       expect(keys, `missing ${k}`).toContain(k);
     }
+    // physical PK is joins/fkey-only — never part of the FE contract
+    expect(keys).not.toContain("id");
     const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
     // system cols: hidden-by-default, audited group, i18n key by convention
     expect(byKey.created_by).toMatchObject({ audited: true, default_visible: false, label_key: "system.common.fields.created_by" });
@@ -161,8 +212,6 @@ describe("withColumnConstraints — class→meta auto-derivation", () => {
     expect(byKey.payload_map).toMatchObject({ default_visible: false });
     // derived physical props still injected
     expect(typeof byKey.created_by?.pg_type).toBe("string");
-    // identity @Key → managed: server-generated, never required on create
-    expect(byKey.id).toMatchObject({ managed: true, nullable: false });
     expect(byKey.uuid?.managed).toBeUndefined(); // unique ≠ key
   });
 
@@ -203,6 +252,125 @@ describe("withColumnConstraints — class→meta auto-derivation", () => {
     const createdAt = out.columns.filter((c) => c.key === "created_at");
     expect(createdAt).toHaveLength(1);
     expect(createdAt[0]).toMatchObject({ label_key: "custom.label", order: 70, default_visible: true });
+  });
+});
+
+// ── System-column contract: facts are class-owned, semantics authorable ────
+describe("withColumnConstraints — system column enforcement", () => {
+  it("derived version is numeric: filterable, never searchable/sortable (optimistic-lock counter)", () => {
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    const v = out.columns.find((c) => c.key === "version");
+    expect(v).toMatchObject({
+      type: "number", audited: true, default_visible: false,
+      searchable: false, sortable: false,
+      label_key: "system.common.fields.version",
+    });
+    // filterable is ON (absent flag = default ON — "changed since" filters)
+    expect(v?.filterable ?? true).toBe(true);
+  });
+
+  it("audit datetimes are unsearchable; actor columns fully queryable + audit.actors vocab", () => {
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    for (const k of ["created_at", "updated_at", "deleted_at"])
+      expect(byKey[k]?.searchable).toBe(false);
+    // actors: every flag ON (absent = ON) — uuid resolves `*_display_name`
+    // via the DAL user_profile join, so they sort and search like labels
+    for (const k of ["created_by", "updated_by", "deleted_by"]) {
+      expect(byKey[k]?.options_source).toBe("audit.actors");
+      for (const f of ["filterable", "searchable", "sortable"] as const)
+        expect(byKey[k]?.[f] ?? true).toBe(true);
+    }
+  });
+
+  it("throws when a system column authors a type contradicting the entity class", () => {
+    const meta = auditableMeta();
+    // version is int on the class — declaring it "text" is a physical lie
+    meta.columns.push({ key: "version", label_key: "x", type: "text", order: 20 });
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/system column "version" authors type/);
+  });
+
+  it("tolerates an authored system-column type that matches the derived type", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "created_at", label_key: "x", type: "datetime", order: 20, default_visible: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.filter((c) => c.key === "created_at")).toHaveLength(1);
+  });
+
+  it("system column 'kind' is rejected by the physical-column kind check", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "version", label_key: "x", type: "number", order: 20, kind: "calculated" });
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/physical column "version" declares kind/);
+  });
+
+  it.each(["options_source", "allow_create", "ref", "reverse_ref", "audited", "widget",
+           "uom", "unsigned", "depends_on", "pattern", "min_length", "min", "max",
+           "json_schema", "badge", "sparkline"])(
+    "throws when a system column authors forbidden prop '%s'",
+    (prop) => {
+      const meta = auditableMeta();
+      const extra: Record<string, unknown> = {};
+      if (prop === "options_source") extra.options_source = "audit.actors";
+      else if (prop === "ref") extra.ref = { entity: "user_profile" };
+      else if (prop === "reverse_ref") extra.reverse_ref = { entity: "x", filter_field: "y" };
+      else if (prop === "uom") extra.uom = { kind: "percent" };
+      else if (prop === "depends_on") extra.depends_on = { field: "name" };
+      else if (prop === "badge") extra.badge = { values: {} };
+      else if (prop === "json_schema") extra.json_schema = {};
+      else if (prop === "sparkline") extra.sparkline = { endpoint: "/a", request_field: "b", row_key: "c", series: [] };
+      else if (prop === "pattern") extra.pattern = "^[a-z]+$";
+      else if (["min", "max", "min_length"].includes(prop)) extra[prop] = 5;
+      else extra[prop] = true;
+      meta.columns.push({ key: "version", label_key: "x", type: "number", order: 20, ...extra } as never);
+      expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/system column "version" authors/);
+    },
+  );
+
+  it("permits label_key overrides on system columns (domain relabeling)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "created_at", label_key: "x.entities.cc_job.fields.started_at", type: "datetime", order: 20, default_visible: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    const ca = out.columns.find((c) => c.key === "created_at");
+    expect(ca).toMatchObject({ label_key: "x.entities.cc_job.fields.started_at", audited: true });
+  });
+
+  it("permits query-flag narrowing and visibility overrides on system columns", () => {
+    const meta = auditableMeta();
+    // uuid derives all-ON — authored `searchable:false` is a real narrowing, not a restatement
+    meta.columns.push({ key: "uuid", label_key: "system.common.fields.uuid", type: "text", order: -1, sticky: true, searchable: false, default_visible: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    const uuid = out.columns.find((c) => c.key === "uuid");
+    expect(uuid).toMatchObject({ searchable: false, default_visible: true, sticky: true });
+    expect(uuid?.filterable ?? true).toBe(true); // still ON (absent = ON)
+  });
+
+  it("hidden:true suppresses a system column entirely", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "version", label_key: "x", type: "number", order: 20, hidden: true });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.map((c) => c.key)).not.toContain("version");
+  });
+
+  it("throws when a meta column authors the physical PK (joins/fkey only — never FE/API)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "id", label_key: "x", type: "number", order: 20 });
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/system column "id"/);
+  });
+
+  it("throws when an authored query flag restates the derived default", () => {
+    const meta = auditableMeta();
+    // created_at derives sortable:true (datetime) — authoring it again is dead weight
+    meta.columns.push({ key: "created_at", label_key: "x", type: "datetime", order: 20, sortable: true });
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/authors sortable:true/);
+  });
+
+  it("permits authored flags that narrow a derived ON (or flip a derived OFF)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "created_at", label_key: "x", type: "datetime", order: 20, filterable: false });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    const ca = out.columns.find((c) => c.key === "created_at");
+    expect(ca?.filterable).toBe(false);
+    expect(ca?.sortable ?? true).toBe(true); // narrowing one flag leaves the others ON
   });
 });
 
