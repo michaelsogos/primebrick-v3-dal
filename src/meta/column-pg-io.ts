@@ -25,7 +25,7 @@ export type ColumnPgPersistenceHints = {
   inferredPgType: string;
   pgType?: string;
   /** Explicit runtime hydration marker — see `ColumnOptions.jsType`. */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: "instant" | "decimal" | "vector" | "bigint";
   isAuditable?: boolean;
   auditableType?: string;
   isDeletable?: boolean;

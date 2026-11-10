@@ -36,6 +36,13 @@ export type EntityColumnTypeHints = {
   auditableType?: string;
   deletableType?: string;
   synchronizableType?: string;
+  /** `@Key({ generated })` — `"identity"` keys are surrogate int8 columns
+   *  by construction: the decorator semantics already pin the storage. */
+  keyGenerated?: string;
+  /** `@Column({ jsType })` runtime codec hint — also pins storage
+   *  (`instant` → `timestamptz`, `decimal` → `numeric`, `vector` → `vector`)
+   *  since the TS annotation is erased at transpile. */
+  jsType?: string;
   /** Static source annotation (present in the schema pipeline; absent at
    *  runtime — runtime io never needs it, it drives params via value shape). */
   annotation?: EntityAnnotationInfo;
@@ -56,6 +63,16 @@ const DELETABLE_TYPE_PINS: Record<string, string> = {
 };
 const SYNCHRONIZABLE_TYPE_PINS: Record<string, string> = {
   LAST_SYNCED_AT: "timestamptz",
+};
+/** `jsType` runtime codec hints pin storage too — `instant` props are Dates
+ *  stored as timestamptz, `decimal` as numeric, `vector` as vector. This is
+ *  the runtime-visible counterpart of the TS annotation: the annotation is
+ *  erased at transpile, the decorator option is not. */
+const JS_TYPE_PINS: Record<string, string> = {
+  instant: "timestamptz",
+  decimal: "numeric",
+  vector: "vector",
+  bigint: "int8",
 };
 
 function applyTypeModifiers(baseType: string, h: EntityColumnTypeHints): string {
@@ -178,6 +195,7 @@ function semanticPin(h: EntityColumnTypeHints): string | undefined {
     (h.auditableType ? AUDITABLE_TYPE_PINS[h.auditableType] : undefined) ??
     (h.deletableType ? DELETABLE_TYPE_PINS[h.deletableType] : undefined) ??
     (h.synchronizableType ? SYNCHRONIZABLE_TYPE_PINS[h.synchronizableType] : undefined) ??
+    (h.isKey && (h.keyGenerated ?? "identity") === "identity" ? "int8" : undefined) ??
     undefined
   );
 }
@@ -187,6 +205,7 @@ export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
   const base =
     h.explicitPgType?.trim() ??
     semanticPin(h) ??
+    (h.jsType ? JS_TYPE_PINS[h.jsType] : undefined) ??
     (h.annotation ? pgTypeFromAnnotation(h.annotation) : null) ??
     "text"; // runtime-only fallback when no static info — non-authoritative
   return applyTypeModifiers(base, h);

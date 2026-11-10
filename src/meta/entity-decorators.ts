@@ -107,10 +107,15 @@ type ColumnRegistration = {
    * - `"instant"` → ISO string → `Date`
    * - `"decimal"` → `"N.Nd"` string → `Decimal`
    * - `"vector"`  → array/`"[…]"` → `Vector`
+   * - `"bigint"`  → number/`"N"` → `bigint`
+   * Also pins storage (`instant`→timestamptz, `decimal`→numeric,
+   * `vector`→vector, `bigint`→int8) — it is the runtime-visible
+   * counterpart of the erased TS annotation.
    * DB reads never need this — pg parsers return the right shape by OID.
-   * Required (lint) on `Decimal`, `Vector`, and non-audit `Date` props.
+   * Required (lint) on `Decimal`, `Vector`, `bigint`, and non-audit
+   * `Date` props.
    */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: "instant" | "decimal" | "vector" | "bigint";
   /** Auditable field metadata */
   isAuditable?: boolean;
   auditableType?: AuditableFieldType;
@@ -145,7 +150,7 @@ export type ColumnOptions = {
   /** SQL DEFAULT expression (raw). */
   defaultSql?: string;
   /** Runtime hydration hint for JSON round-trips — see `ColumnRegistration.jsType`. */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: "instant" | "decimal" | "vector" | "bigint";
   /** Cast type to apply when this field is used in JOIN ON clause (e.g., 'uuid') */
   castInJoin?: string;
 };
@@ -789,7 +794,7 @@ export type EntityPersistenceMeta = {
       uniqueIndexOrder?: number;
       nullable?: boolean;
       pgType?: string;
-      jsType?: "instant" | "decimal" | "vector";
+      jsType?: "instant" | "decimal" | "vector" | "bigint";
       defaultSql?: string;
       length?: number;
       precision?: number;
@@ -904,6 +909,9 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       scale: reg.scale,
       auditableType: reg.auditableType,
       deletableType: reg.deletableType,
+      synchronizableType: reg.synchronizableType,
+      keyGenerated: reg.keyGenerated,
+      jsType: reg.jsType,
     });
     if (
       reg.defaultSql === undefined &&
