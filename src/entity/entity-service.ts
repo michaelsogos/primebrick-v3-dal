@@ -289,10 +289,10 @@ function toDto<T>(row: T): T {
   return out as T;
 }
 
-function projectAllExceptPk(entity: EntityClass): FieldProjector[] {
+function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
   const meta = getEntityPersistenceMeta(entity);
   return Object.values(meta.columns)
-    .filter((c) => !c.isKey)
+    .filter((c) => !(c.isKey && c.sqlName === "id"))
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
@@ -361,9 +361,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
    *  `cfg.list.sortableKeys`. Anything else is a 400, never a 42703. */
   const sortableUniverse = new Set<string>([
     // the surrogate PK never enters the wire contract — unless it IS the
-    // entity's uid (legacy id-keyed tables, where id is also @Unique).
+    // entity's uid (legacy id-keyed tables, where id is also @Unique, or
+    // uuid-keyed tables where the PK itself is the public uid).
     ...Object.values(meta.columns)
-      .filter((c) => !c.isKey || c.isUnique)
+      .filter((c) => !c.isKey || c.isUnique || c.sqlName === "uuid")
       .map((c) => c.propertyKey),
     ...Object.keys(meta.calculated),
     ...(cfg.list.aggregates ?? []).map((a) => a.name),
@@ -385,7 +386,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
    *  WHERE/ORDER BY substitution in the query builder). */
   const selfRef = `"${meta.tableSchema}"."${meta.tableName}"`;
   function projectRead(): FieldProjector[] {
-    const fields = projectAllExceptPk(cfg.entity) as unknown as FieldProjector[];
+    const fields = projectAllExceptSurrogateId(cfg.entity) as unknown as FieldProjector[];
     for (const c of Object.values(meta.calculated)) {
       fields.push({ kind: "expr", expr: c.expr.replaceAll("{self}", selfRef), alias: c.sqlName });
     }
@@ -459,7 +460,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     const joins = joinsFor();
     if (aggregates.length === 0 && !hasCalculated) {
       return {
-        fields: projectAllExceptPk(cfg.entity) as unknown as FieldProjector[],
+        fields: projectAllExceptSurrogateId(cfg.entity) as unknown as FieldProjector[],
         joins,
       };
     }
@@ -550,7 +551,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           actor: actor(),
           audit: auditPort,
-          returning: projectAllExceptPk(cfg.entity) as never,
+          returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
       const dto = toDto(row) as unknown as TEntity;
@@ -566,7 +567,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           actor: actor(),
           audit: auditPort,
-          returning: projectAllExceptPk(cfg.entity) as never,
+          returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
       const dto = toDto(row) as unknown as TEntity;
@@ -579,7 +580,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("delete", dto);
@@ -591,7 +592,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("restore", dto);
@@ -603,7 +604,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("purge", dto);

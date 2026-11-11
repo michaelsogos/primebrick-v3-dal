@@ -46849,7 +46849,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — the\r\n entity-router injects it into served meta ("
+								"text": " — the\n entity-router injects it into served meta ("
 							},
 							{
 								"kind": "code",
@@ -48043,7 +48043,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " vocabulary feed — the distinct\r\n writers of THIS table, label-resolved through "
+										"text": " vocabulary feed — the distinct\n writers of THIS table, label-resolved through "
 									},
 									{
 										"kind": "code",
@@ -48051,7 +48051,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\n "
+										"text": ".\n "
 									},
 									{
 										"kind": "code",
@@ -49414,7 +49414,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n supplies the gateway-owned instance; callers of the free\r\n "
+								"text": "\n supplies the gateway-owned instance; callers of the free\n "
 							},
 							{
 								"kind": "code",
@@ -49430,7 +49430,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") must\r\n pass one explicitly. Consumer configs MUST NOT set it — a missing\r\n "
+								"text": ") must\n pass one explicitly. Consumer configs MUST NOT set it — a missing\n "
 							},
 							{
 								"kind": "code",
@@ -49477,7 +49477,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (the standard\r\n "
+								"text": " (the standard\n "
 							},
 							{
 								"kind": "code",
@@ -49485,7 +49485,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " writer). Override only for ports with extra side\r\n effects (e.g. the BE entity-changed marker publisher)."
+								"text": " writer). Override only for ports with extra side\n effects (e.g. the BE entity-changed marker publisher)."
 							}
 						]
 					},
@@ -49689,7 +49689,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Optional narrowing of the derived sortable universe (physical +\r\n calculated column keys + aggregate aliases). When omitted, every\r\n resolvable key is accepted; a "
+												"text": "Optional narrowing of the derived sortable universe (physical +\n calculated column keys + aggregate aliases). When omitted, every\n resolvable key is accepted; a "
 											},
 											{
 												"kind": "code",
@@ -49697,7 +49697,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " outside the universe is\r\n rejected with "
+												"text": " outside the universe is\n rejected with "
 											},
 											{
 												"kind": "code",
@@ -49713,7 +49713,7 @@
 											},
 											{
 												"kind": "text",
-												"text": "\r\n on an arbitrary string."
+												"text": "\n on an arbitrary string."
 											}
 										]
 									},
@@ -51288,7 +51288,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " vocabulary feed — the distinct\r\n writers of THIS table, label-resolved through "
+										"text": " vocabulary feed — the distinct\n writers of THIS table, label-resolved through "
 									},
 									{
 										"kind": "code",
@@ -51296,7 +51296,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\n "
+										"text": ".\n "
 									},
 									{
 										"kind": "code",
@@ -51488,7 +51488,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — the\r\n entity-router injects it into served meta ("
+								"text": " — the\n entity-router injects it into served meta ("
 							},
 							{
 								"kind": "code",
@@ -51604,7 +51604,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " via the\r\ngiven repository. This is the service-side counterpart of the BE's\r\n"
+								"text": " via the\ngiven repository. This is the service-side counterpart of the BE's\n"
 							},
 							{
 								"kind": "code",
@@ -51612,7 +51612,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", minus the Redis/NATS entity-changed markers (those\r\nbelong to gateway collaboration infra). The audit row write itself is\r\nalways performed."
+								"text": ", minus the Redis/NATS entity-changed markers (those\nbelong to gateway collaboration infra). The audit row write itself is\nalways performed."
 							}
 						]
 					},
