@@ -77,7 +77,7 @@ function partitionSetupSql(t: SchemaTableMeta): string[] {
   const p = t.partition!;
   const fq = `${t.schema}.${t.name}`;
   const lines = [
-    `SELECT partman.create_parent('${fq}', '${p.column}', 'native', '${p.interval}'${p.premake !== undefined ? `, ${p.premake}` : ""});`,
+    `SELECT partman.create_parent('${fq}', '${p.column}', '${p.interval}', 'range'${p.premake !== undefined ? `, p_premake => ${p.premake}` : ""});`,
   ];
   const sets: string[] = [];
   if (p.retention !== undefined) sets.push(`retention = '${p.retention}'`);
@@ -202,10 +202,10 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
         `  "changed_by" text NOT NULL DEFAULT 'system',`,
         `  "version" integer NOT NULL,`,
         `  "delta" jsonb NOT NULL,`,
-        `  PRIMARY KEY ("id")`,
-        `);`,
+        `  PRIMARY KEY ("id", "changed_at")`,
+        `) PARTITION BY RANGE ("changed_at");`,
         "",
-        `SELECT partman.create_parent('${fqAudit}', 'changed_at', 'native', 'monthly');`,
+        `SELECT partman.create_parent('${t.schema}.${auditTableName}', 'changed_at', '1 month', 'range');`,
         "",
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_entity_uuid_idx`)} ON ${fqAudit} ("entity_uuid");`,
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_action_idx`)} ON ${fqAudit} ("action");`,
