@@ -91,6 +91,8 @@ type ColumnRegistration = {
   uniqueIndexName?: string;
   /** Order priority within a composite unique index (0-based). Lower = first in index. */
   uniqueIndexOrder?: number;
+  /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
+  uniqueNullsNotDistinct?: boolean;
   nullable?: boolean;
   pgType?: string;
   /** For varchar/char/bit varying etc. */
@@ -475,12 +477,16 @@ export type UniqueOptions = {
    * Lower values come first in the index. Only meaningful when `indexName` is set.
    */
   orderPriority?: number;
+  /** PG15+ `NULLS NOT DISTINCT` — NULL members of the unique group are
+   *  treated as equal (they conflict instead of stacking). Declare on any
+   *  member of the group; convention is the order-0 member. */
+  nullsNotDistinct?: boolean;
 };
 
 /** Unique constraint (PostgreSQL: unique index in generated patches). */
 export function Unique(): PropertyDecorator;
-export function Unique(indexName: string, orderPriority: number): PropertyDecorator;
-export function Unique(indexName?: string, orderPriority?: number): PropertyDecorator {
+export function Unique(indexName: string, orderPriority: number, opts?: UniqueOptions): PropertyDecorator;
+export function Unique(indexName?: string, orderPriority?: number, opts?: UniqueOptions): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
@@ -489,10 +495,13 @@ export function Unique(indexName?: string, orderPriority?: number): PropertyDeco
     // @Column({ nullable: true }) wins (e.g. composite uniques where a
     // member is genuinely nullable, like ai_models.dtype).
     if (col.nullable === undefined) col.nullable = false;
-    if (indexName !== undefined) {
-      col.uniqueIndexName = indexName;
-      col.uniqueIndexOrder = orderPriority ?? 0;
+    const effName = indexName ?? opts?.indexName;
+    const effOrder = orderPriority ?? opts?.orderPriority;
+    if (effName !== undefined) {
+      col.uniqueIndexName = effName;
+      col.uniqueIndexOrder = effOrder ?? 0;
     }
+    if (opts?.nullsNotDistinct !== undefined) col.uniqueNullsNotDistinct = opts.nullsNotDistinct;
 
   };
 }
@@ -816,6 +825,8 @@ export type EntityPersistenceMeta = {
       uniqueIndexName?: string;
       /** Order priority within a composite unique index (0-based). */
       uniqueIndexOrder?: number;
+      /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
+      uniqueNullsNotDistinct?: boolean;
       nullable?: boolean;
       pgType?: string;
       jsType?: JsType;
@@ -962,6 +973,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     };
     if (reg.uniqueIndexName !== undefined) entry.uniqueIndexName = reg.uniqueIndexName;
     if (reg.uniqueIndexOrder !== undefined) entry.uniqueIndexOrder = reg.uniqueIndexOrder;
+    if (reg.uniqueNullsNotDistinct !== undefined) entry.uniqueNullsNotDistinct = reg.uniqueNullsNotDistinct;
     if (reg.pgType !== undefined) entry.pgType = reg.pgType;
     // NOT NULL by default: `design:type` inference was removed because it is
     // transpiler-dependent (esbuild/tsx never emits it; bun collapses unions).

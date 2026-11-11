@@ -56,9 +56,10 @@ function indexDdl(ix: SchemaIndexMeta, t: { schema: string; name: string }, conc
   const cols = ix.columns.map((c) => (ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c))).join(", ");
   const unique = ix.isUnique ? "UNIQUE " : "";
   const using = ix.using === "btree" ? "" : ` USING ${ix.using}`;
+  const nnd = ix.isUnique && ix.nullsNotDistinct ? " NULLS NOT DISTINCT" : "";
   const where = ix.where ? ` WHERE ${ix.where}` : "";
   const conc = concurrently ? " CONCURRENTLY" : "";
-  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${cols})${where};`;
+  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${cols})${nnd}${where};`;
 }
 
 function fkActionSql(action: string): string {
@@ -170,9 +171,10 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     }
 
     // indexes (new table → plain CREATE INDEX, always fast on empty tables).
-    // Unique groups are already emitted as UNIQUE constraints / *_uq indexes below.
+    // Composite @Unique groups land here (isUnique + multi-column); single-col
+    // uniques are emitted per-column below.
     for (const ix of t.indexes ?? []) {
-      if (ix.isUnique) continue;
+      if (ix.isUnique && ix.columns.length <= 1) continue;
       safe.push(indexDdl(ix, t, false));
     }
     // single-column uniques not covered by composite UNIQUE constraints

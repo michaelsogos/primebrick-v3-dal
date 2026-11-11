@@ -3605,7 +3605,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
