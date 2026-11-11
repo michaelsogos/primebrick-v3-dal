@@ -234,7 +234,12 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
           version: params.version,
           delta: params.delta,
         },
-        { tableName: `${params.tableName}_audit` },
+        {
+          tableName: `${params.tableName}_audit`,
+          // RETURNING must reference only columns guaranteed on BOTH audit
+          // shapes (post-migration tables dropped `entity_id`) — project id.
+          returning: [Project.field(field(AuditLogEntity, "id"))],
+        },
       );
       return inserted.id;
     },

@@ -194,10 +194,13 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     if (t.isAuditable) {
       const auditTableName = `${t.name}_audit`;
       const fqAudit = `${quoteIdent(t.schema)}.${quoteIdent(auditTableName)}`;
+      // `entity_id` is emitted only while the entity still carries the
+      // surrogate bigint `id` — uuid-PK entities write uuid-shaped audits.
+      const hasSurrogateId = t.columns["id"] !== undefined;
       safe.push(
         `CREATE TABLE IF NOT EXISTS ${fqAudit} (`,
         `  "id" bigint generated always as identity NOT NULL,`,
-        `  "entity_id" bigint NOT NULL,`,
+        ...(hasSurrogateId ? [`  "entity_id" bigint NOT NULL,`] : []),
         `  "entity_uuid" uuid NOT NULL,`,
         `  "action" text NOT NULL,`,
         `  "changed_at" timestamptz NOT NULL,`,

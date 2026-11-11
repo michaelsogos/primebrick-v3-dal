@@ -16,7 +16,8 @@ import {
  * All audit tables share the same column structure:
  *   id          bigint identity PK
  *   entity_id   bigint (the audited entity's legacy surrogate ID — nullable;
- *                 dropped from `*_audit` tables as entities migrate to uuid PKs)
+ *                 present only on pre-migration `*_audit` tables; dropped as
+ *                 entities migrate to uuid PKs)
  *   entity_uuid uuid    (the audited entity's UUID)
  *   action      text    (INSERT, UPDATE, SOFT_DELETE, HARD_DELETE, RESTORE)
  *   changed_at  timestamptz

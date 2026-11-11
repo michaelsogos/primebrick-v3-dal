@@ -39,9 +39,6 @@ import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 export abstract class ConfigEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()
-  id!: bigint;
-
-  @Unique()
   @Column({ pgType: "uuid" })
   uuid!: string;
 

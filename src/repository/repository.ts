@@ -269,8 +269,11 @@ export function buildReturningClause(
       }
     }
   } else {
+    // The PK is hidden only while it is the non-JSON-safe surrogate bigint
+    // `id`. A uuid PK is the public uid — it must stay in the response.
+    const stripPk = pk !== null && hasSurrogateId(meta);
     for (const c of Object.values(meta.columns)) {
-      const isPk = pk !== null && c.sqlName === pk.sqlName;
+      const isPk = stripPk && c.sqlName === pk!.sqlName;
       emit(c.sqlName, c.propertyKey, !isPk);
     }
   }
