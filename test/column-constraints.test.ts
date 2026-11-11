@@ -578,6 +578,39 @@ describe("uom + unsigned constraints", () => {
 		} as never;
 		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
 	});
+
+	// ── ref.route / ref.presentation — closed vocabularies ──────────────
+	it("ref.route outside the closed vocabulary throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", route: "external" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/closed vocabulary/);
+	});
+
+	it("ref.presentation outside the closed vocabulary throws", () => {
+		const meta = baseMeta();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			type: "ref",
+			ref: { entity: "local_address", presentation: "pill" },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/closed vocabulary/);
+	});
+
+	it("ref.presentation 'badge' and 'link' pass", () => {
+		for (const presentation of ["badge", "link"] as const) {
+			const meta = baseMeta();
+			meta.columns[0] = {
+				...meta.columns[0]!,
+				type: "ref",
+				ref: { entity: "local_address", presentation },
+			} as never;
+			expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+		}
+	});
 });
 
 // ── @Ref contract: the class owns served-meta refs, never authored ──────

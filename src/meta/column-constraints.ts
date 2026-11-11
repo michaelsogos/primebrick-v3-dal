@@ -219,6 +219,25 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           }
         }
       }
+      // ── ref route/presentation — closed vocabularies validated at
+      //    construction: malformed values must fail at meta assembly,
+      //    never reach the wire as a silently-misparsed cell. */
+      if (col.ref !== undefined) {
+        const route = col.ref.route ?? "detail";
+        if (route !== "detail" && route !== "list" && route !== "none") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares ref.route "${route}" — ` +
+              `closed vocabulary: "detail" | "list" | "none"`,
+          );
+        }
+        const pres = col.ref.presentation;
+        if (pres !== undefined && pres !== "link" && pres !== "badge") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares ref.presentation "${pres}" — ` +
+              `closed vocabulary: "link" | "badge" ("link" is the default; "badge" is the explicit opt-in legacy anatomy)`,
+          );
+        }
+      }
       // ── ref.value_field — a non-uid stored value cannot feed a
       //    `[param]` detail route (params are uids). The author must
       //    pick the truthful alternative explicitly: route:"list" +

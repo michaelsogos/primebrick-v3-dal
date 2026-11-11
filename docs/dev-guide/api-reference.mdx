@@ -2862,9 +2862,13 @@ Alias of `dec()` — tolerates the `"…d"` wire suffix.
 
 ### `HONEST_FORMAT_HINTS`
 
-The name→format honesty matrix — exported so the check-standards lint
- (`schema-honest-format`) and the enrollment validator test the SAME
- hints. Add a case here, never re-invent it per surface.
+The name→format honesty matrix — the single source of truth consumed by:
+  - `schemaHonestyIssue` in ./field-validation.ts (runtime contract),
+  - the sdk enrollment validators (registry gate),
+  - the check-standards lint (`schema-honest-format`), which imports this
+    file BY RELATIVE PATH so the tool stays zero-dep and CI can run it
+    against bare checkouts with no install.
+A new dishonesty case is added HERE — never re-invented per surface.
 
 **Type:** `{ re: RegExp; formats: readonly string[]; why: string }[]`
 
