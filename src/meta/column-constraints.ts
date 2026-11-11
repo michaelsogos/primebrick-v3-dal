@@ -77,6 +77,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // even on authored columns so a mere relabel can't drop the flag
       // (it gates dict inline-editability and soft-delete detection).
       ...(phys.isAuditable === true || phys.isDeletable === true ? { audited: true } : {}),
+      // `@Ref` is a class fact the same way: an authored column entry may
+      // tune visibility/order but can never re-point or drop the ref.
+      ...(phys.refEntity !== undefined ? { type: "ref" as const, ref: { entity: phys.refEntity } } : {}),
     };
   };
 
@@ -109,6 +112,19 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors managed — ` +
             `the flag is derived from the entity class (@Key generation strategy); never declared by hand`,
         );
+      }
+      // `@Ref` on the class owns the ref contract — authored `ref` is
+      // always drift; authored `type` may only restate the required
+      // "ref" literal (system columns must declare the derived type),
+      // anything else contradicts the class.
+      const physForRef = persistence.columns[col.key];
+      if (physForRef?.refEntity !== undefined) {
+        if (col.ref !== undefined || (col.type !== undefined && col.type !== "ref")) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors ref/type — ` +
+              `the ref contract derives from @Ref("${physForRef.refEntity}") on the entity class; never declared by hand`,
+          );
+        }
       }
       // ── uom / unsigned — the unit-of-measure and sign contract live only
       //    on NUMERIC columns. `percent` is a display transform (no sibling);
@@ -298,7 +314,8 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    the writable-validation contract (system cols never enter
       //    create/edit forms).                                         */
       if (COMMON_SYSTEM_FIELD_KEYS.has(col.key)) {
-        const derivedType = columnTypeForPg(phys.inferredPgType);
+        // @Ref pins the served type to "ref" — a class fact like pg_type.
+        const derivedType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
         if (col.type !== derivedType) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: system column "${col.key}" authors type:"${col.type}" but ` +
@@ -367,7 +384,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     if (phys.isKey === true && key !== meta.uid) continue;
     const isAudit = phys.isAuditable === true || phys.isDeletable === true;
     const isUid = key === meta.uid;
-    const colType = columnTypeForPg(phys.inferredPgType);
+    const colType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
     const derived: MetaColumn = {
       key,
       // System columns share ONE translation dict (`system.common.fields.*`)
@@ -393,6 +410,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // distinct vocab of THIS table's actors, label-resolved through
       // user_profile by the entity's /audit-actors route.
       options_source: isAuditActorColumn(phys) ? "audit.actors" : undefined,
+      ...(phys.refEntity !== undefined ? { ref: { entity: phys.refEntity } } : {}),
     };
     columns.push(injectDerived(derived));
   }

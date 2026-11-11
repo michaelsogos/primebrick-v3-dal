@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, Calculated, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID, type Decimal } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, Ref, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -578,4 +578,63 @@ describe("uom + unsigned constraints", () => {
 		} as never;
 		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
 	});
+});
+
+// ── @Ref contract: the class owns served-meta refs, never authored ──────
+describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
+  it("audit actor columns auto-derive type:'ref' + ref.entity 'user_profile'", () => {
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    for (const k of ["created_by", "updated_by", "deleted_by"]) {
+      expect(byKey[k], `missing ${k}`).toMatchObject({
+        type: "ref",
+        audited: true,
+        options_source: "audit.actors",
+        ref: { entity: "user_profile" },
+      });
+    }
+  });
+
+  it("an authored entry on a @Ref column keeps the injected ref (tuning only)", () => {
+    const meta = auditableMeta();
+    // Making the cell visible-by-default is a legit tune — `type` is a
+    // required authored field and must restate the class-derived "ref".
+    meta.columns.push({ key: "created_by", label_key: "x.creator", type: "ref", order: 60, default_visible: true } as never);
+    const out = withColumnConstraints(meta, CcJobEntity);
+    const createdBy = out.columns.find((c) => c.key === "created_by");
+    expect(createdBy).toMatchObject({
+      default_visible: true,
+      label_key: "x.creator",
+      type: "ref",
+      ref: { entity: "user_profile" },
+    });
+  });
+
+  it("throws when an authored column restates or contradicts the @Ref contract", () => {
+    const byRef = auditableMeta();
+    byRef.columns.push({ key: "created_by", label_key: "x", order: 1, ref: { entity: "other" } } as never);
+    expect(() => withColumnConstraints(byRef, CcJobEntity)).toThrow(/authors ref\/type/);
+
+    const byType = auditableMeta();
+    byType.columns.push({ key: "updated_by", label_key: "x", type: "text", order: 1 } as never);
+    expect(() => withColumnConstraints(byType, CcJobEntity)).toThrow(/authors ref\/type/);
+  });
+
+  it("@Ref on a domain column emits the same contract (meta-only, no FK)", () => {
+    @Entity("cc_ref_domain", "job")
+    class CcRefDomainEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: true })
+      @Ref("local_address")
+      address_uuid?: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_ref_domain", translation_key: "cc_ref_domain", uid: "uuid",
+      columns: [{ key: "uuid", label_key: "x", type: "text", order: 1 }],
+    };
+    const out = withColumnConstraints(meta, CcRefDomainEntity);
+    const addr = out.columns.find((c) => c.key === "address_uuid");
+    expect(addr).toMatchObject({ type: "ref", ref: { entity: "local_address" } });
+  });
 });

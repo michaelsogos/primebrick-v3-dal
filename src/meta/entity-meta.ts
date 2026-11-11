@@ -11,6 +11,7 @@ export {
   DeletableField,
   SynchronizableField,
   CloneField,
+  Ref,
   AuditTrail,
   AuditTrailEntity,
   PartitionField,

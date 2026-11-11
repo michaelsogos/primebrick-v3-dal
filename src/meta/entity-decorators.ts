@@ -132,6 +132,12 @@ type ColumnRegistration = {
   synchronizableType?: SynchronizableFieldType;
   /** Clone field metadata */
   isClone?: boolean;
+  /** `@Ref("entity_name")` — the column's value identifies a record of that
+   *  entity (served-meta ref contract: `type:"ref"` + `ref.entity`). Meta-
+   *  only — no DDL FK is emitted; the target may live in another schema's
+   *  domain (e.g. `user_profile`). For same-schema physical FKs use
+   *  `@ForeignKey` — which does NOT imply a display ref. */
+  refEntity?: string;
   /** Cast type to apply when this field is used in JOIN ON clause */
   castInJoin?: string;
 };
@@ -608,6 +614,19 @@ export function CloneField(): PropertyDecorator {
   };
 }
 
+/** Declares a served-meta reference: the column's value is the uid (uuid)
+ *  of a record in the named entity — the single source of truth behind
+ *  `type:"ref"` + `ref.entity` on the served column. Applied once on the
+ *  `Auditable`/`Deletable` mixin's `*_by` actor columns it is inherited by
+ *  every entity; it is also the declaration path for domain FK display
+ *  refs (replacing authored `ref:` in list-configs). */
+export function Ref(entity: string): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    touchColumn(ctor, propertyKey).refEntity = entity;
+  };
+}
+
 /** Marks an entity as having an audit trail table. */
 export function AuditTrail(): ClassDecorator {
   return function <T extends Function>(target: T): T {
@@ -869,6 +888,8 @@ export type EntityPersistenceMeta = {
       isSynchronizable?: boolean;
       synchronizableType?: SynchronizableFieldType;
       isClone?: boolean;
+      /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
+      refEntity?: string;
       castInJoin?: string;
       /** `@PartitionField()` — RANGE partition key marker + options. */
       isPartition?: boolean;
@@ -1027,6 +1048,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isSynchronizable !== undefined) entry.isSynchronizable = reg.isSynchronizable;
     if (reg.synchronizableType !== undefined) entry.synchronizableType = reg.synchronizableType;
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
+    if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;
