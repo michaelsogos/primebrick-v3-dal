@@ -80,6 +80,24 @@ function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
   return { sqlName: col.sqlName, propertyKey: col.propertyKey };
 }
 
+/** True while the entity still carries the legacy surrogate `id` column —
+ *  false once it migrates to a uuid primary key (`uuid` becomes @Key). */
+function hasSurrogateId(meta: ReturnType<typeof getEntityPersistenceMeta>): boolean {
+  return meta.columns["id"] !== undefined;
+}
+
+/** The audit `entity_id` mirrors the legacy surrogate `id` — null once the
+ *  entity migrated to a uuid PK (its `*_audit` table drops the column). */
+function auditEntityId(
+  ...records: Array<Record<string, unknown> | undefined>
+): bigint | null {
+  for (const r of records) {
+    const v = r?.["id"];
+    if (v !== undefined && v !== null) return v as bigint;
+  }
+  return null;
+}
+
 /**
  * Resolve which column to use as the WHERE left operand for BULK write ops
  * (single-column selector — the multi-identity design is single-row only).
@@ -826,7 +844,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     // Write audit if port is injected (skipped when the row was a no-op conflict)
     if (inserted && auditable && options.audit && pk && actor !== undefined) {
       const insertedRecord = remapReturningRow(inserted, ret.rowKeyToSqlName);
-      const entityId = (insertedRecord[pk.sqlName] ?? inserted[pk.propertyKey]) as bigint;
+      const entityId = auditEntityId(insertedRecord);
       const entityUuid = (insertedRecord["uuid"] ?? "") as string;
       // Use the full inserted record (RETURNING) as the delta source —
       // all projected columns plus internal bookkeeping (id/uuid/version).
@@ -1555,8 +1573,7 @@ WHERE agg.n > 0`;
   // 
   //     // Write audit log (fire-and-forget) — INSERT if new, UPDATE if conflict
   //     if (auditable && options.audit && actor !== undefined) {
-  //       const pkCol = findPkColumn(meta);
-  //       const entityId = pkCol ? (upserted as any)[pkCol.propertyKey] as bigint : 0n;
+  //       const entityId = auditEntityId(upserted as Record<string, unknown>);
   //       const entityUuid = (upserted as any)["uuid"] as string | undefined ?? "";
   //       const newVersion = versionCol ? (upserted as any)[versionCol.propertyKey] as number : 1;
   //       const action = oldRecord ? AuditAction.UPDATE : AuditAction.INSERT;
@@ -1805,8 +1822,7 @@ SELECT * FROM upd`;
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
-      const pk = findPkColumn(meta);
-      const entityId = pk ? (updated[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityId = auditEntityId(updated, oldRecord);
       const entityUuid = (updated["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
       const newVersion = versionCol ? (updated[versionCol.sqlName] as number) : 1;
@@ -1948,8 +1964,7 @@ SELECT * FROM w`;
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
-      const pk = findPkColumn(meta);
-      const entityId = pk ? (deleted[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityId = auditEntityId(deleted, oldRecord);
       const entityUuid = (deleted["uuid"] as string | undefined) ?? "";
       const newVersion = versionCol ? (deleted[versionCol.sqlName] as number) : 1;
       const forcedFields: string[] = [];
@@ -2089,8 +2104,7 @@ SELECT * FROM w`;
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
-      const pk = findPkColumn(meta);
-      const entityId = pk ? (restored[pk.sqlName] ?? oldRecord[pk.sqlName]) as bigint : 0n;
+      const entityId = auditEntityId(restored, oldRecord);
       const entityUuid = (restored["uuid"] as string | undefined) ?? "";
       const newVersion = versionCol ? (restored[versionCol.sqlName] as number) : 1;
       const forcedFields: string[] = [];
@@ -2193,8 +2207,7 @@ SELECT * FROM w`;
 
     // Write audit log (fire-and-forget) — delta is old=full record, new=empty
     if (auditable && options.audit && actor !== undefined && oldRecord) {
-      const pk = findPkColumn(meta);
-      const entityId = pk ? oldRecord[pk.sqlName] as bigint : 0n;
+      const entityId = auditEntityId(oldRecord);
       const entityUuid = (oldRecord["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
       const oldVersion = versionCol ? (oldRecord[versionCol.sqlName] as number) : 1;
@@ -2331,12 +2344,11 @@ SELECT * FROM w`;
     // INSERT, plus `cloned_from` already carries the source uuid.
     const insertedRow = insertResult.rows[0] as Record<string, unknown>;
     if (options.audit && actor !== undefined) {
-      const pk = findPkColumn(meta);
       const delta = calculateDelta({}, insertedRow);
       options.audit.writeAudit({
         entityClassName: meta.entityClassName,
         tableName: meta.tableName,
-        entityId: pk ? ((insertedRow[pk.sqlName] as bigint | undefined) ?? 0n) : 0n,
+        entityId: auditEntityId(insertedRow),
         entityUuid: newUuid,
         action: AuditAction.CLONE,
         changedAt: now,
@@ -2903,7 +2915,7 @@ WHERE agg.n > 0`;
       //    single-record SOFT_DELETE delta behavior).
       if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
         const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
-        const pkCol = findPkColumn(meta);
+        const hasId = hasSurrogateId(meta);
         const deltaColumns = Object.values(meta.columns).filter((c) =>
           c.auditableType !== AuditableFieldType.CREATED_AT &&
           c.auditableType !== AuditableFieldType.CREATED_BY,
@@ -2915,8 +2927,8 @@ WHERE agg.n > 0`;
           })
           .join(",\n          ");
         const auditSql =
-          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'SOFT_DELETE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'SOFT_DELETE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
@@ -3063,13 +3075,13 @@ WHERE agg.n > 0`;
       // semantics), sourced from the pre-delete snapshot.
       if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
         const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
-        const pkCol = findPkColumn(meta);
+        const hasId = hasSurrogateId(meta);
         const deltaExpr = Object.values(meta.columns)
           .map((c) => `'${c.sqlName}', jsonb_build_object('old', o.${quoteIdent(c.sqlName)}, 'new', null)`)
           .join(",\n          ");
         await client.query(
-          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT o.${quoteIdent(pkCol!.sqlName)}, o.uuid, 'HARD_DELETE', $1, $2, o.${quoteIdent(versionCol!.sqlName)},\n` +
+          `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT ${hasId ? `o.${quoteIdent("id")}, ` : ""}o.uuid, 'HARD_DELETE', $1, $2, o.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_build_object(\n              ${deltaExpr}\n            )\n` +
           `          FROM ${quoteIdent(tmpOldName)} o`,
           [new Date(), actor],
@@ -3233,7 +3245,7 @@ WHERE agg.n > 0`;
 
       if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
         const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
-        const pkCol = findPkColumn(meta);
+        const hasId = hasSurrogateId(meta);
         const deltaColumns = Object.values(meta.columns).filter((c) =>
           c.auditableType !== AuditableFieldType.CREATED_AT &&
           c.auditableType !== AuditableFieldType.CREATED_BY,
@@ -3245,8 +3257,8 @@ WHERE agg.n > 0`;
           })
           .join(",\n          ");
         const auditSql =
-          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'RESTORE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'RESTORE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
@@ -3484,7 +3496,7 @@ WHERE agg.n > 0`;
       // No records are fetched into Node.js memory — fully scalable.
       if (auditEnabled && tmpOldName && result.rowCount && result.rowCount > 0) {
         const auditTable = `${quoteIdent(meta.tableSchema)}.${quoteIdent(`${meta.tableName}_audit`)}`;
-        const pkCol = findPkColumn(meta);
+        const hasId = hasSurrogateId(meta);
         const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
         // Build the jsonb_build_object(...) argument list dynamically from meta.columns.
@@ -3507,8 +3519,8 @@ WHERE agg.n > 0`;
           .join(",\n          ");
 
         const auditSql =
-          `INSERT INTO ${auditTable} (entity_id, entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT u.${quoteIdent(pkCol!.sqlName)}, u.uuid, 'UPDATE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'UPDATE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +

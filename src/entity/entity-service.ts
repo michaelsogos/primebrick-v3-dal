@@ -223,7 +223,10 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
       const inserted = await repo.add(
         AuditLogEntity,
         {
-          entity_id: params.entityId,
+          // `entity_id` exists only on pre-migration audit tables — omit the
+          // key entirely for uuid-PK entities (the column is dropped there;
+          // including it would target a nonexistent column).
+          ...(params.entityId != null ? { entity_id: params.entityId } : {}),
           entity_uuid: params.entityUuid,
           action: params.action,
           changed_at: params.changedAt,
