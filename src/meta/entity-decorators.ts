@@ -136,6 +136,20 @@ type ColumnRegistration = {
   castInJoin?: string;
 };
 
+/**
+ * Closed vocabulary of accepted SQL DEFAULT expressions for generated
+ * uuid columns. The enum member's value IS the emitted SQL — declaring
+ * `default` guarantees the patch carries the right expression; anything
+ * else is a declaration-time type error, never a runtime surprise.
+ * (For non-uuid columns `defaultSql` remains the raw escape hatch.)
+ */
+export enum ColumnDefault {
+  /** `gen_random_uuid()` — pgcrypto uuid v4. */
+  UUID_V4_DEFAULT_GENERATED = "gen_random_uuid()",
+  /** `uuidv7()` — native PG18 time-ordered uuid v7 (canonical for PKs). */
+  UUID_V7_DEFAULT_GENERATED = "uuidv7()",
+}
+
 export type ColumnOptions = {
   sqlName?: string;
   /**
@@ -152,8 +166,10 @@ export type ColumnOptions = {
   precision?: number;
   scale?: number;
   nullable?: boolean;
-  /** SQL DEFAULT expression (raw). */
+  /** SQL DEFAULT expression (raw). Mutually exclusive with `default`. */
   defaultSql?: string;
+  /** Closed-set DEFAULT for uuid columns — see {@link ColumnDefault}. */
+  default?: ColumnDefault;
   /** Runtime hydration hint for JSON round-trips — see `ColumnRegistration.jsType`. */
   jsType?: JsType;
   /** Cast type to apply when this field is used in JOIN ON clause (e.g., 'uuid') */
@@ -380,11 +396,12 @@ function assertNonEmptyColumnOptions(o: ColumnOptions): void {
     o.scale === undefined &&
     o.nullable === undefined &&
     o.defaultSql === undefined &&
+    o.default === undefined &&
     o.jsType === undefined &&
     o.castInJoin === undefined
   ) {
     throw new TypeError(
-      "@Column({ … }) requires at least one of: sqlName, pgType, length, precision/scale, nullable, defaultSql, jsType, castInJoin"
+      "@Column({ … }) requires at least one of: sqlName, pgType, length, precision/scale, nullable, defaultSql, default, jsType, castInJoin"
     );
   }
 }
@@ -407,6 +424,15 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
       if (sqlNameOrOpts.precision !== undefined) col.precision = sqlNameOrOpts.precision;
       if (sqlNameOrOpts.scale !== undefined) col.scale = sqlNameOrOpts.scale;
       if (sqlNameOrOpts.nullable !== undefined) col.nullable = sqlNameOrOpts.nullable;
+      if (
+        sqlNameOrOpts.default !== undefined &&
+        sqlNameOrOpts.defaultSql !== undefined
+      ) {
+        throw new TypeError(
+          "@Column({ … }): 'default' (ColumnDefault enum) and 'defaultSql' (raw) are mutually exclusive"
+        );
+      }
+      if (sqlNameOrOpts.default !== undefined) col.defaultSql = sqlNameOrOpts.default;
       if (sqlNameOrOpts.defaultSql !== undefined) col.defaultSql = sqlNameOrOpts.defaultSql;
       if (sqlNameOrOpts.jsType !== undefined) col.jsType = sqlNameOrOpts.jsType;
       if (sqlNameOrOpts.castInJoin !== undefined) col.castInJoin = sqlNameOrOpts.castInJoin;
@@ -957,10 +983,11 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       inferredPgType === "uuid" &&
       (reg.isKey || reg.isUnique)
     ) {
-      // uuid key/unique columns always default to gen_random_uuid() —
-      // pgcrypto is the standard PostgreSQL uuid provider. There is no env
-      // override: env configuration is closed-set (see docs/ai/env-policy).
-      reg.defaultSql = "gen_random_uuid()";
+      // uuid key/unique columns always default to uuidv7() — the
+      // canonical generated identity (PG18 native, time-ordered).
+      // `default: ColumnDefault.UUID_V4_DEFAULT_GENERATED` remains
+      // available for columns that explicitly need v4.
+      reg.defaultSql = ColumnDefault.UUID_V7_DEFAULT_GENERATED;
     }
     const usePostgresIdentity = Boolean(reg.isKey && (reg.keyGenerated ?? "identity") === "identity");
     const entry: EntityPersistenceMeta["columns"][string] = {
