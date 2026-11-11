@@ -274,7 +274,7 @@ export {
 // Entity-annotation → storage type contract. `UUID`/`ISODate`/`ISOTime` are
 // compile-time brands (zero runtime cost); `Vector`/`Decimal` are real classes
 // the DAL recognises by `instanceof` on the io boundary.
-export { type UUID, isUUID, toUUID, trustedUUID } from "./types/uuid.js";
+export { type UUID, isUUID, isUuidV7, newUuidV7, toUUID, toUuidV7, trustedUUID } from "./types/uuid.js";
 export {
   type ISODate,
   type ISOTime,

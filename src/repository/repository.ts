@@ -44,6 +44,7 @@ import { AuditAction } from "../types/types.js";
 import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError } from "../errors/errors.js";
 import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
+import { isUuidV7, newUuidV7 } from "../types/uuid.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
 
 /** @internal — structural client/pool surface used by Repository; also used by the deferred-transaction capture layer. */
@@ -84,6 +85,16 @@ function findPkColumn(meta: ReturnType<typeof getEntityPersistenceMeta>): {
  *  false once it migrates to a uuid primary key (`uuid` becomes @Key). */
 function hasSurrogateId(meta: ReturnType<typeof getEntityPersistenceMeta>): boolean {
   return meta.columns["id"] !== undefined;
+}
+
+/** uuid-PK boundary guard — a caller-supplied value for a uuid @Key column
+ *  must be a well-formed uuid v7 (enforcer at the boundary, not docs). */
+function assertUuidV7Value(entityName: string, propertyKey: string, value: unknown): void {
+  if (!isUuidV7(value)) {
+    throw new ValidationError(
+      `${entityName}: '${propertyKey}' must be a uuid v7 value, got ${String(value)}`,
+    );
+  }
 }
 
 /** The audit `entity_id` mirrors the legacy surrogate `id` — null once the
@@ -387,6 +398,11 @@ export class Repository {
     options?: FindByUUIDOptions
   ): Promise<TResult | null> {
     const throwIfNotFound = options?.throwIfNotFound ?? true;
+    if (!isUuidV7(uuid)) {
+      throw new ValidationError(
+        `findByUUID on ${getEntityPersistenceMeta(entity).entityClassName}: expected a uuid v7 value, got ${uuid}`,
+      );
+    }
     const meta = getEntityPersistenceMeta(entity);
     const uuidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
     if (!uuidCol) throw new Error(`Entity ${meta.entityClassName} has no uuid column`);
@@ -706,6 +722,12 @@ export class Repository {
       }
     }
 
+    // App-injected uids must be v7 (the PG uuidv7() default only covers omissions)
+    const uidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
+    if (uidCol && rec[uidCol.propertyKey] !== undefined) {
+      assertUuidV7Value(meta.entityClassName, uidCol.propertyKey, rec[uidCol.propertyKey]);
+    }
+
     // Stamp audit fields if entity is auditable
     const now = new Date();
     const values: unknown[] = [];
@@ -980,6 +1002,9 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     const remaining = { ...payload };
     for (const prop of required) {
       const col = colByProp.get(prop)!;
+      if (col.sqlName === "uuid") {
+        assertUuidV7Value(entityName, prop, payload[prop]);
+      }
       conditions.push({
         propertyKey: prop,
         sqlName: col.sqlName,
@@ -1040,6 +1065,12 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       throw new MatchSelectorError(
         `${op} on ${entityName}: items carry no identity field — provide id, uuid, or a complete matchBy @Unique selector`,
       );
+    }
+    for (const prop of required) {
+      const col = colByProp.get(prop)!;
+      if (col.sqlName === "uuid") {
+        for (const item of items) assertUuidV7Value(entityName, prop, item[prop]);
+      }
     }
     return [...required].map((prop) => {
       const c = colByProp.get(prop)!;
@@ -2282,7 +2313,7 @@ SELECT * FROM w`;
 
     // Build the cloned record
     const clonedRecord: Record<string, unknown> = {};
-    const newUuid = randomUUID();
+    const newUuid = newUuidV7();
     const now = new Date();
 
     for (const [, colMeta] of Object.entries(meta.columns)) {
@@ -2414,6 +2445,17 @@ SELECT * FROM w`;
       const sqlName = getColumnName(entity, k);
       if (!meta.columns[sqlName]) {
         throw new UnknownColumnError(`addMany: unknown column/property ${k}`);
+      }
+    }
+
+    // App-injected uids must be v7 — uniform column set, so every row is checked
+    const uidCol = Object.values(meta.columns).find((c) => c.sqlName === "uuid");
+    const uidProp = uidCol?.propertyKey as keyof TEntity & string;
+    if (uidCol && keys.includes(uidProp)) {
+      for (const row of rows) {
+        if (row[uidProp] !== undefined) {
+          assertUuidV7Value(meta.entityClassName, uidCol!.propertyKey, row[uidProp]);
+        }
       }
     }
 

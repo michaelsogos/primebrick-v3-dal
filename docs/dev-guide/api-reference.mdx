@@ -4186,6 +4186,14 @@ Type guard — validates RFC 4122 layout (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 |-----------|------|-------------|
 | v | `unknown` |  |
 
+### `isUuidV7(v): v is UUID`
+
+Type guard — RFC 4122 layout AND version 7 + RFC variant.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `unknown` |  |
+
 ### `isValidNatsSubject(subject): boolean`
 
 | Parameter | Type | Description |
@@ -4386,6 +4394,12 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `newUuidV7(): UUID`
+
+App-side uuid v7 generator (RFC 9562 §5.7): 48-bit ms timestamp + version +
+12-bit rand_a + variant + 62-bit rand_b. Same layout PostgreSQL `uuidv7()`
+produces — app-injected uuids pass the v7 boundary guard.
 
 ### `nextScheduleFire(spec, opts): Date \| null`
 
@@ -4927,6 +4941,14 @@ Registers every implicit column + `design:type` / nullability when not already s
 ### `toUUID(v): UUID`
 
 Validating constructor — throws on malformed input. Use at system boundaries (request bodies, env, user input).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| v | `string` |  |
+
+### `toUuidV7(v): UUID`
+
+Validating constructor for the uuid-PK boundary — throws on malformed or non-v7 input.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

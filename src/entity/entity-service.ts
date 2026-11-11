@@ -40,7 +40,7 @@
  *   owns the pool lifecycle).
  */
 
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../types/uuid.js";
 
 import { Repository } from "../repository/repository.js";
 import {
@@ -545,7 +545,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         cfg.entity,
         {
           ...(prepared as Record<string, unknown>),
-          uuid: (prepared as { uuid?: string }).uuid ?? randomUUID(),
+          uuid: (prepared as { uuid?: string }).uuid ?? newUuidV7(),
         },
         {
           actor: actor(),
