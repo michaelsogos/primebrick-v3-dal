@@ -567,8 +567,7 @@ it without ever instantiating. The served meta `dict` facet and the
 `kind:"dict"` page archetype derive from this ONE declaration point.
 
 Columns carried by the base:
-  id    bigint PK (identity)
-  uuid  uuid UNIQUE — wire uid
+  uuid  uuid PK (uuidv7) — wire uid AND row identity
   code  varchar(50) NOT NULL UNIQUE — stable business key
   sort  int NOT NULL — dictionary ordering (order_field convention)
 
@@ -590,7 +589,6 @@ This class is DB-agnostic — it does NOT import from @primebrick/sdk.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | `bigint` |  |
 | uuid | `UUID` |  |
 | code | `string` | Stable business key (e.g. "private", "email"). Unique per table. |
 | sort | `number` | Dictionary ordering — the `order_field` convention the dict page's

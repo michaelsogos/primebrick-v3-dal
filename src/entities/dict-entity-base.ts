@@ -23,8 +23,7 @@ import type { UUID } from "../types/uuid.js";
  * `kind:"dict"` page archetype derive from this ONE declaration point.
  *
  * Columns carried by the base:
- *   id    bigint PK (identity)
- *   uuid  uuid UNIQUE — wire uid
+ *   uuid  uuid PK (uuidv7) — wire uid AND row identity
  *   code  varchar(50) NOT NULL UNIQUE — stable business key
  *   sort  int NOT NULL — dictionary ordering (order_field convention)
  *
@@ -50,9 +49,6 @@ import type { UUID } from "../types/uuid.js";
 export abstract class DictEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()
-  id!: bigint;
-
-  @Unique()
   @Column({ pgType: "uuid" })
   uuid!: UUID;
 
