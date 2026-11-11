@@ -989,7 +989,14 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       // available for columns that explicitly need v4.
       reg.defaultSql = ColumnDefault.UUID_V7_DEFAULT_GENERATED;
     }
-    const usePostgresIdentity = Boolean(reg.isKey && (reg.keyGenerated ?? "identity") === "identity");
+    // GENERATED … AS IDENTITY is integer-family only — a uuid @Key
+    // (the uuid-PK end state) carries its default via `defaultSql`
+    // (uuidv7()), never via an identity clause.
+    const usePostgresIdentity = Boolean(
+      reg.isKey &&
+        (reg.keyGenerated ?? "identity") === "identity" &&
+        ["int2", "int4", "int8"].includes(inferredPgType),
+    );
     const entry: EntityPersistenceMeta["columns"][string] = {
       propertyKey,
       sqlName: reg.sqlName,
