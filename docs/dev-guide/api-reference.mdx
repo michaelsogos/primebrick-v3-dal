@@ -2166,6 +2166,16 @@ implicit index signature, keeping `MetaColumn` assignable to
 `Record<string, unknown>` — host/remotes pass columns through generic
 cell-snippet args typed as `Record<string, unknown>`.
 
+### `MetaColumnAvatar`
+
+Avatar renderer contract — the column renders the user/org avatar
+(initials + color swatch), NOT a text control. `color_field` names the
+SIBLING column that persists the per-row avatar color — same pattern
+`uom.field` uses for the currency code column. The avatar column's own
+value carries the initials; the sibling carries the color.
+The sibling requirement is verified by `withColumnConstraints`: an
+avatar column without its color column is a construction error.
+
 ### `MetaColumnDependsCondition`
 
 A sibling-value condition — the SAME vocabulary `null_label.when` and
@@ -2202,7 +2212,7 @@ Closed union on purpose — an unknown source is a construction error.
 UI column renderer type. NOTE: this is the UI type, not the DB type —
  e.g. `roles` is `"text"` here but `jsonb` on disk (never ILIKE-searchable).
 
-**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline" \| "ref" \| "ref_count"`
+**Type:** `"text" \| "badge" \| "boolean" \| "color" \| "date" \| "datetime" \| "number" \| "sparkline" \| "ref" \| "ref_count" \| "avatar"`
 
 ### `MetaColumnUom`
 

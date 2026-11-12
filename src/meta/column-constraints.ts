@@ -182,6 +182,26 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           );
         }
       }
+      // ── avatar — `color_field` names the PHYSICAL sibling column that
+      //    persists the per-row avatar color (same rule as `uom.field` —
+      //    the companion datum lives on a stored sibling). The avatar
+      //    column itself carries the initials; `avatar` is legal only on
+      //    `type:"avatar"`.
+      if (col.avatar !== undefined) {
+        if (col.type !== "avatar") {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares avatar on type "${col.type}" — ` +
+              `the avatar renderer applies to type:"avatar" columns only`,
+          );
+        }
+        const colorField = col.avatar.color_field;
+        if (!persistence.columns[colorField] || hiddenKeys.has(colorField)) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" avatar.color_field "${colorField}" must name a physical column on the entity class — ` +
+              `the per-row avatar color is persisted on that sibling column`,
+          );
+        }
+      }
       // ── depends_on — ONE declared edge to a PHYSICAL sibling column
       //    (the pivot is a stored value on the same record — same rule as
       //    `uom.field`). `filter_field` parametrizes the options `/list`
