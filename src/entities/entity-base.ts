@@ -85,6 +85,7 @@ export function Clonable<TBase extends EntityCtor>(Base: TBase) {
     @CloneField()
     cloned_from?: string;
 
+    @Column({ jsType: "instant", nullable: true })
     @CloneField(CloneFieldType.CLONED_AT)
     cloned_at?: Date;
 
