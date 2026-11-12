@@ -201,6 +201,13 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               `the per-row avatar color is persisted on that sibling column`,
           );
         }
+        const initialsField = col.avatar.initials_field;
+        if (initialsField !== undefined && (!persistence.columns[initialsField] || hiddenKeys.has(initialsField))) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" avatar.initials_field "${initialsField}" must name a physical column on the entity class — ` +
+              `the initials derive from that sibling's value`,
+          );
+        }
       }
       // ── depends_on — ONE declared edge to a PHYSICAL sibling column
       //    (the pivot is a stored value on the same record — same rule as
