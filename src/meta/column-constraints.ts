@@ -44,7 +44,7 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
-const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors"]);
+const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
 
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
   meta: T,
