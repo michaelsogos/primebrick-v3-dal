@@ -12,6 +12,7 @@ import {
 } from "../meta/entity-meta.js";
 import {
   AuditableFieldType,
+  CloneFieldType,
   DeletableFieldType,
 } from "../meta/entity-decorators.js";
 import {
@@ -2354,10 +2355,20 @@ SELECT * FROM w`;
     // Set the new UUID
     clonedRecord[uuidColMeta.sqlName] = newUuid;
 
-    // Set the clone-tracking field to source UUID
+    // Set the clone-tracking field to source UUID, and stamp the
+    // immutable clone-audit pair (cloned_at / cloned_by) when declared —
+    // mirror of the CLONE audit-trail row the entity may emit below.
     const cloneField = Object.values(meta.columns).find((c) => c.isClone);
     if (cloneField) {
       clonedRecord[cloneField.sqlName] = sourceUuid;
+    }
+    const clonedAtField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_AT);
+    if (clonedAtField) {
+      clonedRecord[clonedAtField.sqlName] = now;
+    }
+    const clonedByField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_BY);
+    if (clonedByField && actor !== undefined) {
+      clonedRecord[clonedByField.sqlName] = actor;
     }
 
     // Build and execute INSERT

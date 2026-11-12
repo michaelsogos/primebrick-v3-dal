@@ -1531,11 +1531,15 @@ both are required (the Dal write-path signatures already do this).
 
 ### `IClonableEntity`
 
-Entity supports cloning (cloned_from stores UUID of source record).
+Entity supports cloning — `cloned_from` points at the source record;
+ `cloned_at`/`cloned_by` are the immutable clone-audit pair the write
+ path stamps at clone time.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | cloned_from | `string` |  |
+| cloned_at | `Date` |  |
+| cloned_by | `string` |  |
 
 ### `IDeletableEntity`
 
@@ -2175,6 +2179,10 @@ SIBLING column that persists the per-row avatar color — same pattern
 value carries the initials; the sibling carries the color.
 The sibling requirement is verified by `withColumnConstraints`: an
 avatar column without its color column is a construction error.
+`initials_field` (optional) names the sibling column the initials
+DERIVE from (typically `display_name`): edit surfaces recompute the
+initials live from it and persist the derived value when that sibling
+crosses the wire. Same physical-column rule as `color_field`.
 
 ### `MetaColumnDependsCondition`
 
@@ -3583,9 +3591,27 @@ Assigns the single strictest tier that applies, or `null` if no rule matches.
 | eMeta | `SchemaColumnMeta` |  |
 | dMeta | `SchemaColumnMeta` |  |
 
-### `CloneField(): PropertyDecorator`
+### `Clonable(Base): { prototype: ClonableEntity<any> } & TBase`
 
-Marks a field as clone tracking (cloned_from). Stores UUID of the source record.
+Adds the immutable clone-audit triple — `cloned_from` (self-ref to the
+ source record), `cloned_at` (clone instant), `cloned_by` (clone actor,
+ user_profile ref). All three are clone-write-path-owned: written once
+ at clone time, never user-editable.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| Base | `TBase` |  |
+
+### `CloneField(what): PropertyDecorator`
+
+Marks a field as clone tracking. `@CloneField()` defaults to
+ `CLONED_FROM` — the single source-record pointer (`isClone`, exactly
+ one per entity). `CLONED_AT`/`CLONED_BY` mark the immutable
+ clone-audit columns the write path populates at clone time.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| what | `CloneFieldType` |  |
 
 ### `cmp(a, b): -1 \| 0 \| 1`
 
@@ -3619,7 +3645,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -4460,7 +4486,9 @@ are platform-stable.
 ### `orderedColumns(columns): MetaColumn[]`
 
 Columns in display order: sticky group → normal group → audited group,
-each sorted by `order`.
+each sorted by `order`. A column without `order` falls back to its own
+array index (the contract's last resort) — a raw `order - order`
+comparator returns NaN on undefined and corrupts the whole sort.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

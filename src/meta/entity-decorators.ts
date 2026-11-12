@@ -42,6 +42,16 @@ export enum SynchronizableFieldType {
   LAST_SYNCED_AT = "LAST_SYNCED_AT",
 }
 
+export enum CloneFieldType {
+  /** Source-record pointer (`cloned_from` — uuid of the record this one
+   *  was cloned from; self-ref to the owning entity). */
+  CLONED_FROM = "CLONED_FROM",
+  /** Clone instant (`cloned_at` — timestamptz written at clone time). */
+  CLONED_AT = "CLONED_AT",
+  /** Clone actor (`cloned_by` — user_profile ref written at clone time). */
+  CLONED_BY = "CLONED_BY",
+}
+
 export type IndexMethod = "btree" | "hash" | "gin" | "gist" | "spgist" | "brin" | "hnsw";
 
 /** Options for `@Index()` — plain (non-unique) secondary indexes of any PG access method. */
@@ -132,6 +142,7 @@ type ColumnRegistration = {
   synchronizableType?: SynchronizableFieldType;
   /** Clone field metadata */
   isClone?: boolean;
+  cloneType?: CloneFieldType;
   /** `@Ref("entity_name")` — the column's value identifies a record of that
    *  entity (served-meta ref contract: `type:"ref"` + `ref.entity`). Meta-
    *  only — no DDL FK is emitted; the target may live in another schema's
@@ -603,13 +614,18 @@ export function SynchronizableField(what: SynchronizableFieldType): PropertyDeco
   };
 }
 
-/** Marks a field as clone tracking (cloned_from). Stores UUID of the source record. */
-export function CloneField(): PropertyDecorator {
+/** Marks a field as clone tracking. `@CloneField()` defaults to
+ *  `CLONED_FROM` — the single source-record pointer (`isClone`, exactly
+ *  one per entity). `CLONED_AT`/`CLONED_BY` mark the immutable
+ *  clone-audit columns the write path populates at clone time. */
+export function CloneField(what?: CloneFieldType): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
-    col.isClone = true;
+    const type = what ?? CloneFieldType.CLONED_FROM;
+    col.cloneType = type;
     col.nullable = true;
+    if (type === CloneFieldType.CLONED_FROM) col.isClone = true;
 
   };
 }
@@ -888,6 +904,7 @@ export type EntityPersistenceMeta = {
       isSynchronizable?: boolean;
       synchronizableType?: SynchronizableFieldType;
       isClone?: boolean;
+      cloneType?: CloneFieldType;
       /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
       refEntity?: string;
       castInJoin?: string;
@@ -1048,6 +1065,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isSynchronizable !== undefined) entry.isSynchronizable = reg.isSynchronizable;
     if (reg.synchronizableType !== undefined) entry.synchronizableType = reg.synchronizableType;
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
+    if (reg.cloneType !== undefined) entry.cloneType = reg.cloneType;
     if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;

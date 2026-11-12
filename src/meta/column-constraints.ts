@@ -34,7 +34,7 @@
  */
 import type { MetaColumn } from "@primebrick/core";
 import { numericKindOf } from "@primebrick/core";
-import { AuditableFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
+import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -428,9 +428,16 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     // contract (read projections already exclude isKey). Excluded unless it
     // IS the entity's public uid (legacy id-keyed tables).
     if (phys.isKey === true && key !== meta.uid) continue;
-    const isAudit = phys.isAuditable === true || phys.isDeletable === true;
+    const isAudit =
+      phys.isAuditable === true ||
+      phys.isDeletable === true ||
+      phys.isClone === true ||
+      phys.cloneType !== undefined;
     const isUid = key === meta.uid;
-    const colType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
+    // `cloned_from` self-references the owning entity — the source record
+    // lives in the same table, so the ref target is the entity itself.
+    const refEntity = phys.refEntity ?? (phys.isClone === true ? meta.entity : undefined);
+    const colType = refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
     const derived: MetaColumn = {
       key,
       // System columns share ONE translation dict (`system.common.fields.*`)
@@ -456,7 +463,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // distinct vocab of THIS table's actors, label-resolved through
       // user_profile by the entity's /audit-actors route.
       options_source: isAuditActorColumn(phys) ? "audit.actors" : undefined,
-      ...(phys.refEntity !== undefined ? { ref: { entity: phys.refEntity } } : {}),
+      ...(refEntity !== undefined ? { ref: { entity: refEntity } } : {}),
     };
     columns.push(injectDerived(derived));
   }
@@ -483,6 +490,7 @@ const COMMON_SYSTEM_FIELD_KEYS = new Set([
   "id", "uuid", "version",
   "created_at", "created_by", "updated_at", "updated_by",
   "deleted_at", "deleted_by",
+  "cloned_from", "cloned_at", "cloned_by",
 ]);
 
 /** Audit actor physical columns — `@AuditableField(CREATED_BY|UPDATED_BY)`
@@ -491,11 +499,13 @@ const COMMON_SYSTEM_FIELD_KEYS = new Set([
 function isAuditActorColumn(phys: {
   auditableType?: AuditableFieldType;
   deletableType?: DeletableFieldType;
+  cloneType?: CloneFieldType;
 }): boolean {
   return (
     phys.auditableType === AuditableFieldType.CREATED_BY ||
     phys.auditableType === AuditableFieldType.UPDATED_BY ||
-    phys.deletableType === DeletableFieldType.DELETED_BY
+    phys.deletableType === DeletableFieldType.DELETED_BY ||
+    phys.cloneType === CloneFieldType.CLONED_BY
   );
 }
 
