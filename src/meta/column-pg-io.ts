@@ -16,6 +16,7 @@
 import { Decimal, dec, toPG } from "@primebrick/core/decimal";
 import { Vector } from "../types/vector.js";
 import type { EntityPersistenceMeta } from "./entity-decorators.js";
+import type { JsType } from "./entity-ts-to-pg.js";
 
 export type ColumnPgPersistenceHints = {
   sqlName: string;
@@ -25,7 +26,7 @@ export type ColumnPgPersistenceHints = {
   inferredPgType: string;
   pgType?: string;
   /** Explicit runtime hydration marker — see `ColumnOptions.jsType`. */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: JsType;
   isAuditable?: boolean;
   auditableType?: string;
   isDeletable?: boolean;
@@ -126,6 +127,15 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
  */
 export function pgValueToJsValue(value: unknown, h: ColumnPgPersistenceHints): unknown {
   if (value === null || value === undefined) return value;
+  if (typeof h.jsType === "function") {
+    const cls = h.jsType;
+    if (value instanceof cls) return value;
+    const revive = (v: unknown): unknown =>
+      typeof cls.fromJson === "function"
+        ? cls.fromJson(v)
+        : Object.assign(Object.create(cls.prototype), v);
+    return Array.isArray(value) ? value.map(revive) : revive(value);
+  }
   if (isDecimalColumn(h)) {
     if (value instanceof Decimal) return value;
     if (typeof value === "string") return dec(value.replace(/d$/, ""));

@@ -7,6 +7,7 @@ import "reflect-metadata";
 import { describe, it, expect } from "vitest";
 
 import { translateFilterConditions } from "../src/query/list-filters.js";
+import { ValidationError } from "../src/errors/errors.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import type { FilterExpr } from "../src/query/dsl.js";
 
@@ -29,19 +30,24 @@ describe("translateFilterConditions", () => {
     expect(translateFilterConditions(SimpleTestEntity, [], { allowedFields: ALLOWED })).toBeNull();
   });
 
-  it("skips fields outside the allowlist and unknown ops (SQL-injection barrier)", () => {
-    const exprs = translateFilterConditions(
-      SimpleTestEntity,
-      [
-        { field: "name", op: "=", value: "a" },
-        { field: "password_hash; DROP TABLE", op: "=", value: "x" },
-        { field: "name", op: "DROP", value: "x" },
-      ],
-      { allowedFields: ALLOWED },
-    );
-    const leaves = innerLeaves(exprs);
-    expect(leaves).toHaveLength(1);
-    expect(leaves[0]!.left.key).toBe("name");
+  it("fails closed on fields outside the allowlist and on unknown ops", () => {
+    expect(() =>
+      translateFilterConditions(
+        SimpleTestEntity,
+        [
+          { field: "name", op: "=", value: "a" },
+          { field: "password_hash; DROP TABLE", op: "=", value: "x" },
+        ],
+        { allowedFields: ALLOWED },
+      ),
+    ).toThrow(ValidationError);
+    expect(() =>
+      translateFilterConditions(
+        SimpleTestEntity,
+        [{ field: "name", op: "DROP", value: "x" }],
+        { allowedFields: ALLOWED },
+      ),
+    ).toThrow(ValidationError);
   });
 
   it("LIKE/ILIKE without wildcard is wrapped %v%", () => {
@@ -90,19 +96,29 @@ describe("translateFilterConditions", () => {
     expect(leaves[0]!.right).toEqual(["a", "b"]);
   });
 
-  it("BETWEEN: {start,end} → [start,end]; half-open or scalar → skipped", () => {
+  it("BETWEEN: {start,end} → [start,end]; half-open or scalar → 400", () => {
     const exprs = translateFilterConditions(
       SimpleTestEntity,
-      [
-        { field: "name", op: "BETWEEN", value: { start: 1, end: 5 } },
-        { field: "name", op: "BETWEEN", value: { start: 1, end: null } },
-        { field: "name", op: "BETWEEN", value: "scalar" },
-      ],
+      [{ field: "name", op: "BETWEEN", value: { start: 1, end: 5 } }],
       { allowedFields: ALLOWED },
     );
     const leaves = innerLeaves(exprs);
     expect(leaves).toHaveLength(1);
     expect(leaves[0]!.right).toEqual([1, 5]);
+    expect(() =>
+      translateFilterConditions(
+        SimpleTestEntity,
+        [{ field: "name", op: "BETWEEN", value: { start: 1, end: null } }],
+        { allowedFields: ALLOWED },
+      ),
+    ).toThrow(ValidationError);
+    expect(() =>
+      translateFilterConditions(
+        SimpleTestEntity,
+        [{ field: "name", op: "BETWEEN", value: "scalar" }],
+        { allowedFields: ALLOWED },
+      ),
+    ).toThrow(ValidationError);
   });
 
   it("multiple conditions are grouped under one connector (default AND, OR override)", () => {
@@ -132,17 +148,19 @@ describe("translateFilterConditions", () => {
     expect(innerOr.connector).toBe("OR");
   });
 
-  it("validOps override narrows the operator allowlist", () => {
+  it("validOps override narrows the operator allowlist (off-list op → 400)", () => {
     const exprs = translateFilterConditions(
       SimpleTestEntity,
-      [
-        { field: "name", op: "ILIKE", value: "x" },
-        { field: "name", op: "=", value: "y" },
-      ],
+      [{ field: "name", op: "=", value: "y" }],
       { allowedFields: ALLOWED, validOps: new Set(["="]) },
     );
-    const leaves = innerLeaves(exprs);
-    expect(leaves).toHaveLength(1);
-    expect(leaves[0]!.op).toBe("=");
+    expect(innerLeaves(exprs)[0]!.op).toBe("=");
+    expect(() =>
+      translateFilterConditions(
+        SimpleTestEntity,
+        [{ field: "name", op: "ILIKE", value: "x" }],
+        { allowedFields: ALLOWED, validOps: new Set(["="]) },
+      ),
+    ).toThrow(ValidationError);
   });
 });

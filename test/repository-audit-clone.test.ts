@@ -96,7 +96,7 @@ describe("Repository — clone operation", () => {
 
   it("clone: throws NotFoundError for non-existent UUID", async () => {
     await expect(
-      repo.clone(SimpleTestEntity, "00000000-0000-0000-0000-000000000000", { actor: "u" }),
+      repo.clone(SimpleTestEntity, "00000000-0000-7000-8000-000000000000", { actor: "u" }),
     ).rejects.toThrow();
   });
 });
@@ -283,7 +283,7 @@ describe("Repository — audit-on-all-writes", () => {
   it("upsert: writes INSERT audit entry on new row", async () => {
     const upserted = await repo.upsert(
       SimpleTestEntity,
-      { name: "Upserted", uuid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+      { name: "Upserted", uuid: "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa" },
       { actor: "upserter", audit: auditPort, conflictTarget: "uuid" },
     );
 

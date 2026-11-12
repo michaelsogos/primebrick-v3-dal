@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../src/types/uuid.js";
 import { Repository }
 from "../src/index.js";
 import { REPO_INTERNAL } from "../src/repository/repository.js";
@@ -54,7 +54,7 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS dal_test_composite (
         id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        uuid   uuid NOT NULL DEFAULT gen_random_uuid(),
+        uuid   uuid NOT NULL DEFAULT uuidv7(),
         name   text,
         grp_a  text,
         grp_b  text
@@ -66,12 +66,17 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS dal_test_manual (
         id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        uuid   uuid NOT NULL DEFAULT gen_random_uuid(),
+        uuid   uuid NOT NULL DEFAULT uuidv7(),
         name   text,
         email  text
       );
       CREATE UNIQUE INDEX IF NOT EXISTS dal_test_manual_uuid_idx ON dal_test_manual (uuid);
       CREATE UNIQUE INDEX IF NOT EXISTS dal_test_manual_email_manual_idx ON dal_test_manual (email);
+    `);
+    // Realign uuid defaults on pre-existing tables (same reason as setup.ts).
+    await pool.query(`
+      ALTER TABLE dal_test_composite ALTER COLUMN uuid SET DEFAULT uuidv7();
+      ALTER TABLE dal_test_manual ALTER COLUMN uuid SET DEFAULT uuidv7();
     `);
   });
 
@@ -306,7 +311,7 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
   // ─── ERR06 — bulk wall-clock timeout ───────────────────────────────
 
   it("ERR06/57014: addMany timeoutMs=1 → the budget kills the op, rows rolled back (code is RACY: ERR06 | 57014)", async () => {
-    const rows = Array.from({ length: 20 }, (_, i) => ({ uuid: randomUUID(), name: `T${i}` }));
+    const rows = Array.from({ length: 20 }, (_, i) => ({ uuid: newUuidV7(), name: `T${i}` }));
     const err = await capture(repo.addMany(SimpleTestEntity, rows, { actor: "u", timeoutMs: 1 }));
     // Empirically nondeterministic: statement_timeout (57014) and the JS
     // deadline check (BulkTimeoutError/ERR06) race — same input, different
@@ -711,7 +716,7 @@ describe("ERRxx matrix — every DAL error code, end-to-end", () => {
   it("PROBE: timeoutMs sweep — 57014 vs ERR06 boundary", async () => {
     const results: Record<number, string> = {};
     for (const budget of [1, 5, 20, 100, 500]) {
-      const rows = Array.from({ length: 30 }, (_, i) => ({ uuid: randomUUID(), name: `B${budget}-${i}` }));
+      const rows = Array.from({ length: 30 }, (_, i) => ({ uuid: newUuidV7(), name: `B${budget}-${i}` }));
       const code = await repo
         .addMany(SimpleTestEntity, rows, { actor: "u", timeoutMs: budget })
         .then(() => "no-error")

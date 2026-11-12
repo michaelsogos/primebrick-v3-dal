@@ -28,6 +28,7 @@
 
 import { getDal } from "../dal/dal.js";
 import type { Dal } from "../dal/dal.js";
+import { getDictFacet } from "../meta/entity-decorators.js";
 import type { Repository } from "../repository/repository.js";
 import type {
   BulkItem,
@@ -54,6 +55,12 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   /** The composed generic CRUD service — same machinery as the entity-router. */
   protected get svc(): EntityService<TEntity> {
     return (this._svc ??= this.dal.entityService(this.buildConfig()));
+  }
+
+  /** The entity's `dict` facet when the class carries `@Dict` — the
+   *  entity-router's assembleMeta injects it into the served meta. */
+  get dictFacet() {
+    return getDictFacet(this.cfg.entity);
   }
 
   /**
@@ -101,6 +108,9 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   }
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
+  }
+  auditActors(): Promise<{ value: string; label: string }[]> {
+    return this.svc.auditActors();
   }
   stream(query: EntityListQuery): AsyncGenerator<TEntity> {
     return this.svc.stream(query);

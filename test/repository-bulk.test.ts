@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../src/types/uuid.js";
 import { Repository, ValidationError }
 from "../src/index.js";
 import { REPO_INTERNAL } from "../src/repository/repository.js";
@@ -37,7 +37,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
   it("addMany: inserts multiple rows (verified via findAll)", async () => {
     const rows = Array.from({ length: 5 }, (_, i) => ({
-      uuid: randomUUID(),
+      uuid: newUuidV7(),
       name: `Bulk ${i}`,
     }));
 
@@ -62,13 +62,13 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("addMany: unique conflict raises ERR04 and rolls back the whole batch", async () => {
-    const existingUuid = randomUUID();
+    const existingUuid = newUuidV7();
     await repo.add(SimpleTestEntity, { uuid: existingUuid, name: "Existing" }, { actor: "bulk-user" });
 
     const rows = [
-      { uuid: randomUUID(), name: "New 1" },
+      { uuid: newUuidV7(), name: "New 1" },
       { uuid: existingUuid, name: "Conflict" },
-      { uuid: randomUUID(), name: "New 2" },
+      { uuid: newUuidV7(), name: "New 2" },
     ];
 
     const err = await repo.addMany(SimpleTestEntity, rows, { actor: "bulk-user" }).catch((e) => e);
@@ -87,7 +87,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("addMany: all-soft-deleted conflicts raise ERR05", async () => {
-    const uuids = [randomUUID(), randomUUID()];
+    const uuids = [newUuidV7(), newUuidV7()];
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Soft ${i}` })),
@@ -111,7 +111,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("addMany: conflict detail is capped at 10 rows while conflicts reports the real total", async () => {
-    const uuids = Array.from({ length: 15 }, () => randomUUID());
+    const uuids = Array.from({ length: 15 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Cap ${i}` })),
@@ -172,7 +172,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
   it("upsertMany: updates on conflict (mixed insert + update)", async () => {
     // First, add 3 existing rows with known uuids
-    const existingUuids = Array.from({ length: 3 }, () => randomUUID());
+    const existingUuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       existingUuids.map((uuid, i) => ({ uuid, name: `Existing ${i}` })),
@@ -226,7 +226,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   // ─── deleteMany ───────────────────────────────────────────────────
 
   it("deleteMany: soft-deletes multiple rows by uuid", async () => {
-    const uuids = Array.from({ length: 5 }, () => randomUUID());
+    const uuids = Array.from({ length: 5 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Delete ${i}` })),
@@ -260,9 +260,9 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("deleteMany: one vanished row raises ERR03 and rolls back — nothing deleted", async () => {
-    const uuid = randomUUID();
+    const uuid = newUuidV7();
     await repo.add(SimpleTestEntity, { uuid, name: "One" }, { actor: "bulk-user" });
-    const ghost = randomUUID();
+    const ghost = newUuidV7();
 
     let caught: unknown;
     try {
@@ -291,7 +291,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   // ─── updateMany (TEMP TABLE strategy) ─────────────────────────────
 
   it("updateMany: updates multiple rows via TEMP TABLE strategy", async () => {
-    const uuids = Array.from({ length: 5 }, () => randomUUID());
+    const uuids = Array.from({ length: 5 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Original ${i}` })),
@@ -314,7 +314,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("updateMany: throws ValidationError when no columns to update", async () => {
-    const uuids = Array.from({ length: 3 }, () => randomUUID());
+    const uuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `NoCol ${i}` })),
@@ -337,7 +337,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("updateMany: handles large batches (100 rows)", async () => {
-    const uuids = Array.from({ length: 100 }, () => randomUUID());
+    const uuids = Array.from({ length: 100 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Large ${i}` })),
@@ -362,7 +362,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
 
   it("addMany: timeoutMs=1 aborts the statement and rolls back — zero rows written", async () => {
     const rows = Array.from({ length: 5 }, (_, i) => ({
-      uuid: randomUUID(),
+      uuid: newUuidV7(),
       name: `Timeout ${i}`,
     }));
 
@@ -374,7 +374,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("updateMany: timeoutMs=1 aborts mid-operation — no update survives", async () => {
-    const uuids = Array.from({ length: 3 }, () => randomUUID());
+    const uuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Keep ${i}` })),
@@ -399,7 +399,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   // ─── expected_version guard ───────────────────────────────────────
 
   it("updateMany: missing version raises ERR02 with per-row detail — nothing written", async () => {
-    const uuids = Array.from({ length: 3 }, () => randomUUID());
+    const uuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `V ${i}` })),
@@ -431,7 +431,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("updateMany: stale version raises ERR01 with expected/actual per-row detail — rollback", async () => {
-    const uuids = Array.from({ length: 3 }, () => randomUUID());
+    const uuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `S ${i}` })),
@@ -461,7 +461,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("deleteMany: all rows vanished raises ERR03", async () => {
-    const ghosts = [randomUUID(), randomUUID()];
+    const ghosts = [newUuidV7(), newUuidV7()];
     let caught: unknown;
     try {
       await repo.deleteMany(
@@ -481,7 +481,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   // ─── restoreMany ──────────────────────────────────────────────────
 
   it("restoreMany: restores soft-deleted rows with version guard", async () => {
-    const uuids = Array.from({ length: 3 }, () => randomUUID());
+    const uuids = Array.from({ length: 3 }, () => newUuidV7());
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Res ${i}` })),
@@ -510,7 +510,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
   });
 
   it("restoreMany: stale version raises ERR01 — nothing restored", async () => {
-    const uuids = [randomUUID(), randomUUID()];
+    const uuids = [newUuidV7(), newUuidV7()];
     await repo.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `Res2 ${i}` })),

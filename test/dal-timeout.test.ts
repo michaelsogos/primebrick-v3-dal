@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../src/types/uuid.js";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
 import { Dal, Filter } from "../src/index.js";
@@ -113,7 +113,7 @@ describe("Dal timeout override — bulk ops + transaction", () => {
 
   it("updateMany with timeoutMs: completes with generous timeout", async () => {
     // First insert some rows — caller-provided uuids so we can update by uuid
-    const uuids = Array.from({ length: 5 }, () => randomUUID());
+    const uuids = Array.from({ length: 5 }, () => newUuidV7());
     await dal.addMany(
       SimpleTestEntity,
       uuids.map((uuid, i) => ({ uuid, name: `update-timeout-${i}` })),

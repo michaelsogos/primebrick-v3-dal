@@ -350,7 +350,17 @@ function rehydrateRow(
   for (const [k, v] of Object.entries(raw)) {
     const sqlName = rowKeyToSqlName?.get(k) ?? meta.columns[k]?.sqlName ?? propToSql.get(k) ?? k;
     const col = meta.columns[sqlName];
-    out[k] = col ? rehydrateValue(v, col) : v;
+    if (col) {
+      out[k] = rehydrateValue(v, col);
+      continue;
+    }
+    // @Calculated projections aren't physical columns — the declared result
+    // pgType is the hydration contract (e.g. numeric → Decimal instead of the
+    // driver's lossless string, timestamptz → Date passthrough).
+    const calc = meta.calculated?.[sqlName];
+    out[k] = calc?.pgType
+      ? pgValueToJsValue(v, { sqlName, inferredPgType: calc.pgType, pgType: calc.pgType })
+      : v;
   }
   return out;
 }

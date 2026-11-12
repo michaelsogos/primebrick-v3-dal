@@ -67,7 +67,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_simple (
       id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid        uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
       name        varchar(255) NOT NULL,
       description text,
       created_at  timestamptz NOT NULL DEFAULT now(),
@@ -111,7 +111,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_users (
       id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid        uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
       display_name text NOT NULL,
       idp_code    text NOT NULL,
       created_at  timestamptz NOT NULL DEFAULT now(),
@@ -132,7 +132,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS user_profiles (
       id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid         uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid         uuid NOT NULL DEFAULT uuidv7(),
       idp_code     varchar(255) NOT NULL,
       display_name varchar(255)
     );
@@ -143,7 +143,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_types (
       id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid            uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid            uuid NOT NULL DEFAULT uuidv7(),
       int_col         integer NOT NULL,
       bigint_col      bigint NOT NULL,
       bool_col        boolean NOT NULL,
@@ -170,7 +170,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS test_bench_simple (
       id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid        uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
       code        varchar(50) NOT NULL,
       name        varchar(200) NOT NULL,
       status      varchar(20) NOT NULL DEFAULT 'active',
@@ -189,7 +189,7 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS test_bench_primitives (
       id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      uuid            uuid NOT NULL DEFAULT gen_random_uuid(),
+      uuid            uuid NOT NULL DEFAULT uuidv7(),
       int2_val        smallint,
       int4_val        integer,
       int8_val        bigint,
@@ -218,6 +218,18 @@ export async function setupTestSchema(): Promise<void> {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS test_bench_primitives_uuid_idx ON test_bench_primitives (uuid);
   `);
+
+  // Realign uuid defaults on pre-existing test tables — CREATE TABLE
+  // IF NOT EXISTS leaves stale gen_random_uuid() defaults behind.
+  for (const table of [
+    "dal_test_simple",
+    "dal_test_users",
+    "dal_test_types",
+    "test_bench_simple",
+    "test_bench_primitives",
+  ]) {
+    await db.query(`ALTER TABLE ${table} ALTER COLUMN uuid SET DEFAULT uuidv7()`);
+  }
 }
 
 /**

@@ -56,9 +56,10 @@ function indexDdl(ix: SchemaIndexMeta, t: { schema: string; name: string }, conc
   const cols = ix.columns.map((c) => (ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c))).join(", ");
   const unique = ix.isUnique ? "UNIQUE " : "";
   const using = ix.using === "btree" ? "" : ` USING ${ix.using}`;
+  const nnd = ix.isUnique && ix.nullsNotDistinct ? " NULLS NOT DISTINCT" : "";
   const where = ix.where ? ` WHERE ${ix.where}` : "";
   const conc = concurrently ? " CONCURRENTLY" : "";
-  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${cols})${where};`;
+  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${cols})${nnd}${where};`;
 }
 
 function fkActionSql(action: string): string {
@@ -77,7 +78,7 @@ function partitionSetupSql(t: SchemaTableMeta): string[] {
   const p = t.partition!;
   const fq = `${t.schema}.${t.name}`;
   const lines = [
-    `SELECT partman.create_parent('${fq}', '${p.column}', 'native', '${p.interval}'${p.premake !== undefined ? `, ${p.premake}` : ""});`,
+    `SELECT partman.create_parent('${fq}', '${p.column}', '${p.interval}', 'range'${p.premake !== undefined ? `, p_premake => ${p.premake}` : ""});`,
   ];
   const sets: string[] = [];
   if (p.retention !== undefined) sets.push(`retention = '${p.retention}'`);
@@ -170,9 +171,10 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     }
 
     // indexes (new table → plain CREATE INDEX, always fast on empty tables).
-    // Unique groups are already emitted as UNIQUE constraints / *_uq indexes below.
+    // Composite @Unique groups land here (isUnique + multi-column); single-col
+    // uniques are emitted per-column below.
     for (const ix of t.indexes ?? []) {
-      if (ix.isUnique) continue;
+      if (ix.isUnique && ix.columns.length <= 1) continue;
       safe.push(indexDdl(ix, t, false));
     }
     // single-column uniques not covered by composite UNIQUE constraints
@@ -192,20 +194,23 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     if (t.isAuditable) {
       const auditTableName = `${t.name}_audit`;
       const fqAudit = `${quoteIdent(t.schema)}.${quoteIdent(auditTableName)}`;
+      // `entity_id` is emitted only while the entity still carries the
+      // surrogate bigint `id` — uuid-PK entities write uuid-shaped audits.
+      const hasSurrogateId = t.columns["id"] !== undefined;
       safe.push(
         `CREATE TABLE IF NOT EXISTS ${fqAudit} (`,
         `  "id" bigint generated always as identity NOT NULL,`,
-        `  "entity_id" bigint NOT NULL,`,
+        ...(hasSurrogateId ? [`  "entity_id" bigint NOT NULL,`] : []),
         `  "entity_uuid" uuid NOT NULL,`,
         `  "action" text NOT NULL,`,
         `  "changed_at" timestamptz NOT NULL,`,
         `  "changed_by" text NOT NULL DEFAULT 'system',`,
         `  "version" integer NOT NULL,`,
         `  "delta" jsonb NOT NULL,`,
-        `  PRIMARY KEY ("id")`,
-        `);`,
+        `  PRIMARY KEY ("id", "changed_at")`,
+        `) PARTITION BY RANGE ("changed_at");`,
         "",
-        `SELECT partman.create_parent('${fqAudit}', 'changed_at', 'native', 'monthly');`,
+        `SELECT partman.create_parent('${t.schema}.${auditTableName}', 'changed_at', '1 month', 'range');`,
         "",
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_entity_uuid_idx`)} ON ${fqAudit} ("entity_uuid");`,
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_action_idx`)} ON ${fqAudit} ("action");`,

@@ -40,6 +40,8 @@ export type SchemaIndexMeta = {
   /** Partial-index predicate */
   where?: string;
   isUnique?: boolean;
+  /** PG15+ `NULLS NOT DISTINCT` on unique indexes — NULL members conflict. */
+  nullsNotDistinct?: boolean;
 };
 
 export type SchemaForeignKeyMeta = {

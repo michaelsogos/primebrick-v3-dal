@@ -21,12 +21,12 @@ export type BuildEntitySnapshotOptions = {
 
 /** `@Unique()` columns grouped into index metas (single-col uniques = group of one). */
 function uniqueGroups(meta: EntityPersistenceMeta): SchemaIndexMeta[] {
-  const groups = new Map<string, { col: string; order: number }[]>();
+  const groups = new Map<string, { col: string; order: number; nnd?: boolean }[]>();
   for (const c of Object.values(meta.columns)) {
     if (!c.isUnique) continue;
     const name = c.uniqueIndexName ?? `${meta.tableName}_${c.sqlName}_uq`;
     const g = groups.get(name) ?? [];
-    g.push({ col: c.sqlName, order: c.uniqueIndexOrder ?? 0 });
+    g.push({ col: c.sqlName, order: c.uniqueIndexOrder ?? 0, nnd: c.uniqueNullsNotDistinct });
     groups.set(name, g);
   }
   return [...groups.entries()].map(([name, cols]) => ({
@@ -34,6 +34,7 @@ function uniqueGroups(meta: EntityPersistenceMeta): SchemaIndexMeta[] {
     columns: cols.sort((a, b) => a.order - b.order).map((c) => c.col),
     using: "btree",
     isUnique: true,
+    ...(cols.some((c) => c.nnd) ? { nullsNotDistinct: true } : {}),
   }));
 }
 
@@ -55,6 +56,7 @@ export function collectEntityTypeWarnings(
         propertyKey: c.propertyKey,
         isKey: c.isKey,
         explicitPgType: c.pgType,
+        jsType: c.jsType,
         length: c.length,
         precision: c.precision,
         scale: c.scale,
@@ -92,6 +94,7 @@ export function buildEntitySnapshot(
             propertyKey: c.propertyKey,
             isKey: c.isKey,
             explicitPgType: c.pgType,
+            jsType: c.jsType,
             length: c.length,
             precision: c.precision,
             scale: c.scale,

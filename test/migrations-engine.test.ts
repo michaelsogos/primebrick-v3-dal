@@ -29,6 +29,8 @@ class FakeClient {
   registry = new Map<string, Record<string, unknown>>();
   lockFree = true;
   configEntries: Record<string, string> | null = {};
+  /** audit-table twins that exist in the catalog (`schema.table_audit`) */
+  auditTables = new Set<string>();
   /** patch_name → throw on first/always attempt */
   failOn: Record<string, string | undefined> = {};
   throwOnce = new Set<string>();
@@ -44,6 +46,11 @@ class FakeClient {
     if (/^SET /.test(t) || /SET LOCAL/.test(t)) return { rows: [], rowCount: 0 };
 
     if (/to_regclass/.test(t)) {
+      // seed-audit-trail probe: unnest($1::text[]) carries the audit fq names
+      if (Array.isArray(params?.[0])) {
+        const rows = (params[0] as string[]).map((a) => ({ a, oid: this.auditTables.has(a) ? "x" : null }));
+        return { rows, rowCount: rows.length };
+      }
       return { rows: [{ oid: this.configEntries ? "x" : null }], rowCount: 1 };
     }
     if (/config_entries/.test(t) && /db_migration\.mode/.test(t)) {
@@ -388,12 +395,54 @@ ALTER TABLE t ADD COLUMN y int;`
   });
 
   it("parsePatchPragmas reads the header contract", () => {
-    expect(parsePatchPragmas("-- pb:requires-review\n-- pb:no-transaction\nSQL")).toEqual({
-      requiresReview: true, noTransaction: true,
+    expect(parsePatchPragmas("-- pb:requires-review\n-- pb:no-transaction\n-- pb:no-audit-trail\nSQL")).toEqual({
+      requiresReview: true, noTransaction: true, noAuditTrail: true,
     });
     expect(parsePatchPragmas("SELECT 1;")).toEqual({
-      requiresReview: false, noTransaction: false,
+      requiresReview: false, noTransaction: false, noAuditTrail: false,
     });
+  });
+
+  it("seed into auditable table WITHOUT audit rows → failed (fail-closed)", async () => {
+    writePatch("20260101000000_seed", "INSERT INTO test.widgets (name) VALUES ('a');");
+    await writeManifestAndKeys(["20260101000000_seed"]);
+    const c = new FakeClient();
+    c.auditTables.add("test.widgets_audit");
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual([]);
+    expect(res.failed[0]?.patch_name).toBe("20260101000000_seed");
+    expect(res.failed[0]?.error).toContain("audit trail");
+    // nothing of the patch body executed — the check is pre-SQL
+    expect(c.queries.some((q) => /INSERT INTO test\.widgets \(/.test(q.text))).toBe(false);
+  });
+
+  it("seed into auditable table WITH audit rows → applied", async () => {
+    writePatch(
+      "20260101000000_seed",
+      "INSERT INTO test.widgets (name) VALUES ('a');\nINSERT INTO test.widgets_audit (entity_id) SELECT id FROM test.widgets;",
+    );
+    await writeManifestAndKeys(["20260101000000_seed"]);
+    const c = new FakeClient();
+    c.auditTables.add("test.widgets_audit");
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual(["20260101000000_seed"]);
+  });
+
+  it("-- pb:no-audit-trail opts the seed out explicitly", async () => {
+    writePatch("20260101000000_seed", "INSERT INTO test.widgets (name) VALUES ('a');", "-- pb:no-audit-trail");
+    await writeManifestAndKeys(["20260101000000_seed"]);
+    const c = new FakeClient();
+    c.auditTables.add("test.widgets_audit");
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual(["20260101000000_seed"]);
+  });
+
+  it("seed into a table with NO audit twin → applied (non-audited surface)", async () => {
+    writePatch("20260101000000_seed", "INSERT INTO test.telemetry (name) VALUES ('a');");
+    await writeManifestAndKeys(["20260101000000_seed"]);
+    const c = new FakeClient(); // auditTables empty → telemetry_audit does not exist
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual(["20260101000000_seed"]);
   });
 
   it("splitSqlStatements handles $$ bodies, strings and comments", () => {
@@ -410,5 +459,74 @@ ALTER TABLE t ADD COLUMN y int;`
     expect(stmts[0]).toContain("plpgsql");
     expect(stmts[1]).toContain("'a;b'");
     expect(stmts[2]).toContain("CREATE INDEX CONCURRENTLY");
+  });
+
+  it("translation-key grammar: valid INSERT into public.translations applies", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('app.common.move_up', 'en-GB', 'Move up'),
+       ('app.common.move_down', 'en-GB', 'Move down');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual(["20260101000000_i18n"]);
+  });
+
+  it("translation-key grammar: camelCase tuple key fails BEFORE any SQL runs", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('app.common.moveUp', 'en-GB', 'Move up');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.applied).toEqual([]);
+    expect(res.failed[0]!.error).toMatch(/malformed\/mis-scoped/);
+    expect(res.failed[0]!.error).toMatch(/moveUp/);
+    expect(c.queries.some((q) => q.text.includes("moveUp"))).toBe(false);
+  });
+
+  it("translation-key grammar: wrong-ns key into a schema fails (ns = owning schema)", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "public"."translations" ("key", "language", "value") VALUES
+       ('system.entities.list.title', 'en-GB', 'x');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.error).toMatch(/must start with 'app\.'/);
+  });
+
+  it("translation-key grammar: UPDATE SET key to a malformed value fails; WHERE key untouched", async () => {
+    writePatch(
+      "20260101000000_bad",
+      `UPDATE "crm"."translations" SET key = 'crm.entities.BadKey.rows.x' WHERE key = 'crm.entities.ok.rows.x';`,
+    );
+    writePatch(
+      "20260101000001_good",
+      `UPDATE "crm"."translations" SET key = 'crm.entities.ok.rows.y' WHERE key = 'crm.entities.ok.rows.x';`,
+    );
+    await writeManifestAndKeys(["20260101000000_bad", "20260101000001_good"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.patch_name).toBe("20260101000000_bad");
+    expect(res.failed[0]!.error).toMatch(/BadKey/);
+    expect(res.applied).toEqual([]); // ordering stops at the failed patch
+  });
+
+  it("translation-key grammar: service-schema ns enforced (crm accepts crm.*, rejects app.*)", async () => {
+    writePatch(
+      "20260101000000_i18n",
+      `INSERT INTO "crm"."translations" ("key", "language", "value") VALUES
+       ('app.widgets.numeric_input.increment', 'en-GB', 'x');`,
+    );
+    await writeManifestAndKeys(["20260101000000_i18n"]);
+    const c = new FakeClient();
+    const res = await runMigrations(opts(c).options);
+    expect(res.failed[0]!.error).toMatch(/must start with 'crm\.'/);
   });
 });

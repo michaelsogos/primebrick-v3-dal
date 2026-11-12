@@ -40,7 +40,7 @@
  *   owns the pool lifecycle).
  */
 
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../types/uuid.js";
 
 import { Repository } from "../repository/repository.js";
 import {
@@ -57,6 +57,7 @@ import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
 import {
+  AuditableFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
   type EntityClass,
@@ -158,6 +159,12 @@ export interface EntityServiceConfig<TEntity> {
   list: {
     searchableKeys: readonly string[];
     filterableKeys: ReadonlySet<string>;
+    /** Optional narrowing of the derived sortable universe (physical +
+     *  calculated column keys + aggregate aliases). When omitted, every
+     *  resolvable key is accepted; a `sort_key` outside the universe is
+     *  rejected with `ValidationError` BEFORE any SQL — never `ORDER BY`
+     *  on an arbitrary string. */
+    sortableKeys?: ReadonlySet<string>;
     defaultSort?: { key: string; dir: "asc" | "desc" };
     extraFilters?: (q: EntityListQuery) => FilterExpr[];
     aggregates?: AggregateDecl[];
@@ -191,7 +198,14 @@ export interface EntityService<TEntity> {
   bulkDelete(items: BulkItem[]): Promise<unknown>;
   bulkRestore(items: BulkItem[]): Promise<unknown>;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
+  /** `options_source:"audit.actors"` vocabulary feed — the distinct
+   *  writers of THIS table, label-resolved through `public.user_profiles`.
+   *  `[]` on entities with no audit actor columns. */
+  auditActors(): Promise<{ value: string; label: string }[]>;
   stream(query: EntityListQuery): AsyncGenerator<TEntity>;
+  /** The entity's `dict` facet when the class carries `@Dict` — the
+   *  entity-router injects it into served meta (`dict`). */
+  dictFacet?: import("@primebrick/core").DictFacet;
 }
 
 // ─── Standard audit port ─────────────────────────────────────────────────────
@@ -209,7 +223,10 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
       const inserted = await repo.add(
         AuditLogEntity,
         {
-          entity_id: params.entityId,
+          // `entity_id` exists only on pre-migration audit tables — omit the
+          // key entirely for uuid-PK entities (the column is dropped there;
+          // including it would target a nonexistent column).
+          ...(params.entityId != null ? { entity_id: params.entityId } : {}),
           entity_uuid: params.entityUuid,
           action: params.action,
           changed_at: params.changedAt,
@@ -217,7 +234,12 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
           version: params.version,
           delta: params.delta,
         },
-        { tableName: `${params.tableName}_audit` },
+        {
+          tableName: `${params.tableName}_audit`,
+          // RETURNING must reference only columns guaranteed on BOTH audit
+          // shapes (post-migration tables dropped `entity_id`) — project id.
+          returning: [Project.field(field(AuditLogEntity, "id"))],
+        },
       );
       return inserted.id;
     },
@@ -267,10 +289,10 @@ function toDto<T>(row: T): T {
   return out as T;
 }
 
-function projectAllExceptPk(entity: EntityClass): FieldProjector[] {
+function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
   const meta = getEntityPersistenceMeta(entity);
   return Object.values(meta.columns)
-    .filter((c) => !c.isKey)
+    .filter((c) => !(c.isKey && c.sqlName === "id"))
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
@@ -295,7 +317,36 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   const hasDeletedBy = Object.values(meta.columns).some(
     (c) => c.isDeletable && c.deletableType === DeletableFieldType.DELETED_BY,
   );
+
+  // uid + audit-actor columns are ALWAYS wire-filterable, on top of the
+  // service-declared `filterableKeys`: the uid powers ref/actor label
+  // `IN` lookups (`filters[i][field]=uuid`), and `*_by` columns feed
+  // `options_source:"audit.actors"` — the meta auto-derivation marks them
+  // filterable, so the wire allowlist must match the meta contract or the
+  // governed control would serialize criteria the backend then skips.
+  const wireAlwaysFilterable = new Set<string>(
+    Object.values(meta.columns)
+      .filter(
+        (c) =>
+          c.isUnique ||
+          c.auditableType === AuditableFieldType.CREATED_BY ||
+          c.auditableType === AuditableFieldType.UPDATED_BY ||
+          c.deletableType === DeletableFieldType.DELETED_BY,
+      )
+      .map((c) => c.propertyKey),
+  );
+  const allowedFilterFields: ReadonlySet<string> = new Set([
+    ...cfg.list.filterableKeys,
+    ...wireAlwaysFilterable,
+  ]);
   const auditable = isAuditableEntity(meta);
+  /** Audit actor column → user_profile join alias + the `*_by_name` display
+   *  column the join auto-projects (COALESCE display_name → raw actor). */
+  const AUDIT_ACTOR_JOIN_ALIAS: Readonly<Record<string, { join: string; nameAlias: string }>> = {
+    created_by: { join: "creator", nameAlias: "created_by_name" },
+    updated_by: { join: "updater", nameAlias: "updated_by_name" },
+    deleted_by: { join: "deleter", nameAlias: "deleted_by_name" },
+  };
   const joinsFor = (): JoinExpr[] =>
     auditable
       ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
@@ -303,6 +354,44 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         }) as JoinExpr[])
       : [];
   const repoFor = (tx?: Repository) => tx ?? repo;
+
+  /** Fail-closed `sort_key` gate: the wire can only sort on keys that
+   *  resolve to a real projection — physical columns, `@Calculated`
+   *  aliases, aggregate aliases — optionally narrowed by
+   *  `cfg.list.sortableKeys`. Anything else is a 400, never a 42703. */
+  const sortableUniverse = new Set<string>([
+    // the surrogate PK never enters the wire contract — unless it IS the
+    // entity's uid (legacy id-keyed tables, where id is also @Unique, or
+    // uuid-keyed tables where the PK itself is the public uid).
+    ...Object.values(meta.columns)
+      .filter((c) => !c.isKey || c.isUnique || c.sqlName === "uuid")
+      .map((c) => c.propertyKey),
+    ...Object.keys(meta.calculated),
+    ...(cfg.list.aggregates ?? []).map((a) => a.name),
+  ]);
+  const allowedSortKeys = cfg.list.sortableKeys
+    ? new Set([...cfg.list.sortableKeys].filter((k) => sortableUniverse.has(k)))
+    : sortableUniverse;
+  function assertSortableKey(sort_key: string): void {
+    if (!allowedSortKeys.has(sort_key)) {
+      throw new ValidationError(
+        `Invalid sort_key "${sort_key}" for ${meta.entityClassName} — must be one of: ${[...allowedSortKeys].sort().join(", ")}`,
+      );
+    }
+  }
+
+  /** Read projection = physical columns + every `@Calculated` prop — the
+   *  single place a calculated field becomes a SELECT column. `{self}`
+   *  resolves to the qualified base-table ref (same rendering as the
+   *  WHERE/ORDER BY substitution in the query builder). */
+  const selfRef = `"${meta.tableSchema}"."${meta.tableName}"`;
+  function projectRead(): FieldProjector[] {
+    const fields = projectAllExceptSurrogateId(cfg.entity) as unknown as FieldProjector[];
+    for (const c of Object.values(meta.calculated)) {
+      fields.push({ kind: "expr", expr: c.expr.replaceAll("{self}", selfRef), alias: c.sqlName });
+    }
+    return fields;
+  }
 
   function buildListFilters(q: EntityListQuery): FilterExpr[] {
     const filters: FilterExpr[] = [];
@@ -331,6 +420,19 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
                 ? [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", raw, "OR")]
                 : [Filter.fieldValue(field(cfg.entity, "uuid" as never), "ILIKE", needle, "OR")];
             }
+            const actorJoin = auditable ? AUDIT_ACTOR_JOIN_ALIAS[f] : undefined;
+            if (actorJoin) {
+              // Actor search resolves the user_profile join display_name —
+              // the searchable surface — COALESCE'd onto the raw actor value
+              // (same fallback as the `*_by_name` projection; a uuid column
+              // cannot serve ILIKE directly → 42883).
+              return [Filter.expr(
+                { sql: `COALESCE("${actorJoin.join}".display_name, ${selfRef}."${f}"::text)` },
+                "ILIKE",
+                { sql: "? ESCAPE '#'", params: [needle] },
+                "OR",
+              )];
+            }
             return [Filter.fieldValue(field(cfg.entity, f as never), "ILIKE", needle, "OR")];
           });
         if (ors.length) filters.push(Filter.group(ors, "OR"));
@@ -339,7 +441,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
 
     if (q.filters && q.filters.length > 0) {
       const translated = translateFilterConditions(cfg.entity, q.filters, {
-        allowedFields: cfg.list.filterableKeys,
+        allowedFields: allowedFilterFields,
         connector: q.connector ?? "AND",
       });
       if (translated) filters.push(...translated);
@@ -354,16 +456,15 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     groupBy?: ReturnType<typeof field>[];
   } {
     const aggregates = cfg.list.aggregates ?? [];
+    const hasCalculated = Object.keys(meta.calculated).length > 0;
     const joins = joinsFor();
-    if (aggregates.length === 0) {
+    if (aggregates.length === 0 && !hasCalculated) {
       return {
-        fields: projectAllExceptPk(cfg.entity) as unknown as FieldProjector[],
+        fields: projectAllExceptSurrogateId(cfg.entity) as unknown as FieldProjector[],
         joins,
       };
     }
-    const fields: FieldProjector[] = [
-      ...(projectAllExceptPk(cfg.entity) as unknown as FieldProjector[]),
-    ];
+    const fields: FieldProjector[] = projectRead();
     const pkProp = Object.values(meta.columns).find((c) => c.isKey)?.propertyKey;
     for (const agg of aggregates) {
       joins.push({
@@ -392,8 +493,12 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
           ? "ASC"
           : "DESC";
+      assertSortableKey(sort_key);
 
       const shape = buildListShape();
+      // Actor sort orders on the projected `*_by_name` display column (the
+      // sorted surface the FE shows), not the raw uuid.
+      const sortActor = auditable ? AUDIT_ACTOR_JOIN_ALIAS[sort_key] : undefined;
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
@@ -401,7 +506,11 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         shape.fields as never,
         {
           filters: buildListFilters(q),
-          sorting: [Sort.by(field(cfg.entity, sort_key as never), sort_dir)],
+          sorting: [
+            sortActor
+              ? Sort.byAlias(sortActor.nameAlias, sort_dir)
+              : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
+          ],
           deletedRecords: q.deleted_records ?? "EXCLUDED",
           joins: shape.joins,
           groupBy: shape.groupBy,
@@ -419,7 +528,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async get(uuid) {
       const row = await repo.find<TEntity, TEntity>(
         cfg.entity,
-        projectAllExceptPk(cfg.entity) as never,
+        projectRead() as never,
         {
           filters: [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", uuid)],
           joins: joinsFor(),
@@ -437,12 +546,12 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         cfg.entity,
         {
           ...(prepared as Record<string, unknown>),
-          uuid: (prepared as { uuid?: string }).uuid ?? randomUUID(),
+          uuid: (prepared as { uuid?: string }).uuid ?? newUuidV7(),
         },
         {
           actor: actor(),
           audit: auditPort,
-          returning: projectAllExceptPk(cfg.entity) as never,
+          returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
       const dto = toDto(row) as unknown as TEntity;
@@ -458,7 +567,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           actor: actor(),
           audit: auditPort,
-          returning: projectAllExceptPk(cfg.entity) as never,
+          returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
       const dto = toDto(row) as unknown as TEntity;
@@ -471,7 +580,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("delete", dto);
@@ -483,7 +592,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("restore", dto);
@@ -495,7 +604,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
-        returning: projectAllExceptPk(cfg.entity) as never,
+        returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
       const dto = toDto(row) as unknown as TEntity;
       await fireAfterWrite("purge", dto);
@@ -557,12 +666,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       };
     },
 
+    async auditActors() {
+      return repo.distinctAuditActors(cfg.entity);
+    },
+
     async *stream(q) {
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
       const sort_dir =
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
           ? "ASC"
           : "DESC";
+      assertSortableKey(sort_key);
       const shape = buildListShape();
       const iterable = await repo.findAll<TEntity, TEntity>(
         cfg.entity,
