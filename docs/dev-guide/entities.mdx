@@ -208,14 +208,25 @@ import { SynchronizableField, SynchronizableFieldType } from "@primebrick/dal-pg
 
 `SynchronizableFieldType` enum values: `LAST_SYNCED_AT` (`"LAST_SYNCED_AT"`).
 
-### `@CloneField()` — clone tracking
+### `@CloneField(type?)` — clone tracking & clone-audit
 
-Marks a column as the clone-tracking field. `Repository.clone()` stamps it with
-the source record's UUID so the clone knows its origin. See [Clone](./clone).
+Marks a column as part of the clone vocabulary. `Repository.clone()` stamps
+`CLONED_FROM` with the source record's UUID, `CLONED_AT` with the clone
+instant, and `CLONED_BY` with the actor. The default `Clonable` mixin
+composes all three — see [Clone](./clone).
 
 ```typescript
-@CloneField() cloned_from?: UUID | null;
+import { CloneField, CloneFieldType } from "@primebrick/dal-pg";
+
+@CloneField()                                        cloned_from?: UUID | null;
+@CloneField(CloneFieldType.CLONED_AT)                cloned_at?: Date | null;
+@CloneField(CloneFieldType.CLONED_BY) @Ref("user_profile") cloned_by?: string | null;
 ```
+
+`CloneFieldType` enum values: `CLONED_FROM` (the single source-pointer
+column — self-ref to the owning entity), `CLONED_AT`, `CLONED_BY` (audit
+actor — joins `audit.actors` in served meta). All three surface as
+`audited` columns by construction.
 
 ### `@AuditTrail()` — entity HAS an audit trail table
 
@@ -370,7 +381,7 @@ import type {
 | `IExposableEntity` | `uuid: string` | Entity has a public UUID safe to expose outside the system |
 | `IDeletableEntity` | `deleted_at?: Date; deleted_by?: string` | Entity supports soft delete |
 | `IAuditableEntity` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Entity has audit stamps + optimistic-lock version |
-| `IClonableEntity` | `cloned_from?: string` | Entity supports cloning |
+| `IClonableEntity` | `cloned_from?: string`, `cloned_at?: Date`, `cloned_by?: string` | Entity supports cloning |
 
 `IAuditableEntity` and `IDeletableEntity` are **independent** capabilities —
 an entity can be audited but hard-deleted (`api_keys`), deletable but not
@@ -395,8 +406,14 @@ import {
 |-------------|---------------|----------|
 | `Auditable(EntityBase)` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Every audited entity |
 | `Deletable(EntityBase)` | `deleted_at`, `deleted_by` | Soft-delete entities |
+| `Clonable(EntityBase)` | `cloned_from`, `cloned_at`, `cloned_by` | Cloneable entities |
 | `Deletable(Auditable(EntityBase))` | all seven | The common case |
 | `EntityBase` alone | none | Plain tables (logs, telemetry) |
+
+`Clonable` is orthogonal — compose it outside the audit/delete pair:
+`Clonable(Deletable(Auditable(EntityBase)))`. Its three columns are
+immutable clone stamps (written by `Repository.clone()`, never
+user-editable) and surface as `audited` in served meta.
 
 Each mixin is a real class in the prototype chain — the persistence layer
 merges decorated columns from every ancestor, so the subclass only declares
@@ -412,15 +429,15 @@ columns, soft delete, and clone tracking:
 import "reflect-metadata";
 import {
   Entity, Column, Key, Unique,
-  CloneField, AuditTrail,
-  EntityBase, Auditable, Deletable,
+  AuditTrail,
+  EntityBase, Auditable, Clonable, Deletable,
 } from "@primebrick/dal-pg";
 import type { IClonableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
 @AuditTrail()
 export class CustomerEntity
-  extends Deletable(Auditable(EntityBase))
+  extends Clonable(Deletable(Auditable(EntityBase)))
   implements IClonableEntity {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
@@ -429,7 +446,7 @@ export class CustomerEntity
   @Column({ nullable: false }) email!: string;
   @Column({ nullable: false, defaultSql: "false" }) is_active!: boolean;
 
-  @CloneField() cloned_from?: UUID | null;
+  // cloned_from / cloned_at / cloned_by — inherited from Clonable
 }
 ```
 
