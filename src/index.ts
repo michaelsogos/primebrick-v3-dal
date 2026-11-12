@@ -219,6 +219,7 @@ export { isAuditableEntity } from "./repository/repository.js";
 export {
   EntityBase,
   Auditable,
+  Clonable,
   Deletable,
   type EntityCtor,
 } from "./entities/entity-base.js";
