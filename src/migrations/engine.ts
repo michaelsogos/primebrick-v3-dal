@@ -81,6 +81,7 @@ type PatchFile = {
   sha256Raw: string;
   requiresReview: boolean;
   noTransaction: boolean;
+  noAuditTrail: boolean;
 };
 
 const noopLogger: LoggerPort = { error() {}, warn() {}, info() {} };
@@ -89,16 +90,187 @@ const noopLogger: LoggerPort = { error() {}, warn() {}, info() {} };
 export function parsePatchPragmas(raw: string): {
   requiresReview: boolean;
   noTransaction: boolean;
+  noAuditTrail: boolean;
 } {
   let requiresReview = false;
   let noTransaction = false;
+  let noAuditTrail = false;
   for (const line of raw.split("\n").slice(0, 40)) {
     const m = /^\s*--\s*pb:([a-z-]+)(?:\s+(\S+))?/.exec(line);
     if (!m) continue;
     if (m[1] === "requires-review") requiresReview = true;
     if (m[1] === "no-transaction") noTransaction = true;
+    if (m[1] === "no-audit-trail") noAuditTrail = true;
   }
-  return { requiresReview, noTransaction };
+  return { requiresReview, noTransaction, noAuditTrail };
+}
+
+/**
+ * Seed audit-trail enforcement — SQL seeds bypass the DAL, so `@AuditTrail`
+ * never fires for them: a patch that INSERTs into a table that HAS an audit
+ * twin (`<schema>.<table>_audit` exists in the catalog) must carry the
+ * matching audit INSERT rows itself, or opt out with
+ * `-- pb:no-audit-trail`. Missing trail = failed patch (fail-closed, same
+ * as a SQL error — caught before any of the file's SQL executes).
+ */
+const SEED_TARGET = /\bINSERT\s+INTO\s+"?(\w+)"?\s*\.\s*"?(\w+)"?/gi;
+/** Registry + internal tables — never audited, never flagged. */
+const SEED_AUDIT_EXEMPT_TABLES = new Set(["primebrick_database_patches"]);
+
+/**
+ * Translation-key grammar enforcement — seeds bypass the service-layer
+ * namespace guard, so a patch can write keys no HTTP call ever could.
+ * Every `INSERT INTO <schema>.translations` tuple key and every
+ * `UPDATE … SET key = '…'` literal must satisfy BOTH the namespace
+ * boundary (`<ns>` = the schema's owning namespace) AND the segment
+ * grammar (`[a-z0-9_]+` dot-separated, ≥2 segments). `WHERE key =` is
+ * intentionally NOT validated — rename migrations match the OLD key.
+ * No opt-out pragma: unlike `-- pb:no-audit-trail` there is no legal
+ * malformed key — an escape hatch would be a bug factory.
+ * Failed grammar = failed patch, caught before any SQL executes.
+ *
+ * Mirrors @primebrick/core `TRANSLATION_KEY_GRAMMAR` +
+ * `translationKeyNamespace` — this package is zero-dep by design; keep
+ * the two definitions byte-identical (see
+ * primebrick-v3-core/src/translation-keys.ts).
+ */
+const KEY_GRAMMAR = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+
+function translationKeyNs(schema: string): string {
+  return schema === "public" ? "app" : schema;
+}
+
+/** `INSERT INTO <schema>.translations (col,…) VALUES` — captures schema + column list. */
+const TX_INSERT = /\bINSERT\s+INTO\s+"?(\w+)"?\s*\.\s*"?translations"?\s*\(([^)]*)\)\s*VALUES/gi;
+/** `UPDATE <schema>.translations SET … key = 'lit'` — captures schema + new-key literal. */
+const TX_UPDATE_SET_KEY =
+  /\bUPDATE\s+"?(\w+)"?\s*\.\s*"?translations"?[^;]*?\bSET\b[^;]*?\bkey\b\s*=\s*'((?:[^']|'')*)'/gi;
+
+/** Split a `(a, 'b', …)` tuple body into raw column texts — string-literal aware ('' escapes, commas inside values). */
+function splitTupleBody(body: string): string[] {
+  const cols: string[] = [];
+  let cur = "";
+  let inStr = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]!;
+    if (inStr) {
+      cur += ch;
+      if (ch === "'") {
+        if (body[i + 1] === "'") {
+          cur += "'";
+          i++;
+        } else inStr = false;
+      }
+    } else if (ch === "'") {
+      inStr = true;
+      cur += ch;
+    } else if (ch === ",") {
+      cols.push(cur);
+      cur = "";
+    } else cur += ch;
+  }
+  cols.push(cur);
+  return cols;
+}
+
+/** Yield each top-level `(...)` tuple body after `from`, stopping at `;` — string-literal aware. */
+function* valueTuples(raw: string, from: number): Generator<string> {
+  let i = from;
+  while (i < raw.length && raw[i] !== ";") {
+    if (raw[i] === "-" && raw[i + 1] === "-") {
+      while (i < raw.length && raw[i] !== "\n") i++;
+      continue;
+    }
+    if (raw[i] === "(") {
+      let depth = 1;
+      let j = i + 1;
+      let inStr = false;
+      while (j < raw.length && depth > 0) {
+        const ch = raw[j]!;
+        if (inStr) {
+          if (ch === "'") {
+            if (raw[j + 1] === "'") j++;
+            else inStr = false;
+          }
+        } else if (ch === "'") inStr = true;
+        else if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+        j++;
+      }
+      yield raw.slice(i + 1, j - 1);
+      i = j;
+    } else i++;
+  }
+}
+
+/** Strip a SQL string literal — `'it''s'` → `it's`; returns null for non-literals. */
+function unquote(raw: string): string | null {
+  const t = raw.trim();
+  if (t.length < 2 || !t.startsWith("'") || !t.endsWith("'")) return null;
+  return t.slice(1, -1).replace(/''/g, "'");
+}
+
+function assertTranslationKeyGrammar(f: PatchFile): void {
+  const bad: string[] = [];
+  const check = (schema: string, key: string | null) => {
+    if (key === null) return;
+    const ns = translationKeyNs(schema);
+    if (!KEY_GRAMMAR.test(key))
+      bad.push(`'${key}' — segments must be lowercase snake_case, ≥2 dot-separated ([a-z0-9_]+)`);
+    else if (!key.startsWith(`${ns}.`))
+      bad.push(`'${key}' — keys seeded into ${schema}.translations must start with '${ns}.'`);
+  };
+  TX_INSERT.lastIndex = 0;
+  let ins: RegExpExecArray | null;
+  while ((ins = TX_INSERT.exec(f.raw))) {
+    const schema = ins[1]!.toLowerCase();
+    const cols = ins[2]!.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    const keyIdx = cols.indexOf("key");
+    if (keyIdx < 0) continue;
+    for (const body of valueTuples(f.raw, TX_INSERT.lastIndex))
+      check(schema, unquote(splitTupleBody(body)[keyIdx] ?? ""));
+  }
+  TX_UPDATE_SET_KEY.lastIndex = 0;
+  let upd: RegExpExecArray | null;
+  while ((upd = TX_UPDATE_SET_KEY.exec(f.raw)))
+    check(upd[1]!.toLowerCase(), upd[2]!.replace(/''/g, "'"));
+  if (bad.length)
+    throw new Error(
+      `db-migration: ${f.filename} writes malformed/mis-scoped translation key(s): ${bad.join("; ")} — grammar '^<ns>(.[a-z0-9_]+)+$', ns = the schema's owning namespace`,
+    );
+}
+
+async function assertSeedAuditTrail(client: PoolClient, f: PatchFile): Promise<void> {
+  const targets = new Map<string, string>(); // "schema.table" → "schema.table_audit"
+  SEED_TARGET.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SEED_TARGET.exec(f.raw))) {
+    const schema = m[1]!.toLowerCase();
+    const table = m[2]!.toLowerCase();
+    if (table.endsWith("_audit") || SEED_AUDIT_EXEMPT_TABLES.has(table)) continue;
+    targets.set(`${schema}.${table}`, `${schema}.${table}_audit`);
+  }
+  if (!targets.size) return;
+  const auditNames = [...targets.values()];
+  const found = await client.query<{ a: string; oid: string | null }>(
+    `SELECT a, to_regclass(a) AS oid FROM unnest($1::text[]) AS a`,
+    [auditNames],
+  );
+  const existing = new Set(found.rows.filter((r) => r.oid !== null).map((r) => r.a));
+  const missing: string[] = [];
+  for (const [fq, auditFq] of targets) {
+    if (!existing.has(auditFq)) continue;
+    const auditInsert = new RegExp(
+      `\\bINSERT\\s+INTO\\s+"?${fq.split(".")[0]}"?\\s*\\.\\s*"?${fq.split(".")[1]}_audit"?`,
+      "i",
+    );
+    if (!auditInsert.test(f.raw)) missing.push(fq);
+  }
+  if (missing.length) {
+    throw new Error(
+      `db-migration: ${f.filename} seeds auditable table(s) ${missing.join(", ")} without an audit trail — SQL seeds bypass the DAL so @AuditTrail never fires; add the <table>_audit INSERT rows or opt out with '-- pb:no-audit-trail'`,
+    );
+  }
 }
 
 function listPatchFiles(dir: string): string[] {
@@ -280,6 +452,8 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
 
       const startedAt = Date.now();
       try {
+        assertTranslationKeyGrammar(f);
+        if (!f.noAuditTrail) await assertSeedAuditTrail(client, f);
         const segments = parsePatchSegments(f.raw);
         const atomic = segments.length === 1 && segments[0]!.kind === "tx";
         if (atomic) {

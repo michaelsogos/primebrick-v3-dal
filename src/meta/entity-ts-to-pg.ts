@@ -36,6 +36,13 @@ export type EntityColumnTypeHints = {
   auditableType?: string;
   deletableType?: string;
   synchronizableType?: string;
+  /** `@Key({ generated })` — `"identity"` keys are surrogate int8 columns
+   *  by construction: the decorator semantics already pin the storage. */
+  keyGenerated?: string;
+  /** `@Column({ jsType })` runtime type hint — a builtin codec name or a
+   *  class ctor (jsonb instance revival). Also pins storage since the TS
+   *  annotation is erased at transpile. */
+  jsType?: JsType;
   /** Static source annotation (present in the schema pipeline; absent at
    *  runtime — runtime io never needs it, it drives params via value shape). */
   annotation?: EntityAnnotationInfo;
@@ -57,6 +64,29 @@ const DELETABLE_TYPE_PINS: Record<string, string> = {
 const SYNCHRONIZABLE_TYPE_PINS: Record<string, string> = {
   LAST_SYNCED_AT: "timestamptz",
 };
+/** `jsType` runtime codec hints pin storage too — `instant` props are Dates
+ *  stored as timestamptz, `decimal` as numeric, `vector` as vector. This is
+ *  the runtime-visible counterpart of the TS annotation: the annotation is
+ *  erased at transpile, the decorator option is not. */
+const JS_TYPE_PINS: Record<string, string> = {
+  instant: "timestamptz",
+  decimal: "numeric",
+  vector: "vector",
+  bigint: "int8",
+};
+
+/** A class constructor usable as `@Column({ jsType })`: the runtime JS type
+ *  of the prop. Revival on read: `cls.fromJson(v)` when the class exposes it,
+ *  else `Object.assign(Object.create(cls.prototype), v)` — element-wise for
+ *  array props. Pins jsonb storage (a class instance IS a jsonb document). */
+export type JsTypeCtor = (new (...args: any[]) => unknown) & {
+  readonly prototype: object;
+  fromJson?: (value: unknown) => unknown;
+};
+/** `jsType` builtin codec names (`instant`/`decimal`/`vector`/`bigint` —
+ *  revive aliases for Date/Decimal/Vector/BigInt) or a class constructor
+ *  for jsonb-typed props. */
+export type JsType = "instant" | "decimal" | "vector" | "bigint" | JsTypeCtor;
 
 function applyTypeModifiers(baseType: string, h: EntityColumnTypeHints): string {
   const t = baseType.trim();
@@ -178,8 +208,17 @@ function semanticPin(h: EntityColumnTypeHints): string | undefined {
     (h.auditableType ? AUDITABLE_TYPE_PINS[h.auditableType] : undefined) ??
     (h.deletableType ? DELETABLE_TYPE_PINS[h.deletableType] : undefined) ??
     (h.synchronizableType ? SYNCHRONIZABLE_TYPE_PINS[h.synchronizableType] : undefined) ??
+    (h.isKey && (h.keyGenerated ?? "identity") === "identity" ? "int8" : undefined) ??
     undefined
   );
+}
+
+/** `jsType` pins storage too — a builtin codec name maps through
+ *  `JS_TYPE_PINS`, a class ctor pins `jsonb` (a class instance IS a jsonb
+ *  document). Shared by the runtime cascade and the schema resolver. */
+function jsTypePin(h: EntityColumnTypeHints): string | undefined {
+  if (!h.jsType) return undefined;
+  return typeof h.jsType === "function" ? "jsonb" : JS_TYPE_PINS[h.jsType];
 }
 
 /** Resolved SQL type name for compare + snapshot (not full column DDL). */
@@ -187,6 +226,7 @@ export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
   const base =
     h.explicitPgType?.trim() ??
     semanticPin(h) ??
+    jsTypePin(h) ??
     (h.annotation ? pgTypeFromAnnotation(h.annotation) : null) ??
     "text"; // runtime-only fallback when no static info — non-authoritative
   return applyTypeModifiers(base, h);
@@ -194,15 +234,15 @@ export function inferPgTypeFromEntityColumn(h: EntityColumnTypeHints): string {
 
 /**
  * Authoritative resolve for the schema pipeline: explicit `pgType`, else
- * semantic decorator pin, else annotation inference. Throws when none can
- * produce a type — an unmappable entity property must never silently
- * become `text`.
+ * semantic decorator pin, else `jsType` pin (codec names + class ctor →
+ * jsonb), else annotation inference. Throws when none can produce a type —
+ * an unmappable entity property must never silently become `text`.
  */
 export function resolvePgTypeForSchema(h: EntityColumnTypeHints): string {
   if (h.explicitPgType !== undefined && h.annotation) {
     assertPgTypeCompatible(h.annotation, h.explicitPgType, h.propertyKey);
   }
-  const base = h.explicitPgType?.trim() ?? semanticPin(h);
+  const base = h.explicitPgType?.trim() ?? semanticPin(h) ?? jsTypePin(h);
   if (base) return applyTypeModifiers(base, h);
   if (!h.annotation) {
     throw new Error(`No type information for ${h.propertyKey} — run the schema pipeline with static annotation extraction`);
@@ -312,8 +352,12 @@ const UUID_NAME_RE = /(^|_)uuid$/i;
  * - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
  *   The name SAYS uuid; either the column should be `uuid` (retype the prop
  *   to `UUID` or set `pgType:"uuid"`) or the name lies.
- * - `redundant-pgType` — explicit `pgType` equal to what the annotation
- *   already infers; drop it (we never spell out the default).
+ * - `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
+ *   would resolve without it (annotation stripped — erased at runtime, so
+ *   a restatement of the annotation default is NOT redundant: it is the
+ *   required runtime declaration). Truly redundant only when the type
+ *   comes from another runtime-visible channel — e.g. `pgType:"text"` on
+ *   a string prop, or a pgType already covered by a semantic/jsType pin.
  */
 export function columnTypeWarnings(
   entityName: string,
@@ -337,20 +381,20 @@ export function columnTypeWarnings(
         `or declare pgType:"text" explicitly if the loose reference is intended)`,
     });
   }
-  if (h.explicitPgType !== undefined && h.annotation && !uuidNamed) {
-    const inferred = pgTypeFromAnnotation(h.annotation);
-    if (
-      inferred !== null &&
-      canonicalPgType(stripTypeModifiers(h.explicitPgType)) ===
-        canonicalPgType(stripTypeModifiers(applyTypeModifiers(inferred, { ...h, explicitPgType: undefined })))
-    ) {
+  if (h.explicitPgType !== undefined && !uuidNamed) {
+    const runtimeDefault = canonicalPgType(
+      stripTypeModifiers(
+        inferPgTypeFromEntityColumn({ ...h, explicitPgType: undefined, annotation: undefined }),
+      ),
+    );
+    if (runtimeDefault === canonResolved) {
       out.push({
         kind: "redundant-pgType",
         entity: entityName,
         column: h.sqlName,
         message:
-          `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" restates the ` +
-          `${h.annotation.annotation} default (${inferred}) — remove it`,
+          `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" is what runtime ` +
+          `inference resolves anyway (${runtimeDefault}) — remove it`,
       });
     }
   }

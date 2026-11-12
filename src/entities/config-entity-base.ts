@@ -39,9 +39,6 @@ import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 export abstract class ConfigEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()
-  id!: bigint;
-
-  @Unique()
   @Column({ pgType: "uuid" })
   uuid!: string;
 
@@ -71,7 +68,7 @@ export abstract class ConfigEntityBase
   description_key?: string;
 
   /** If true, the row is system-critical: editable but not deletable. */
-  @Column({ nullable: false, defaultSql: "false" })
+  @Column({ pgType: "boolean", nullable: false, defaultSql: "false" })
   reserved!: boolean;
 
   /** Optional grouping key for UI display. null/empty = ungrouped (top of list). */

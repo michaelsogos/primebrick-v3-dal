@@ -91,7 +91,7 @@ describe("Dal.beginTransaction — deferred single-statement CTE tx", () => {
     tx.add(SimpleTestEntity, { name: "never-persisted" }, { actor: ACTOR });
     tx.update(
       SimpleTestEntity,
-      { uuid: "00000000-0000-0000-0000-000000000000", version: 1, name: "x" },
+      { uuid: "00000000-0000-7000-8000-000000000000", version: 1, name: "x" },
       { actor: ACTOR },
     );
     await expect(tx.commit()).rejects.toMatchObject({ code: "ERR03" });

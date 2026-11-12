@@ -42,12 +42,16 @@ export {
   DeletableField,
   SynchronizableField,
   CloneField,
+  Ref,
   AuditTrail,
   AuditTrailEntity,
   PartitionField,
   PartitionChildOf,
+  Dict,
+  getDictFacet,
   Index,
   ForeignKey,
+  Calculated,
   AuditableFieldType,
   DeletableFieldType,
   SynchronizableFieldType,
@@ -56,12 +60,14 @@ export {
   getQualifiedTableName,
   getEntityName,
   getColumnName,
+  getCalculatedColumn,
   getPrimaryKeyColumn,
   getEntityPersistenceMeta,
   listEntityPersistencePropertyKeys,
   syncImplicitEntityColumns,
   type EntityClass,
   type ColumnOptions,
+  type CalculatedOptions,
   type KeyOptions,
   type UniqueOptions,
   type PartitionFieldOptions,
@@ -219,6 +225,7 @@ export {
 
 // Config entity base — standard dictionary-style config table entity
 export { ConfigEntityBase } from "./entities/config-entity-base.js";
+export { DictEntityBase } from "./entities/dict-entity-base.js";
 
 // Translation entity base — standard i18n translations table entity
 export { TranslationEntityBase } from "./entities/translation-entity-base.js";
@@ -268,7 +275,7 @@ export {
 // Entity-annotation → storage type contract. `UUID`/`ISODate`/`ISOTime` are
 // compile-time brands (zero runtime cost); `Vector`/`Decimal` are real classes
 // the DAL recognises by `instanceof` on the io boundary.
-export { type UUID, isUUID, toUUID, trustedUUID } from "./types/uuid.js";
+export { type UUID, isUUID, isUuidV7, newUuidV7, toUUID, toUuidV7, trustedUUID } from "./types/uuid.js";
 export {
   type ISODate,
   type ISOTime,

@@ -116,14 +116,14 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("findByUUID: throws NotFoundError when not found (default)", async () => {
     await expect(
-      repo.findByUUID(SimpleTestEntity, "00000000-0000-0000-0000-000000000000")
+      repo.findByUUID(SimpleTestEntity, "00000000-0000-7000-8000-000000000000")
     ).rejects.toThrow(NotFoundError);
   });
 
   it("findByUUID: returns null when throwIfNotFound is false", async () => {
     const found = await repo.findByUUID(
       SimpleTestEntity,
-      "00000000-0000-0000-0000-000000000000",
+      "00000000-0000-7000-8000-000000000000",
       { throwIfNotFound: false }
     );
     expect(found).toBeNull();
@@ -263,7 +263,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: "00000000-0000-0000-0000-000000000000", name: "X", version: 1 },
+        { uuid: "00000000-0000-7000-8000-000000000000", name: "X", version: 1 },
         { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(RecordVanishedError);
@@ -302,7 +302,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("delete: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
@@ -331,7 +331,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("restore: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
@@ -357,7 +357,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
   it("hardDelete: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })

@@ -55,7 +55,7 @@ describe("Repository — negative / failure paths", () => {
   });
 
   it("findByUUID: throws NotFoundError with uuid in message", async () => {
-    const uuid = "00000000-0000-0000-0000-000000000000";
+    const uuid = "00000000-0000-7000-8000-000000000000";
     try {
       await repo.findByUUID(SimpleTestEntity, uuid);
       expect.fail("Should have thrown");
@@ -80,7 +80,7 @@ describe("Repository — negative / failure paths", () => {
     await expect(
       repo.update(
         SimpleTestEntity,
-        { uuid: "00000000-0000-0000-0000-000000000000", name: "X", version: 1 },
+        { uuid: "00000000-0000-7000-8000-000000000000", name: "X", version: 1 },
         { actor: "test-user", matchBy: "uuid" }
       )
     ).rejects.toThrow(RecordVanishedError);
@@ -88,7 +88,7 @@ describe("Repository — negative / failure paths", () => {
 
   it("delete: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.delete(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
@@ -97,7 +97,7 @@ describe("Repository — negative / failure paths", () => {
 
   it("restore: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.restore(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })
@@ -106,7 +106,7 @@ describe("Repository — negative / failure paths", () => {
 
   it("hardDelete: throws RecordVanishedError for non-existent uuid (auditable entity with version guard)", async () => {
     await expect(
-      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-0000-0000-000000000000", version: 1 }, {
+      repo.hardDelete(SimpleTestEntity, { uuid: "00000000-0000-7000-8000-000000000000", version: 1 }, {
         actor: "test-user",
         matchBy: "uuid",
       })

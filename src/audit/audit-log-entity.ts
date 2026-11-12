@@ -15,7 +15,9 @@ import {
  *
  * All audit tables share the same column structure:
  *   id          bigint identity PK
- *   entity_id   bigint (the audited entity's ID)
+ *   entity_id   bigint (the audited entity's legacy surrogate ID — nullable;
+ *                 present only on pre-migration `*_audit` tables; dropped as
+ *                 entities migrate to uuid PKs)
  *   entity_uuid uuid    (the audited entity's UUID)
  *   action      text    (INSERT, UPDATE, SOFT_DELETE, HARD_DELETE, RESTORE)
  *   changed_at  timestamptz
@@ -38,8 +40,8 @@ export class AuditLogEntity {
   @Column({ pgType: "bigint" })
   id!: bigint;
 
-  @Column({ pgType: "bigint" })
-  entity_id!: bigint;
+  @Column({ pgType: "bigint", nullable: true })
+  entity_id?: bigint | null;
 
   @Column({ pgType: "uuid" })
   entity_uuid!: string;

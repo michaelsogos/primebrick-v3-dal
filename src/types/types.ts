@@ -250,7 +250,9 @@ export interface AuditPort {
 export type AuditParams = {
   entityClassName: string;
   tableName: string;
-  entityId: bigint;
+  /** Legacy surrogate `id` of the audited row — null once the entity has
+   *  migrated to a uuid primary key (its `*_audit` table drops the column). */
+  entityId: bigint | null;
   entityUuid: string;
   action: AuditAction;
   changedAt: Date;

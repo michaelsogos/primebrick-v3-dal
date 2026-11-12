@@ -34,7 +34,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "11111111-1111-1111-1111-111111111111",
+          uuid: "11111111-1111-7111-8111-111111111111",
           int_col: 42,
           bigint_col: 1n,
           bool_col: true,
@@ -58,7 +58,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "22222222-2222-2222-2222-222222222222",
+          uuid: "22222222-2222-7222-8222-222222222222",
           int_col: -100,
           bigint_col: 1n,
           bool_col: true,
@@ -81,7 +81,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "33333333-3333-3333-3333-333333333333",
+          uuid: "33333333-3333-7333-8333-333333333333",
           int_col: 0,
           bigint_col: 1n,
           bool_col: true,
@@ -106,7 +106,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "44444444-4444-4444-4444-444444444444",
+          uuid: "44444444-4444-7444-8444-444444444444",
           int_col: 1,
           bigint_col: 9007199254740993n, // Number.MAX_SAFE_INTEGER + 2
           bool_col: true,
@@ -130,7 +130,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "55555555-5555-5555-5555-555555555555",
+          uuid: "55555555-5555-7555-8555-555555555555",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -156,7 +156,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "66666666-6666-6666-6666-666666666666",
+          uuid: "66666666-6666-7666-8666-666666666666",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -179,7 +179,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "77777777-7777-7777-7777-777777777777",
+          uuid: "77777777-7777-7777-8777-777777777777",
           int_col: 1,
           bigint_col: 1n,
           bool_col: false,
@@ -204,7 +204,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "88888888-8888-8888-8888-888888888888",
+          uuid: "88888888-8888-7888-8888-888888888888",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -227,7 +227,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "99999999-9999-9999-9999-999999999999",
+          uuid: "99999999-9999-7999-8999-999999999999",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -251,7 +251,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          uuid: "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -277,7 +277,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+          uuid: "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -301,7 +301,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+          uuid: "cccccccc-cccc-7ccc-8ccc-cccccccccccc",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -325,7 +325,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+          uuid: "dddddddd-dddd-7ddd-8ddd-dddddddddddd",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -349,7 +349,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+          uuid: "eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -376,7 +376,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+          uuid: "ffffffff-ffff-7fff-8fff-ffffffffffff",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -401,7 +401,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "10101010-1010-1010-1010-101010101010",
+          uuid: "10101010-1010-7010-8010-101010101010",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -425,7 +425,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "12121212-1212-1212-1212-121212121212",
+          uuid: "12121212-1212-7212-8212-121212121212",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -456,7 +456,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "13131313-1313-1313-1313-131313131313",
+          uuid: "13131313-1313-7313-8313-131313131313",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -482,7 +482,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "14141414-1414-1414-1414-141414141414",
+          uuid: "14141414-1414-7414-8414-141414141414",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -506,7 +506,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "15151515-1515-1515-1515-151515151515",
+          uuid: "15151515-1515-7515-8515-151515151515",
           int_col: 1,
           bigint_col: 1n,
           bool_col: true,
@@ -536,7 +536,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       const added = await repo.add(
         TypeTestEntity,
         {
-          uuid: "16161616-1616-1616-1616-161616161616",
+          uuid: "16161616-1616-7616-8616-161616161616",
           int_col: 7,
           bigint_col: 9007199254740993n,
           bool_col: true,
@@ -556,7 +556,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       expect(found).not.toBeNull();
       const row = found!;
 
-      expect(row.uuid).toBe("16161616-1616-1616-1616-161616161616");
+      expect(row.uuid).toBe("16161616-1616-7616-8616-161616161616");
       expect(row.int_col).toBe(7);
       expect(typeof row.int_col).toBe("number");
       expect(row.bigint_col).toBe(9007199254740993n);

@@ -1,6 +1,8 @@
 import "reflect-metadata";
 
-import { inferPgTypeFromEntityColumn } from "./entity-ts-to-pg.js";
+import type { DictFacet } from "@primebrick/core";
+
+import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
 import { getSchemaDomain, resolveEntitySchema } from "./schema-domain.js";
 
@@ -89,6 +91,8 @@ type ColumnRegistration = {
   uniqueIndexName?: string;
   /** Order priority within a composite unique index (0-based). Lower = first in index. */
   uniqueIndexOrder?: number;
+  /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
+  uniqueNullsNotDistinct?: boolean;
   nullable?: boolean;
   pgType?: string;
   /** For varchar/char/bit varying etc. */
@@ -105,10 +109,18 @@ type ColumnRegistration = {
    * - `"instant"` → ISO string → `Date`
    * - `"decimal"` → `"N.Nd"` string → `Decimal`
    * - `"vector"`  → array/`"[…]"` → `Vector`
+   * - `"bigint"`  → number/`"N"` → `bigint`
+   * - `SomeClass` → jsonb payload revives to a real class instance
+   *   (`cls.fromJson(v)` when exposed, else prototype graft; element-wise
+   *   for array props) — the ctor IS the runtime JS type, same channel.
+   * Also pins storage (`instant`→timestamptz, `decimal`→numeric,
+   * `vector`→vector, `bigint`→int8, `Ctor`→jsonb) — it is the runtime-visible
+   * counterpart of the erased TS annotation.
    * DB reads never need this — pg parsers return the right shape by OID.
-   * Required (lint) on `Decimal`, `Vector`, and non-audit `Date` props.
+   * Required (lint) on `Decimal`, `Vector`, `bigint`, and non-audit
+   * `Date` props.
    */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: JsType;
   /** Auditable field metadata */
   isAuditable?: boolean;
   auditableType?: AuditableFieldType;
@@ -120,9 +132,29 @@ type ColumnRegistration = {
   synchronizableType?: SynchronizableFieldType;
   /** Clone field metadata */
   isClone?: boolean;
+  /** `@Ref("entity_name")` — the column's value identifies a record of that
+   *  entity (served-meta ref contract: `type:"ref"` + `ref.entity`). Meta-
+   *  only — no DDL FK is emitted; the target may live in another schema's
+   *  domain (e.g. `user_profile`). For same-schema physical FKs use
+   *  `@ForeignKey` — which does NOT imply a display ref. */
+  refEntity?: string;
   /** Cast type to apply when this field is used in JOIN ON clause */
   castInJoin?: string;
 };
+
+/**
+ * Closed vocabulary of accepted SQL DEFAULT expressions for generated
+ * uuid columns. The enum member's value IS the emitted SQL — declaring
+ * `default` guarantees the patch carries the right expression; anything
+ * else is a declaration-time type error, never a runtime surprise.
+ * (For non-uuid columns `defaultSql` remains the raw escape hatch.)
+ */
+export enum ColumnDefault {
+  /** `gen_random_uuid()` — pgcrypto uuid v4. */
+  UUID_V4_DEFAULT_GENERATED = "gen_random_uuid()",
+  /** `uuidv7()` — native PG18 time-ordered uuid v7 (canonical for PKs). */
+  UUID_V7_DEFAULT_GENERATED = "uuidv7()",
+}
 
 export type ColumnOptions = {
   sqlName?: string;
@@ -140,12 +172,34 @@ export type ColumnOptions = {
   precision?: number;
   scale?: number;
   nullable?: boolean;
-  /** SQL DEFAULT expression (raw). */
+  /** SQL DEFAULT expression (raw). Mutually exclusive with `default`. */
   defaultSql?: string;
+  /** Closed-set DEFAULT for uuid columns — see {@link ColumnDefault}. */
+  default?: ColumnDefault;
   /** Runtime hydration hint for JSON round-trips — see `ColumnRegistration.jsType`. */
-  jsType?: "instant" | "decimal" | "vector";
+  jsType?: JsType;
   /** Cast type to apply when this field is used in JOIN ON clause (e.g., 'uuid') */
   castInJoin?: string;
+};
+
+type CalculatedRegistration = {
+  /** Result alias — defaults to the property key. */
+  sqlName: string;
+  /** Scalar SQL expression (correlated subquery, CASE, arithmetic, …).
+   *  `{self}` inside the string is replaced with the qualified base-table
+   *  ref (`"schema"."table"`) at render time — correlation-safe across
+   *  schema overrides and table-name overrides. */
+  expr: string;
+  /** Declared SQL result type of `expr` ("int4", "timestamptz", …) — same
+   *  contract as `@Column({ pgType })`: the TS annotation is erased at
+   *  transpile, so the runtime type must be declared. Drives meta `type`/
+   *  `pg_type` derivation and read-path hydration hints. */
+  pgType?: string;
+  /** Whether `expr` can evaluate to NULL — projected presence is never
+   *  guaranteed (write paths don't project calculated props), so `?` on
+   *  the annotation means "may be absent"; THIS flag is the NULL-value
+   *  declaration feeding meta `nullable`. */
+  nullable?: boolean;
 };
 
 type ClassEntityMeta = {
@@ -153,6 +207,9 @@ type ClassEntityMeta = {
   /** Optional schema override — if set, takes precedence over the Dal's default schema. */
   tableSchema?: string;
   columns: Map<PropertyKey, ColumnRegistration>;
+  /** `@Calculated()` — SQL-projected expressions. Never physical columns:
+   *  excluded from DDL/insert/update; injected as `Project.expr` on read. */
+  calculated: Map<PropertyKey, CalculatedRegistration>;
   /** `@IsNotColumn()` — excluded from persistence meta & future DAL builders */
   notColumnKeys: Set<PropertyKey>;
   /** `@AuditTrail()` — entity has audit trail table */
@@ -164,6 +221,11 @@ type ClassEntityMeta = {
   /** `@PartitionChildOf()` — this entity is a logical child of a partitioned
    *  parent: it participates in the parent's atomic delete + retention purge. */
   partitionChildOf?: PartitionChildOfOptions;
+  /** `@Dict()` — the entity is a dictionary/enum surface: the served meta
+   *  carries the `dict` facet and nav derives `kind:"dict"` routes. Set on a
+   *  shared base (e.g. DictEntityBase), inherited via collectMetaChain;
+   *  redeclaring on the concrete class replaces the facet wholesale. */
+  dict?: DictFacet;
 };
 
 /** Options for `@PartitionField()` — the RANGE partition key declaration. */
@@ -194,7 +256,7 @@ const META = new WeakMap<Function, ClassEntityMeta>();
 function ensureMeta(ctor: Function): ClassEntityMeta {
   let m = META.get(ctor);
   if (!m) {
-    m = { columns: new Map(), notColumnKeys: new Set() };
+    m = { columns: new Map(), calculated: new Map(), notColumnKeys: new Set() };
     META.set(ctor, m);
   }
   return m;
@@ -268,6 +330,18 @@ function collectEntityColumnRegistrations(
   return merged;
 }
 
+/** Merged `@Calculated` registrations across the prototype chain — same
+ *  parent-first/subclass-wins semantics as physical columns. */
+function collectCalculatedRegistrations(
+  ctor: Function,
+): Map<PropertyKey, CalculatedRegistration> {
+  const merged = new Map<PropertyKey, CalculatedRegistration>();
+  for (const m of collectMetaChain(ctor)) {
+    for (const [propKey, reg] of m.calculated) merged.set(propKey, reg);
+  }
+  return merged;
+}
+
 /** Registers every implicit column + `design:type` / nullability when not already set by decorators. */
 export function syncImplicitEntityColumns(ctor: Function): void {
   const m = META.get(ctor);
@@ -285,8 +359,21 @@ export function syncImplicitEntityColumns(ctor: Function): void {
     // prototype-chain merge in getEntityPersistenceMeta — creating a fresh
     // bare registration here would shadow the decorated one on merge.
     if (hasInheritedColumnRegistration(ctor, key)) continue;
+    if (hasInheritedCalculatedRegistration(ctor, key)) continue;
     touchColumn(ctor, key);
   }
+}
+
+/** True when an ancestor class already has a `@Calculated` registration for `key`. */
+function hasInheritedCalculatedRegistration(ctor: Function, key: PropertyKey): boolean {
+  for (
+    let p = Object.getPrototypeOf(ctor);
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    if (META.get(p)?.calculated.has(key)) return true;
+  }
+  return false;
 }
 
 /**
@@ -315,11 +402,12 @@ function assertNonEmptyColumnOptions(o: ColumnOptions): void {
     o.scale === undefined &&
     o.nullable === undefined &&
     o.defaultSql === undefined &&
+    o.default === undefined &&
     o.jsType === undefined &&
     o.castInJoin === undefined
   ) {
     throw new TypeError(
-      "@Column({ … }) requires at least one of: sqlName, pgType, length, precision/scale, nullable, defaultSql, jsType, castInJoin"
+      "@Column({ … }) requires at least one of: sqlName, pgType, length, precision/scale, nullable, defaultSql, default, jsType, castInJoin"
     );
   }
 }
@@ -342,10 +430,59 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
       if (sqlNameOrOpts.precision !== undefined) col.precision = sqlNameOrOpts.precision;
       if (sqlNameOrOpts.scale !== undefined) col.scale = sqlNameOrOpts.scale;
       if (sqlNameOrOpts.nullable !== undefined) col.nullable = sqlNameOrOpts.nullable;
+      if (
+        sqlNameOrOpts.default !== undefined &&
+        sqlNameOrOpts.defaultSql !== undefined
+      ) {
+        throw new TypeError(
+          "@Column({ … }): 'default' (ColumnDefault enum) and 'defaultSql' (raw) are mutually exclusive"
+        );
+      }
+      if (sqlNameOrOpts.default !== undefined) col.defaultSql = sqlNameOrOpts.default;
       if (sqlNameOrOpts.defaultSql !== undefined) col.defaultSql = sqlNameOrOpts.defaultSql;
       if (sqlNameOrOpts.jsType !== undefined) col.jsType = sqlNameOrOpts.jsType;
       if (sqlNameOrOpts.castInJoin !== undefined) col.castInJoin = sqlNameOrOpts.castInJoin;
     }
+  };
+}
+
+/** Options for `@Calculated()` — a SQL-projected read-only expression. */
+export type CalculatedOptions = {
+  /** Result alias — defaults to the property key. */
+  sqlName?: string;
+  /** Declared SQL result type of `expr` — e.g. `"int4"` for `count(*)::int`,
+   *  `"timestamptz"` for `max(created_at)`. The annotation is erased at
+   *  transpile; without it the column resolves `type:"text"` in meta and
+   *  hydrates by driver default. */
+  pgType?: string;
+  /** `expr` may evaluate to NULL — declare it so meta `nullable` is honest.
+   *  (`?` on the prop means "may be absent on non-read paths" — a different
+   *  fact; both are legal together.) */
+  nullable?: boolean;
+};
+
+/**
+ * Marks a property as a calculated SQL projection — never a physical column.
+ * The expression lives ONCE on the entity class; the DAL injects it as
+ * `Project.expr` on every list/get and substitutes it into WHERE/ORDER BY,
+ * so calculated columns are sortable/filterable like physical ones.
+ * `expr` may reference the base table via the `{self}` token (rendered as
+ * `"schema"."table"`); correlated subqueries must be scalar (≤1 row).
+ */
+export function Calculated(expr: string, opts?: CalculatedOptions): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    const m = ensureMeta(ctor);
+    // Never a physical column: block the implicit-column convention AND any
+    // explicit registration — DDL can never create it.
+    m.notColumnKeys.add(propertyKey);
+    m.columns.delete(propertyKey);
+    m.calculated.set(propertyKey, {
+      sqlName: opts?.sqlName ?? String(propertyKey),
+      expr,
+      pgType: opts?.pgType,
+      nullable: opts?.nullable,
+    });
   };
 }
 
@@ -372,12 +509,16 @@ export type UniqueOptions = {
    * Lower values come first in the index. Only meaningful when `indexName` is set.
    */
   orderPriority?: number;
+  /** PG15+ `NULLS NOT DISTINCT` — NULL members of the unique group are
+   *  treated as equal (they conflict instead of stacking). Declare on any
+   *  member of the group; convention is the order-0 member. */
+  nullsNotDistinct?: boolean;
 };
 
 /** Unique constraint (PostgreSQL: unique index in generated patches). */
 export function Unique(): PropertyDecorator;
-export function Unique(indexName: string, orderPriority: number): PropertyDecorator;
-export function Unique(indexName?: string, orderPriority?: number): PropertyDecorator {
+export function Unique(indexName: string, orderPriority: number, opts?: UniqueOptions): PropertyDecorator;
+export function Unique(indexName?: string, orderPriority?: number, opts?: UniqueOptions): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
@@ -386,10 +527,13 @@ export function Unique(indexName?: string, orderPriority?: number): PropertyDeco
     // @Column({ nullable: true }) wins (e.g. composite uniques where a
     // member is genuinely nullable, like ai_models.dtype).
     if (col.nullable === undefined) col.nullable = false;
-    if (indexName !== undefined) {
-      col.uniqueIndexName = indexName;
-      col.uniqueIndexOrder = orderPriority ?? 0;
+    const effName = indexName ?? opts?.indexName;
+    const effOrder = orderPriority ?? opts?.orderPriority;
+    if (effName !== undefined) {
+      col.uniqueIndexName = effName;
+      col.uniqueIndexOrder = effOrder ?? 0;
     }
+    if (opts?.nullsNotDistinct !== undefined) col.uniqueNullsNotDistinct = opts.nullsNotDistinct;
 
   };
 }
@@ -467,6 +611,19 @@ export function CloneField(): PropertyDecorator {
     col.isClone = true;
     col.nullable = true;
 
+  };
+}
+
+/** Declares a served-meta reference: the column's value is the uid (uuid)
+ *  of a record in the named entity — the single source of truth behind
+ *  `type:"ref"` + `ref.entity` on the served column. Applied once on the
+ *  `Auditable`/`Deletable` mixin's `*_by` actor columns it is inherited by
+ *  every entity; it is also the declaration path for domain FK display
+ *  refs (replacing authored `ref:` in list-configs). */
+export function Ref(entity: string): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    touchColumn(ctor, propertyKey).refEntity = entity;
   };
 }
 
@@ -570,6 +727,37 @@ export function PartitionChildOf(opts: PartitionChildOfOptions): ClassDecorator 
   };
 }
 
+/**
+ * Marks an entity as a dictionary/enum surface — typically set ONCE on a
+ * shared base class (e.g. DictEntityBase) so every subclass inherits the
+ * marker through collectMetaChain. `opts` becomes the served meta `dict`
+ * facet; redeclaring on a concrete class replaces it wholesale.
+ */
+export function Dict(opts?: DictFacet): ClassDecorator {
+  return function <T extends Function>(target: T): T {
+    const m = ensureMeta(target);
+    m.dict = opts ?? {};
+    return target;
+  };
+}
+
+/**
+ * The entity's resolved `dict` facet — subclass-first walk of the meta
+ * chain (same precedence as every class-level flag). `undefined` when no
+ * ancestor carries `@Dict()`.
+ */
+export function getDictFacet(ctor: EntityClass): DictFacet | undefined {
+  for (
+    let p = ctor as Function;
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    const d = META.get(p)?.dict;
+    if (d !== undefined) return d;
+  }
+  return undefined;
+}
+
 export function isEntityClass(value: unknown): value is EntityClass {
   return typeof value === "function" && META.get(value as Function)?.tableName !== undefined;
 }
@@ -621,6 +809,18 @@ export function getColumnName(ctor: EntityClass, propertyKey: string | symbol): 
   return reg?.sqlName ?? String(propertyKey);
 }
 
+/** `@Calculated` registration for `propertyKey`, or undefined when the prop
+ *  is a physical/non-existent column. Used by the query builder to swap the
+ *  column ref for the raw expression in WHERE/ORDER BY. */
+export function getCalculatedColumn(
+  ctor: EntityClass,
+  propertyKey: string | symbol,
+): CalculatedRegistration | undefined {
+  if (!isEntityClass(ctor)) return undefined;
+  syncImplicitEntityColumns(ctor as Function);
+  return collectCalculatedRegistrations(ctor as Function).get(propertyKey);
+}
+
 export function getPrimaryKeyColumn(ctor: EntityClass): string {
   if (!isEntityClass(ctor)) {
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
@@ -670,9 +870,11 @@ export type EntityPersistenceMeta = {
       uniqueIndexName?: string;
       /** Order priority within a composite unique index (0-based). */
       uniqueIndexOrder?: number;
+      /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
+      uniqueNullsNotDistinct?: boolean;
       nullable?: boolean;
       pgType?: string;
-      jsType?: "instant" | "decimal" | "vector";
+      jsType?: JsType;
       defaultSql?: string;
       length?: number;
       precision?: number;
@@ -686,11 +888,20 @@ export type EntityPersistenceMeta = {
       isSynchronizable?: boolean;
       synchronizableType?: SynchronizableFieldType;
       isClone?: boolean;
+      /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
+      refEntity?: string;
       castInJoin?: string;
       /** `@PartitionField()` — RANGE partition key marker + options. */
       isPartition?: boolean;
       partitionOpts?: PartitionFieldOptions;
     }
+  >;
+  /** `@Calculated` SQL projections — keyed by **result alias** (`sqlName`).
+   *  Not physical columns: absent from DDL, present in read projections.
+   *  `pgType`/`nullable` are the declared result-type contract (meta + hydration). */
+  calculated: Record<
+    string,
+    { propertyKey: string; sqlName: string; expr: string; pgType?: string; nullable?: boolean }
   >;
   /** Resolved partition declaration — present when a `@PartitionField` exists. */
   partition?: {
@@ -784,18 +995,29 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       scale: reg.scale,
       auditableType: reg.auditableType,
       deletableType: reg.deletableType,
+      synchronizableType: reg.synchronizableType,
+      keyGenerated: reg.keyGenerated,
+      jsType: reg.jsType,
     });
     if (
       reg.defaultSql === undefined &&
       inferredPgType === "uuid" &&
       (reg.isKey || reg.isUnique)
     ) {
-      // uuid key/unique columns always default to gen_random_uuid() —
-      // pgcrypto is the standard PostgreSQL uuid provider. There is no env
-      // override: env configuration is closed-set (see docs/ai/env-policy).
-      reg.defaultSql = "gen_random_uuid()";
+      // uuid key/unique columns always default to uuidv7() — the
+      // canonical generated identity (PG18 native, time-ordered).
+      // `default: ColumnDefault.UUID_V4_DEFAULT_GENERATED` remains
+      // available for columns that explicitly need v4.
+      reg.defaultSql = ColumnDefault.UUID_V7_DEFAULT_GENERATED;
     }
-    const usePostgresIdentity = Boolean(reg.isKey && (reg.keyGenerated ?? "identity") === "identity");
+    // GENERATED … AS IDENTITY is integer-family only — a uuid @Key
+    // (the uuid-PK end state) carries its default via `defaultSql`
+    // (uuidv7()), never via an identity clause.
+    const usePostgresIdentity = Boolean(
+      reg.isKey &&
+        (reg.keyGenerated ?? "identity") === "identity" &&
+        ["int2", "int4", "int8"].includes(inferredPgType),
+    );
     const entry: EntityPersistenceMeta["columns"][string] = {
       propertyKey,
       sqlName: reg.sqlName,
@@ -806,6 +1028,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     };
     if (reg.uniqueIndexName !== undefined) entry.uniqueIndexName = reg.uniqueIndexName;
     if (reg.uniqueIndexOrder !== undefined) entry.uniqueIndexOrder = reg.uniqueIndexOrder;
+    if (reg.uniqueNullsNotDistinct !== undefined) entry.uniqueNullsNotDistinct = reg.uniqueNullsNotDistinct;
     if (reg.pgType !== undefined) entry.pgType = reg.pgType;
     // NOT NULL by default: `design:type` inference was removed because it is
     // transpiler-dependent (esbuild/tsx never emits it; bun collapses unions).
@@ -825,10 +1048,29 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isSynchronizable !== undefined) entry.isSynchronizable = reg.isSynchronizable;
     if (reg.synchronizableType !== undefined) entry.synchronizableType = reg.synchronizableType;
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
+    if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;
     columns[reg.sqlName] = entry;
+  }
+
+  // ── @Calculated resolution — projections, never physical columns ──────
+  const calculated: EntityPersistenceMeta["calculated"] = {};
+  for (const [propKey, reg] of collectCalculatedRegistrations(fn)) {
+    const propertyKey = String(propKey);
+    if (colMap.has(propKey)) {
+      throw new TypeError(
+        `${entityClassName}.${propertyKey}: @Calculated property is also registered as a physical column — remove the conflicting @Column/@Key/@Unique (or @IsNotColumn-style) registration`,
+      );
+    }
+    calculated[reg.sqlName] = {
+      propertyKey,
+      sqlName: reg.sqlName,
+      expr: reg.expr,
+      pgType: reg.pgType,
+      nullable: reg.nullable,
+    };
   }
 
   // ── @PartitionField resolution + non-eludible validation ──────────────
@@ -996,5 +1238,6 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,
     columns,
+    calculated,
   };
 }

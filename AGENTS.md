@@ -18,13 +18,21 @@
   docs/ai/README.md, .devin/rules/, docs/dev-guide/_order.json.
   The missing doc is usually a doc you haven't read.
 
-## ⚠️ CRITICAL: NEVER COMMIT AUTOMATICALLY
+## ⚠️ COMMIT CADENCE — every change turn commits
 
-**AI agents MUST NEVER commit changes without explicit user instruction.**
+**A turn that modifies source files ENDS with a commit** — the user has
+authorized this cadence as a standing rule. Do not accumulate uncommitted
+work and do not wait for per-commit permission.
 
-- **WAIT for the user to explicitly tell you to commit** before running any `git commit` command
-- This applies to ALL situations - no exceptions
-- See [docs/gitflow.md](./docs/gitflow.md) for complete GitFlow rules including commit rules
+- Before every commit run the relevant checks: **type check** AND
+  **E2E / runtime verification** of the changed path.
+- **A green type check alone is NEVER "verified"** — it only proves the
+  code compiles. Empirical verification = run the thing and look at the
+  output (screenshot for UI, HTTP response for endpoints, query for data).
+- See [docs/ai/commit-verification.md](./docs/ai/commit-verification.md)
+  for the full contract, and [docs/gitflow.md](./docs/gitflow.md) for
+  GitFlow commit rules.
+
 
 ## Repository overview
 
@@ -60,7 +68,7 @@
 - **deletedRecords: "EXCLUDED"** by default — soft-deleted rows excluded.
 - **TEMP TABLE strategy** for bulk update/upsert/delete — atomic, SQL-injection safe.
 - **bigint via INT8_OID** — native `bigint`, not strings.
-- **Static-annotation type contract** — column types resolve from the TS annotation (`bigint`→int8, `number`→float8, `string`→text, `Date`→timestamptz, `UUID`→uuid, `Decimal`→numeric, `Vector`→vector, `T[]`→base[]), never from the property name or `design:type`. `@Column({ pgType })` is a whitelist-checked override; runtime io is driven by `jsType` markers + value shape. See `docs/dev-guide/column-types.mdx` and `.devin/rules/entity-type-contract.md`.
+- **Static-annotation type contract** — column types resolve from the TS annotation (`bigint`→int8, `number`→float8, `string`→text, `Date`→timestamptz, `UUID`→uuid, `Decimal`→numeric, `Vector`→vector, `T[]`→base[]), never from the property name or `design:type`. `@Column({ pgType })` is a whitelist-checked override. The annotation is erased at transpile, so runtime re-resolves via a second cascade — `pgType` → semantic pins (audit/deletable/synchronizable/`@Key`-identity→int8) → `jsType` (`instant`/`decimal`/`vector`/`bigint` → `timestamptz`/`numeric`/`vector`/`int8`) → `"text"` fallback — and ONE declaration feeds schema patches, served meta (`pg_type`/`type`/widget+searchable defaults), ILIKE text-cast (a `"text"` lie skips the cast → 42883), ext-json hydration, and pg param conversion. `entity-type-declared` lint forces a runtime-visible declaration on every non-string annotation. See `docs/dev-guide/column-types.mdx` and `.devin/rules/entity-type-contract.md`.
 - **Naming convention** — PG table = snake_case **plural** (collection of rows, e.g. `customers`). Entity class = PascalCase **singular** (one row schema, e.g. `CustomerEntity`). This is enforced by the `@Entity` decorator — the table name is plural, the class name is singular.
 - **Service layer** — `DomainService<TEntity>` (`src/entity/domain-service.ts`) is THE base class for consumer worker services: lazy `this.dal`/`this.svc` getters (ctor is I/O-free — `getDal()` fails fast at first use, never at construction), `buildConfig()` seam for consumer wiring (auditPort/actor/userEntity). Per-domain `*Dal`/`*Repo` wrapper classes are banned — custom queries live as methods on the owning service.
 - **Bootstrap split (consumer-side)** — consumers wrap `getDal(config)` in their own `initDal()` (once, in `index.ts`, before migrations); `getDal()` is the accessor everywhere else.

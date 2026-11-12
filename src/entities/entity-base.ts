@@ -3,6 +3,7 @@ import {
   AuditableFieldType,
   DeletableField,
   DeletableFieldType,
+  Ref,
 } from "../meta/entity-decorators.js";
 import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
 
@@ -42,12 +43,14 @@ export function Auditable<TBase extends EntityCtor>(Base: TBase) {
     created_at!: Date;
 
     @AuditableField(AuditableFieldType.CREATED_BY)
+    @Ref("user_profile")
     created_by!: string;
 
     @AuditableField(AuditableFieldType.UPDATED_AT)
     updated_at!: Date;
 
     @AuditableField(AuditableFieldType.UPDATED_BY)
+    @Ref("user_profile")
     updated_by!: string;
 
     @AuditableField(AuditableFieldType.VERSION)
@@ -63,6 +66,7 @@ export function Deletable<TBase extends EntityCtor>(Base: TBase) {
     deleted_at?: Date;
 
     @DeletableField(DeletableFieldType.DELETED_BY)
+    @Ref("user_profile")
     deleted_by?: string;
   }
   return DeletableEntity;

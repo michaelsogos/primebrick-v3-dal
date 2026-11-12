@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
 import { performance } from "node:perf_hooks";
-import { randomUUID } from "node:crypto";
+import { newUuidV7 } from "../../src/types/uuid.js";
 import { Repository } from "../../src/index.js";
 import { REPO_INTERNAL } from "../../src/repository/repository.js";
 import { BenchSimpleEntity } from "../entities/bench-simple.entity.js";
@@ -31,7 +31,7 @@ afterAll(async () => {
 /** Generate N simple benchmark records. */
 function genSimple(n: number) {
   return Array.from({ length: n }, (_, i) => ({
-    uuid: randomUUID(),
+    uuid: newUuidV7(),
     code: `BENCH_S_${i}`,
     name: `Benchmark Simple Row ${i}`,
     status: i % 2 === 0 ? "active" : "inactive",
@@ -41,7 +41,7 @@ function genSimple(n: number) {
 /** Generate N primitives benchmark records (all PG types). */
 function genPrimitives(n: number) {
   return Array.from({ length: n }, (_, i) => ({
-    uuid: randomUUID(),
+    uuid: newUuidV7(),
     int2_val: i % 32767,
     int4_val: i,
     int8_val: BigInt(i) * 1000000n,
@@ -52,7 +52,7 @@ function genPrimitives(n: number) {
     char_val: "X",
     varchar_val: `varchar_${i}`,
     text_val: `Long text content for row ${i} with some padding to make it realistic...`,
-    uuid_val: randomUUID(),
+    uuid_val: newUuidV7(),
     date_val: new Date(2024, 0, (i % 28) + 1),
     timestamp_val: new Date(Date.now() + i * 1000),
     timestamptz_val: new Date(),
