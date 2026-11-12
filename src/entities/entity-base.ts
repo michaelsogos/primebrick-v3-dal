@@ -3,6 +3,7 @@ import {
   AuditableFieldType,
   CloneField,
   CloneFieldType,
+  Column,
   DeletableField,
   DeletableFieldType,
   Ref,
@@ -80,6 +81,7 @@ export function Deletable<TBase extends EntityCtor>(Base: TBase) {
  *  at clone time, never user-editable. */
 export function Clonable<TBase extends EntityCtor>(Base: TBase) {
   abstract class ClonableEntity extends Base implements IClonableEntity {
+    @Column({ pgType: "uuid", nullable: true })
     @CloneField()
     cloned_from?: string;
 
