@@ -103,24 +103,17 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
     }
   }
 
-  // Add projections for display_name fields from joined tables (auditable joins).
-  // COALESCE falls back to the raw actor column so "system" / orphan uuids
-  // still render instead of NULL.
+  // Display-name projections declared by the joins themselves
+  // (`JoinExpr.display`): `COALESCE(<join-expr>, <base right col>::text)`
+  // so "system" / orphan uuids still render instead of NULL.
   if (joins) {
     for (const j of joins) {
-      if (j.alias) {
-        let fieldName = '';
-        if (j.alias === 'creator') fieldName = 'created_by_name';
-        else if (j.alias === 'updater') fieldName = 'updated_by_name';
-        else if (j.alias === 'deleter') fieldName = 'deleted_by_name';
-
-        if (fieldName) {
-          const actorCol = getColumnName(j.right.entity, j.right.key);
-          const actorRef = `${qTable(j.right.entity, j.right.entity === entity ? tableNameOverride : undefined)}.${quoteIdent(actorCol)}`;
-          projections.push(
-            `COALESCE(${quoteIdent(j.alias)}.display_name, ${actorRef}) AS ${quoteIdent(fieldName)}`
-          );
-        }
+      if (j.display) {
+        const rightCol = getColumnName(j.right.entity, j.right.key);
+        const rightRef = `${qTable(j.right.entity, j.right.entity === entity ? tableNameOverride : undefined)}.${quoteIdent(rightCol)}`;
+        projections.push(
+          `COALESCE(${j.display.sql}, ${rightRef}::text) AS ${quoteIdent(j.display.as)}`
+        );
       }
     }
   }
@@ -386,13 +379,13 @@ function renderGroupBy(input: SelectQueryInput, w: ParamWriter): string[] {
     }
   }
 
-  // Auditable-join display columns are projected as `<alias>.display_name`
-  // (see renderProjection) — they must be grouped too.
+  // Join display projections (`COALESCE(<expr>, right) AS "<as>"` — see
+  // renderProjection) group by their output alias — PostgreSQL accepts
+  // output column names in GROUP BY, and the alias is the only safe ref
+  // for arbitrary display expressions.
   if (input.joins) {
     for (const j of input.joins) {
-      if (j.alias === "creator" || j.alias === "updater" || j.alias === "deleter") {
-        cols.add(`${quoteIdent(j.alias)}.display_name`);
-      }
+      if (j.display) cols.add(quoteIdent(j.display.as));
     }
   }
 

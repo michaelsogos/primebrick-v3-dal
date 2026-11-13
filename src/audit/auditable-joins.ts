@@ -9,7 +9,14 @@
 import type { EntityClass } from "../meta/entity-meta.js";
 import { getEntityPersistenceMeta } from "../meta/entity-meta.js";
 import { Join, field, Project } from "../query/dsl.js";
+import { renderDisplayTemplate } from "../query/display-template.js";
 import type { JoinExpr, FieldProjector } from "../query/dsl.js";
+
+/** Platform-identity display template for every actor join — mirrors the
+ *  `display_field` declared on user_profile's BE meta (`display_name`),
+ *  i.e. the materialized default `"${display_field}"`. Evaluated on the
+ *  join alias exactly like entity self-ref display templates. */
+const USER_DISPLAY_TEMPLATE = "${display_name}";
 
 /**
  * Standard join configuration for auditable entities.
@@ -64,43 +71,32 @@ export function buildAuditableJoinsSelective(
     includeCreator?: boolean;
     includeUpdater?: boolean;
     includeDeleter?: boolean;
+    /** `cloned_by` — the clone-write actor. Only `Clonable` entities carry
+     *  the column; the caller gates on `isClonableEntity`. */
+    includeCloner?: boolean;
   } = {}
 ): ReturnType<typeof Join.on>[] {
   const joins: ReturnType<typeof Join.on>[] = [];
-  const { includeCreator = true, includeUpdater = true, includeDeleter = true } = options;
-
-  if (includeCreator) {
+  const { includeCreator = true, includeUpdater = true, includeDeleter = true, includeCloner = false } = options;
+  const actorJoin = (col: "created_by" | "updated_by" | "deleted_by" | "cloned_by", alias: string) =>
     joins.push(
       Join.on(
         field(userEntity, "uuid" as any),
-        field(entity, "created_by" as any),
+        field(entity, col as any),
         "LEFT",
-        { castRightTo: "text", castLeftTo: "text", alias: "creator" }
+        {
+          castRightTo: "text",
+          castLeftTo: "text",
+          alias,
+          display: { as: `${col}_name`, sql: renderDisplayTemplate(USER_DISPLAY_TEMPLATE, userEntity, alias) },
+        }
       )
     );
-  }
 
-  if (includeUpdater) {
-    joins.push(
-      Join.on(
-        field(userEntity, "uuid" as any),
-        field(entity, "updated_by" as any),
-        "LEFT",
-        { castRightTo: "text", castLeftTo: "text", alias: "updater" }
-      )
-    );
-  }
-
-  if (includeDeleter) {
-    joins.push(
-      Join.on(
-        field(userEntity, "uuid" as any),
-        field(entity, "deleted_by" as any),
-        "LEFT",
-        { castRightTo: "text", castLeftTo: "text", alias: "deleter" }
-      )
-    );
-  }
+  if (includeCreator) actorJoin("created_by", "creator");
+  if (includeUpdater) actorJoin("updated_by", "updater");
+  if (includeDeleter) actorJoin("deleted_by", "deleter");
+  if (includeCloner) actorJoin("cloned_by", "cloner");
 
   return joins;
 }

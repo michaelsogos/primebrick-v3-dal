@@ -53,11 +53,13 @@ import {
   type JoinExpr,
 } from "../query/dsl.js";
 import { buildAuditableJoinsSelective } from "../audit/auditable-joins.js";
+import { renderDisplayTemplate } from "../query/display-template.js";
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
 import {
   AuditableFieldType,
+  CloneFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
   isClonableEntity,
@@ -157,6 +159,12 @@ export interface EntityServiceConfig<TEntity> {
   actor?: () => string;
   /** Audit trail table override — default `${tableName}_audit`. */
   auditTableName?: string;
+  /** The entity's OWN display template (`"${name} (${code})"` syntax —
+   *  `resolveDisplayTemplate(meta)` applied to the authored meta).
+   *  Evaluated on self-ref joins: `cloned_from_name` projects the same
+   *  string the FE uses for this entity's titles. Absent → self-join
+   *  skipped, the ref cell renders the raw uid (COALESCE fallback). */
+  display?: string | null;
   list: {
     searchableKeys: readonly string[];
     filterableKeys: ReadonlySet<string>;
@@ -347,19 +355,49 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     ...wireAlwaysFilterable,
   ]);
   const auditable = isAuditableEntity(meta);
-  /** Audit actor column → user_profile join alias + the `*_by_name` display
-   *  column the join auto-projects (COALESCE display_name → raw actor). */
-  const AUDIT_ACTOR_JOIN_ALIAS: Readonly<Record<string, { join: string; nameAlias: string }>> = {
-    created_by: { join: "creator", nameAlias: "created_by_name" },
-    updated_by: { join: "updater", nameAlias: "updated_by_name" },
-    deleted_by: { join: "deleter", nameAlias: "deleted_by_name" },
-  };
-  const joinsFor = (): JoinExpr[] =>
-    auditable
+  const clonable = isClonableEntity(cfg.entity);
+  /** `cloned_by` actor join — only when the column actually exists
+   *  (`Clonable` mixin carries it; a hand-rolled entity may declare the
+   *  `cloned_from` pointer alone). */
+  const hasClonedBy = Object.values(meta.columns).some(
+    (c) => c.cloneType === CloneFieldType.CLONED_BY,
+  );
+  /** Display template rendered once at construction — an unknown `${key}`
+   *  fails here, never mid-query. `clone_src` = the self-join alias. */
+  const selfDisplaySql = cfg.display
+    ? renderDisplayTemplate(cfg.display, cfg.entity, "clone_src")
+    : undefined;
+  const joinsFor = (): JoinExpr[] => [
+    ...(auditable || clonable
       ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
-          includeDeleter: hasDeletedBy,
+          includeCreator: auditable,
+          includeUpdater: auditable,
+          includeDeleter: auditable && hasDeletedBy,
+          includeCloner: clonable && hasClonedBy,
         }) as JoinExpr[])
-      : [];
+      : []),
+    ...(clonable && selfDisplaySql
+      ? [{
+          left: field(cfg.entity, "uuid" as never),
+          right: field(cfg.entity, "cloned_from" as never),
+          type: "LEFT" as const,
+          alias: "clone_src",
+          display: { as: "cloned_from_name", sql: selfDisplaySql },
+        }]
+      : []),
+  ];
+  /** Joined-name descriptor per base column — derived from the joins' own
+   *  `display` contracts. Search resolves `COALESCE(<expr>, <col>::text)`;
+   *  `sort_key` orders on the projected `*_name` alias (the sorted
+   *  surface the FE shows), never the raw uid/uuid. */
+  const NAME_JOINS = new Map(
+    joinsFor()
+      .filter((j) => j.display !== undefined)
+      .map((j) => [
+        j.right.key as string,
+        { nameAlias: j.display!.as, sql: j.display!.sql },
+      ]),
+  );
   const repoFor = (tx?: Repository) => tx ?? repo;
 
   /** Fail-closed `sort_key` gate: the wire can only sort on keys that
@@ -427,14 +465,14 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
                 ? [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", raw, "OR")]
                 : [Filter.fieldValue(field(cfg.entity, "uuid" as never), "ILIKE", needle, "OR")];
             }
-            const actorJoin = auditable ? AUDIT_ACTOR_JOIN_ALIAS[f] : undefined;
-            if (actorJoin) {
-              // Actor search resolves the user_profile join display_name —
-              // the searchable surface — COALESCE'd onto the raw actor value
-              // (same fallback as the `*_by_name` projection; a uuid column
-              // cannot serve ILIKE directly → 42883).
+            const nameJoin = NAME_JOINS.get(f);
+            if (nameJoin) {
+              // Joined-name search resolves the join's display expression —
+              // the searchable surface — COALESCE'd onto the raw column
+              // value (same fallback as the `*_name` projection; a uuid
+              // column cannot serve ILIKE directly → 42883).
               return [Filter.expr(
-                { sql: `COALESCE("${actorJoin.join}".display_name, ${selfRef}."${f}"::text)` },
+                { sql: `COALESCE(${nameJoin.sql}, ${selfRef}."${f}"::text)` },
                 "ILIKE",
                 { sql: "? ESCAPE '#'", params: [needle] },
                 "OR",
@@ -503,9 +541,9 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       assertSortableKey(sort_key);
 
       const shape = buildListShape();
-      // Actor sort orders on the projected `*_by_name` display column (the
-      // sorted surface the FE shows), not the raw uuid.
-      const sortActor = auditable ? AUDIT_ACTOR_JOIN_ALIAS[sort_key] : undefined;
+      // Joined-name sort orders on the projected `*_name` display column
+      // (the sorted surface the FE shows), not the raw uuid.
+      const sortNameJoin = NAME_JOINS.get(sort_key);
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
@@ -514,8 +552,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           filters: buildListFilters(q),
           sorting: [
-            sortActor
-              ? Sort.byAlias(sortActor.nameAlias, sort_dir)
+            sortNameJoin
+              ? Sort.byAlias(sortNameJoin.nameAlias, sort_dir)
               : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
           ],
           deletedRecords: q.deleted_records ?? "EXCLUDED",
@@ -709,6 +747,6 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     // Capability contract — derived from the entity class, consumed by the
     // router (collaboration.enabled, /duplicate gate). Never restated.
     auditable,
-    clonable: isClonableEntity(cfg.entity),
+    clonable,
   };
 }

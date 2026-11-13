@@ -191,15 +191,21 @@ export type JoinExpr = {
   type: SqlJoinType;
   alias?: string;
   options?: { castRightTo?: string; castLeftTo?: string };
+  /** Display-name projection this join contributes — emitted as
+   *  `COALESCE(<sql>, <base>.<right col>::text) AS "<as>"`. `sql`
+   *  references the join alias (typically a rendered display template).
+   *  The join declares its own display contract — the builder never
+   *  guesses by alias name. */
+  display?: { as: string; sql: string };
 };
 export const Join = {
   on(
     left: FieldRef<any, any>,
     right: FieldRef<any, any>,
     type: SqlJoinType = "INNER",
-    options?: { castRightTo?: string; castLeftTo?: string; alias?: string }
+    options?: { castRightTo?: string; castLeftTo?: string; alias?: string; display?: { as: string; sql: string } }
   ): JoinExpr {
-    return { right, left, type, alias: options?.alias, options: { castRightTo: options?.castRightTo, castLeftTo: options?.castLeftTo } };
+    return { right, left, type, alias: options?.alias, options: { castRightTo: options?.castRightTo, castLeftTo: options?.castLeftTo }, display: options?.display };
   },
 };
 

@@ -132,6 +132,13 @@ export {
   type VectorHybridInput,
 } from "./query/query-builder.js";
 
+// Display-template → SQL renderer for join display projections
+export { renderDisplayTemplate } from "./query/display-template.js";
+
+// The materialized display template (`display_name ?? "${display_field}"`)
+// — shared rule between served meta and the DAL's `_name` join projections.
+export { resolveDisplayTemplate } from "@primebrick/core";
+
 // Streaming
 export { createStream } from "./query/streaming.js";
 

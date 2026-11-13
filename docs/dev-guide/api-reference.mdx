@@ -1504,6 +1504,11 @@ The contract every entity service must satisfy — enforced on the router.
  effects (e.g. the BE entity-changed marker publisher). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
+| display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
+ `resolveDisplayTemplate(meta)` applied to the authored meta).
+ Evaluated on self-ref joins: `cloned_from_name` projects the same
+ string the FE uses for this entity's titles. Absent → self-join
+ skipped, the ref cell renders the raw uid (COALESCE fallback). |
 | list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
@@ -3411,7 +3416,7 @@ Useful when you only need specific audit fields to reduce query overhead.
 |-----------|------|-------------|
 | entity | `EntityClass` | The entity class implementing IAuditableEntity |
 | userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) |
-| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean }` | Configuration for which joins to include |
+| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean; includeCloner: boolean }` | Configuration for which joins to include |
 
 ### `buildAuditTrailJoins(auditEntity, userEntity, baseTableRef): { joins: JoinExpr[]; projections: FieldProjector[] }`
 
@@ -4710,6 +4715,14 @@ Declares a served-meta reference: the column's value is the uid (uuid)
 | pool | `Pool` |  |
 | schema | `string` |  |
 
+### `renderDisplayTemplate(template, entity, alias): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| template | `string` |  |
+| entity | `EntityClass` |  |
+| alias | `string` |  |
+
 ### `rescale(d, newScale, mode): Decimal`
 
 Re-express `d` at `newScale`. Growing is exact; shrinking applies `mode`
@@ -4729,6 +4742,19 @@ Intended for tests — call in afterAll to release the pool.
 ### `resetSchemaDomain(): void`
 
 Test hook — clears the configured domain.
+
+### `resolveDisplayTemplate(meta): string \| null`
+
+The materialized display template — `meta.display_name` when authored,
+`"${" + display_field + "}"` otherwise (the served default). ONE rule
+used by both the served-meta assembler (EntityMetaResponse.display_name)
+and the DAL's display-join projection (`<key>_name` columns evaluate the
+SAME template on the joined row), so titles, combos and ref cells can
+never diverge.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `Pick<EntityMeta, "display_field" \| "display_name">` |  |
 
 ### `resolveEntitySchema(meta, fallback): string`
 
