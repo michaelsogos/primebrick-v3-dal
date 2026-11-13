@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Pool } from "pg";
 import { performance } from "node:perf_hooks";
 import { newUuidV7 } from "../../src/types/uuid.js";
-import { Repository } from "../../src/index.js";
+import { field, Project, Repository, type BulkResult } from "../../src/index.js";
 import { REPO_INTERNAL } from "../../src/repository/repository.js";
 import { BenchSimpleEntity } from "../entities/bench-simple.entity.js";
 import { BenchPrimitivesEntity } from "../entities/bench-primitives.entity.js";
@@ -64,10 +64,10 @@ function genPrimitives(n: number) {
 }
 
 /** Run a benchmark and collect metrics. */
-async function benchmark<T>(
+async function benchmark(
   label: string,
   count: number,
-  fn: () => Promise<T[]>
+  fn: () => Promise<BulkResult>
 ): Promise<void> {
   const start = performance.now();
   const result = await fn();
@@ -79,20 +79,39 @@ async function benchmark<T>(
   console.log(`    records:    ${count.toLocaleString()}`);
   console.log(`    total:      ${totalMs.toFixed(2)} ms`);
   console.log(`    throughput: ${rps.toLocaleString()} rec/s`);
-  console.log(`    returned:   ${result.length.toLocaleString()} rows`);
+  console.log(`    affected:   ${result.affected.toLocaleString()} rows`);
 
-  expect(result).toHaveLength(count);
+  expect(result).toEqual({ received: count, affected: count });
 }
 
-/** Cleanup: hard-delete all rows by uuid. */
-async function cleanup(entity: any, rows: { uuid: string }[]): Promise<void> {
-  for (const r of rows) {
-    try {
-      await repo.hardDelete(entity, { uuid: r.uuid, version: (r as any).version }, { actor: "bench", matchBy: "uuid" });
-    } catch {
-      // ignore — already deleted
-    }
-  }
+/**
+ * Read back `uuid`→`version` for every row of the entity — the
+ * caller-observed versions the optimistic-concurrency guard requires on
+ * guarded writes. Benchmark tables are truncated per test, so a full
+ * projection returns exactly the rows just inserted.
+ */
+async function observedVersions(entity: any): Promise<Map<string, number>> {
+  const rows = (await repo.findAll(entity, [
+    Project.field(field(entity, "uuid")),
+    Project.field(field(entity, "version")),
+  ])) as { uuid: string; version: number }[];
+  return new Map(rows.map((r) => [r.uuid, r.version]));
+}
+
+/**
+ * Cleanup: re-observe versions (guarded writes bump them), then one atomic
+ * hardDeleteMany. Asserts every row is removed — a silent catch would leak
+ * rows into the next run and skew the measurements.
+ */
+async function cleanup(entity: any, uuids: string[]): Promise<void> {
+  const observed = await observedVersions(entity);
+  const res = await repo.hardDeleteMany(
+    entity,
+    uuids.map((uuid) => ({ uuid, version: observed.get(uuid)! })),
+    { actor: "bench", matchBy: "uuid" },
+  );
+  expect(res).toEqual({ received: uuids.length, affected: uuids.length });
+  expect(Number(await repo.count(entity))).toBe(0);
 }
 
 // ─── Benchmark scales ─────────────────────────────────────────────────────────
@@ -110,18 +129,20 @@ describe("updateMany benchmark — simple table", () => {
 
       const rows = genSimple(count);
       await repo.addMany(BenchSimpleEntity, rows, { actor: "bench" });
+      const observed = await observedVersions(BenchSimpleEntity);
 
       const updates = rows.map((r) => ({
         uuid: r.uuid,
         name: `Updated ${r.name}`,
         status: r.status === "active" ? "inactive" : "active",
+        version: observed.get(r.uuid)!,
       }));
 
       await benchmark(`updateMany simple`, count, () =>
         repo.updateMany(BenchSimpleEntity, updates, { actor: "bench", matchBy: "uuid" })
       );
 
-      await cleanup(BenchSimpleEntity, rows);
+      await cleanup(BenchSimpleEntity, rows.map((r) => r.uuid));
     });
   }
 });
@@ -172,19 +193,21 @@ describe("updateMany benchmark — primitives table", () => {
 
       const rows = genPrimitives(count);
       await repo.addMany(BenchPrimitivesEntity, rows as any, { actor: "bench" });
+      const observed = await observedVersions(BenchPrimitivesEntity);
 
       const updates = rows.map((r) => ({
         uuid: r.uuid,
         varchar_val: `updated_${r.varchar_val}`,
         text_val: `Updated text for ${r.uuid}`,
         jsonb_val: { ...r.jsonb_val, updated: true },
+        version: observed.get(r.uuid)!,
       }));
 
       await benchmark(`updateMany primitives`, count, () =>
         repo.updateMany(BenchPrimitivesEntity, updates, { actor: "bench", matchBy: "uuid" })
       );
 
-      await cleanup(BenchPrimitivesEntity, rows);
+      await cleanup(BenchPrimitivesEntity, rows.map((r) => r.uuid));
     });
   }
 });
