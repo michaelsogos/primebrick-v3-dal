@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, Calculated, Ref, withColumnConstraints, EntityBase, Auditable, Deletable, type UUID, type Decimal } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, Ref, withColumnConstraints, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -669,5 +669,78 @@ describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
     const out = withColumnConstraints(meta, CcRefDomainEntity);
     const addr = out.columns.find((c) => c.key === "address_uuid");
     expect(addr).toMatchObject({ type: "ref", ref: { entity: "local_address" } });
+  });
+});
+
+// ── Canonical audit-section order — extras → pairs → clone triple → version ──
+@Entity("cc_clone_jobs", "job")
+class CcCloneJobEntity extends Clonable(Deletable(Auditable(EntityBase))) {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ nullable: false }) name!: string;
+  @SynchronizableField(SynchronizableFieldType.LAST_SYNCED_AT)
+  @Column({ nullable: true })
+  last_synced_at?: Date;
+}
+
+const cloneMeta = (): EntityMeta => ({
+  entity: "cc_clone_job",
+  translation_key: "cc_clone_job",
+  entities_ns: "job",
+  uid: "uuid",
+  display_field: "name",
+  columns: [
+    { key: "name", label_key: "job.entities.cc_clone_job.fields.name", type: "text", order: 10 },
+  ],
+});
+
+describe("withColumnConstraints — canonical audit order", () => {
+  it("emits extras → created pair → updated pair → deleted pair → clone triple → version last", () => {
+    const out = withColumnConstraints(cloneMeta(), CcCloneJobEntity);
+    const auditedKeys = out.columns
+      .filter((c) => c.audited === true)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map((c) => c.key);
+    expect(auditedKeys).toEqual([
+      "last_synced_at",
+      "created_by", "created_at",
+      "updated_by", "updated_at",
+      "deleted_by", "deleted_at",
+      "cloned_from", "cloned_at", "cloned_by",
+      "version",
+    ]);
+    // version is unconditional last — the mixin-declaration position
+    // (inside Auditable, before Deletable/Clonable fields) must not leak.
+    const version = out.columns.find((c) => c.key === "version");
+    expect(version?.order).toBe(Math.max(...out.columns.map((c) => c.order ?? 0)));
+  });
+
+  it("@SynchronizableField marks audited by construction — derived AND declared paths", () => {
+    const out = withColumnConstraints(cloneMeta(), CcCloneJobEntity);
+    const sync = out.columns.find((c) => c.key === "last_synced_at");
+    expect(sync?.audited).toBe(true);
+    // extras band: first of the audit block, before created_by's rank.
+    const createdBy = out.columns.find((c) => c.key === "created_by");
+    expect(sync?.order).toBeLessThan(createdBy?.order ?? 0);
+  });
+
+  it("authored audited column without order joins the extras band; authored order wins (escape hatch)", () => {
+    const meta = cloneMeta();
+    meta.columns.push(
+      { key: "name", label_key: "x.name", type: "text", audited: true } as never,
+      { key: "created_at", label_key: "x.ca", type: "datetime", order: 70 } as never,
+    );
+    // `name` declared twice — keep one authored entry only for the test.
+    meta.columns = meta.columns.filter((c, i) => c.key !== "name" || i === meta.columns.length - 2);
+    const out = withColumnConstraints(meta, CcCloneJobEntity);
+    const nameCol = out.columns.find((c) => c.key === "name");
+    const createdBy = out.columns.find((c) => c.key === "created_by");
+    const createdAt = out.columns.find((c) => c.key === "created_at");
+    // extra without order → extras band (before standard audit ranks)
+    expect(nameCol?.audited).toBe(true);
+    expect(nameCol?.order).toBeLessThan(createdBy?.order ?? 0);
+    // authored order on a system column stays — the escape hatch
+    expect(createdAt?.order).toBe(70);
+    expect(createdAt?.audited).toBe(true);
   });
 });

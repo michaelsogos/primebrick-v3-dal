@@ -74,16 +74,38 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // derived, never authored (the vocab is the table's own writers
       // by definition; an authored options_source on `*_by` is drift).
       ...(isAuditActorColumn(phys) ? { options_source: "audit.actors" as const } : {}),
-      // `audited` is a class fact too (audit/deletion decorators) — inject
-      // even on authored columns so a mere relabel can't drop the flag
-      // (it gates dict inline-editability and soft-delete detection).
-      ...(phys.isAuditable === true || phys.isDeletable === true ? { audited: true } : {}),
+      // `audited` is a class fact too (audit/deletion/sync decorators) —
+      // inject even on authored columns so a mere relabel can't drop the
+      // flag (it gates dict inline-editability and soft-delete detection).
+      ...(phys.isAuditable === true || phys.isDeletable === true || phys.isSynchronizable === true
+        ? { audited: true }
+        : {}),
       // The ref contract is a class fact the same way: an authored column
       // entry may tune visibility/order but can never re-point or drop
       // the ref (`@Ref` target, or the `cloned_from` self-ref).
       ...(refEnt !== undefined ? { type: "ref" as const, ref: { entity: refEnt } } : {}),
     };
   };
+
+  let extraAuditIdx = 0;
+  /** Canonical audit-section sequence — emitted `order` bands so the record
+   *  sheet's audit accordion reads extras → created pair → updated pair →
+   *  deleted pair → clone triple → version-last by construction, regardless
+   *  of mixin declaration order in the class. Authored `order` still wins:
+   *  a declared column carrying one is the explicit escape hatch. */
+  const auditOrderFor = (key: string): number => {
+    const rank = STANDARD_AUDIT_RANK[key];
+    if (rank !== undefined) return AUDIT_ORDER_BASE + rank;
+    // Non-standard audited columns (sync/lifecycle stamps) rank FIRST of
+    // the audit block, in emission order among themselves.
+    return AUDIT_ORDER_BASE + extraAuditIdx++ * 10;
+  };
+  /** After injectDerived: an audited column WITHOUT an authored order gets
+   *  its canonical band (uid is pinned separately and is never audited). */
+  const withAuditOrder = (col: MetaColumn): MetaColumn =>
+    col.audited === true && col.order === undefined && col.key !== meta.uid
+      ? { ...col, order: auditOrderFor(col.key) }
+      : col;
 
   const columns = meta.columns
     .filter((col) => !hiddenKeys.has(col.key))
@@ -410,9 +432,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         const flagDefaults: Record<string, boolean> = {};
         for (const f of QUERY_FLAGS)
           if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type)) flagDefaults[f] = false;
-        return injectDerived({ ...col, ...flagDefaults });
+        return withAuditOrder(injectDerived({ ...col, ...flagDefaults }));
       }
-      return injectDerived(col);
+      return withAuditOrder(injectDerived(col));
     });
 
   // ── Class → meta completeness: every PHYSICAL column not declared and not
@@ -437,6 +459,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       phys.isDeletable === true ||
       phys.isClone === true ||
       phys.cloneType !== undefined;
+    // The `audited` section flag also covers synchronization stamps
+    // (@SynchronizableField e.g. last_synced_at) — non-standard audit
+    // fields land in the extras group, ranked first of the block. Kept
+    // out of `isAudit` itself: that flag also drives the shared
+    // system.common.fields label_key which has no sync entry.
+    const auditedField = isAudit || phys.isSynchronizable === true;
     const isUid = key === meta.uid;
     // `cloned_from` self-references the owning entity — the source record
     // lives in the same table, so the ref target is the entity itself.
@@ -449,10 +477,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // the label is identical for every entity by definition.
       label_key: isAudit || isUid || COMMON_SYSTEM_FIELD_KEYS.has(key) ? `system.common.fields.${key}` : labelFor(key),
       type: colType,
-      order: isUid ? -1 : 1000 + derivedIdx++,
+      order: isUid ? -1 : auditedField ? auditOrderFor(key) : 1000 + derivedIdx++,
       sticky: isUid || undefined,
       default_visible: false,
-      audited: isAudit || undefined,
+      audited: auditedField || undefined,
       // Every emitted column is filter criteria-eligible (the uid powers
       // ref/actor `IN` lookups; version supports "changed since" filters)
       // and sortable — audit actor uuids resolve `*_display_name` through
@@ -486,6 +514,25 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   }
   return { ...meta, columns };
 }
+
+/** Canonical audit-section order — the record sheet sorts `audited` columns
+ *  by `order`; these bands make the sequence a construction fact instead of
+ *  mixin-declaration luck. extras (non-standard audited cols) fill 2000-2090
+ *  by emission order; standard stamps follow by pair; `version` is pinned
+ *  unconditional last. */
+const AUDIT_ORDER_BASE = 2000;
+const STANDARD_AUDIT_RANK: Record<string, number> = {
+  created_by: 100,
+  created_at: 110,
+  updated_by: 120,
+  updated_at: 130,
+  deleted_by: 140,
+  deleted_at: 150,
+  cloned_from: 160,
+  cloned_at: 170,
+  cloned_by: 180,
+  version: 900,
+};
 
 /** System physical fields whose label is entity-independent — auto-derived
  *  columns for these always resolve `system.common.fields.<key>` (seeded once
