@@ -60,6 +60,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   const injectDerived = (col: MetaColumn): MetaColumn => {
     const phys = persistence.columns[col.key];
     if (!phys) return col;
+    const refEnt = servedRefEntity(phys, meta.entity);
     return {
       ...col,
       nullable: phys.nullable ?? false,
@@ -77,9 +78,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // even on authored columns so a mere relabel can't drop the flag
       // (it gates dict inline-editability and soft-delete detection).
       ...(phys.isAuditable === true || phys.isDeletable === true ? { audited: true } : {}),
-      // `@Ref` is a class fact the same way: an authored column entry may
-      // tune visibility/order but can never re-point or drop the ref.
-      ...(phys.refEntity !== undefined ? { type: "ref" as const, ref: { entity: phys.refEntity } } : {}),
+      // The ref contract is a class fact the same way: an authored column
+      // entry may tune visibility/order but can never re-point or drop
+      // the ref (`@Ref` target, or the `cloned_from` self-ref).
+      ...(refEnt !== undefined ? { type: "ref" as const, ref: { entity: refEnt } } : {}),
     };
   };
 
@@ -118,11 +120,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // "ref" literal (system columns must declare the derived type),
       // anything else contradicts the class.
       const physForRef = persistence.columns[col.key];
-      if (physForRef?.refEntity !== undefined) {
+      const servedRef = physForRef ? servedRefEntity(physForRef, meta.entity) : undefined;
+      if (servedRef !== undefined) {
         if (col.ref !== undefined || (col.type !== undefined && col.type !== "ref")) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors ref/type — ` +
-              `the ref contract derives from @Ref("${physForRef.refEntity}") on the entity class; never declared by hand`,
+              `the ref contract derives from the entity class (@Ref / cloned_from self-ref → "${servedRef}"); never declared by hand`,
           );
         }
       }
@@ -360,8 +363,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    the writable-validation contract (system cols never enter
       //    create/edit forms).                                         */
       if (COMMON_SYSTEM_FIELD_KEYS.has(col.key)) {
-        // @Ref pins the served type to "ref" — a class fact like pg_type.
-        const derivedType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
+        // A served ref pins the type to "ref" — a class fact like
+        // pg_type (@Ref target or the cloned_from self-ref).
+        const derivedType = servedRefEntity(phys, meta.entity) !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
         if (col.type !== derivedType) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: system column "${col.key}" authors type:"${col.type}" but ` +
@@ -436,7 +440,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     const isUid = key === meta.uid;
     // `cloned_from` self-references the owning entity — the source record
     // lives in the same table, so the ref target is the entity itself.
-    const refEntity = phys.refEntity ?? (phys.isClone === true ? meta.entity : undefined);
+    const refEntity = servedRefEntity(phys, meta.entity);
     const colType = refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
     const derived: MetaColumn = {
       key,
@@ -526,6 +530,18 @@ function defaultQueryFlag(
   if (flag === "filterable") return true;
   if (flag === "sortable") return key !== "version";
   return key !== "version" && metaType !== "date" && metaType !== "datetime";
+}
+
+/** Served-meta ref target for a physical column: `@Ref` wins; a
+ *  `cloned_from` column (`isClone`) self-references the OWNING entity —
+ *  the source record lives in the same table. The target is the entity
+ *  NAME, never a class thunk or inlined meta, so a self-ref can never
+ *  recurse (the FE resolves it lazily through the route census). */
+function servedRefEntity(
+  phys: { refEntity?: string; isClone?: boolean },
+  entityName: string | undefined,
+): string | undefined {
+  return phys.refEntity ?? (phys.isClone === true ? entityName : undefined);
 }
 
 /** Entity-class `inferredPgType` → MetaColumn `type` for auto-derived columns. */
