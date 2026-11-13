@@ -60,6 +60,7 @@ import {
   AuditableFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
+  isClonableEntity,
   type EntityClass,
 } from "../meta/entity-decorators.js";
 import { entityDateToApiIso } from "../meta/column-pg-io.js";
@@ -206,6 +207,12 @@ export interface EntityService<TEntity> {
   /** The entity's `dict` facet when the class carries `@Dict` — the
    *  entity-router injects it into served meta (`dict`). */
   dictFacet?: import("@primebrick/core").DictFacet;
+  /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail
+   *  table. The router derives `collaboration.enabled` from this. */
+  auditable?: boolean;
+  /** `Clonable` mixin on the entity class — `/duplicate` may register
+   *  only when true. Derived, never restated in the decl. */
+  clonable?: boolean;
 }
 
 // ─── Standard audit port ─────────────────────────────────────────────────────
@@ -616,6 +623,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         throw new NotFoundError(
           `${meta.entityClassName} has no uuid column — duplicate unsupported`,
         );
+      if (!isClonableEntity(cfg.entity))
+        throw new ValidationError(
+          `${meta.entityClassName} is not Clonable — /duplicate must not be reached`,
+        );
       const results: string[] = [];
       const errors: Array<{ uuid: string; error: string }> = [];
       for (const uuid of uuids) {
@@ -694,5 +705,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         yield toDto(row);
       }
     },
+
+    // Capability contract — derived from the entity class, consumed by the
+    // router (collaboration.enabled, /duplicate gate). Never restated.
+    auditable,
+    clonable: isClonableEntity(cfg.entity),
   };
 }

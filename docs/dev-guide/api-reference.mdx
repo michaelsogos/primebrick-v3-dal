@@ -1484,6 +1484,10 @@ The contract every entity service must satisfy — enforced on the router.
 |-------|------|-------------|
 | dictFacet | `DictFacet` | The entity's `dict` facet when the class carries `@Dict` — the
  entity-router injects it into served meta (`dict`). |
+| auditable | `boolean` | `@AuditTrail()` on the entity class — the entity HAS an audit-trail
+ table. The router derives `collaboration.enabled` from this. |
+| clonable | `boolean` | `Clonable` mixin on the entity class — `/duplicate` may register
+ only when true. Derived, never restated in the decl. |
 
 ### `EntityServiceConfig`
 
@@ -4047,6 +4051,17 @@ returns `"schema"."table"`. Otherwise returns just `"table"` (relies on search_p
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 
+### `hasAuditTrail(ctor): boolean`
+
+`true` when the entity class carries `@AuditTrail()` — i.e. it HAS an
+ audit-trail table. Distinct from column-level `@AuditableField`, which
+ only marks write-path-stamped columns. Named `hasAuditTrail` so it
+ never collides with the meta-level `isAuditableEntity` probe.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
 ### `hydrateEntityDateFieldsFromJson(instance, meta): void`
 
 After `Object.assign` from JSON, restore column-typed values on the
@@ -4074,6 +4089,16 @@ Runtime check: does this entity metadata have auditable columns?
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | meta | `EntityPersistenceMeta` |  |
+
+### `isClonableEntity(ctor): boolean`
+
+`true` when the entity class declares a `@CloneField` column — the
+ `Clonable` mixin's `cloned_from`. Entities without it must not expose
+ `/duplicate`: a clone with no tracking columns writes an untracked copy.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
 
 ### `isColumnFilterable(col): boolean`
 

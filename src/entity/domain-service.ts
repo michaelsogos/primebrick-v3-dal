@@ -28,7 +28,11 @@
 
 import { getDal } from "../dal/dal.js";
 import type { Dal } from "../dal/dal.js";
-import { getDictFacet } from "../meta/entity-decorators.js";
+import {
+  getDictFacet,
+  hasAuditTrail,
+  isClonableEntity,
+} from "../meta/entity-decorators.js";
 import type { Repository } from "../repository/repository.js";
 import type {
   BulkItem,
@@ -61,6 +65,20 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
    *  entity-router's assembleMeta injects it into the served meta. */
   get dictFacet() {
     return getDictFacet(this.cfg.entity);
+  }
+
+  /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail
+   *  table. The router derives `collaboration.enabled` from this; never
+   *  restated in the decl. */
+  get auditable() {
+    return hasAuditTrail(this.cfg.entity);
+  }
+
+  /** `Clonable` mixin on the entity class — clone-tracking columns exist,
+   *  so `/duplicate` may register. Entities without it never expose the
+   *  route: a clone with no tracking columns writes an untracked copy. */
+  get clonable() {
+    return isClonableEntity(this.cfg.entity);
   }
 
   /**

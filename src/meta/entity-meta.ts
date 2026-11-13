@@ -25,6 +25,8 @@ export {
   DeletableFieldType,
   SynchronizableFieldType,
   isEntityClass,
+  hasAuditTrail,
+  isClonableEntity,
   getTableName,
   getQualifiedTableName,
   getEntityName,

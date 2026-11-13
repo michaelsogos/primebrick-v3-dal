@@ -13,7 +13,11 @@ import {
   EntityBase,
   Auditable,
   Deletable,
+  Clonable,
+  AuditTrail,
   getEntityPersistenceMeta,
+  hasAuditTrail,
+  isClonableEntity,
   type IAuditableEntity,
   type IDeletableEntity,
 } from "../src/index.js";
@@ -46,6 +50,23 @@ class MixinAudited extends Deletable(Auditable(EntityBase)) {
 class AuditOnly extends Auditable(EntityBase) {
   @Key() id!: bigint;
   @Column({ nullable: false }) label!: string;
+}
+
+/** Full capability entity — trail table + clone tracking columns. */
+@Entity("full_caps")
+@AuditTrail()
+class FullCaps extends Clonable(Deletable(Auditable(EntityBase))) {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Unique() @Column({ pgType: "uuid" }) uuid!: string;
+  @Column({ nullable: false }) name!: string;
+}
+
+/** Audit columns WITHOUT a trail table — the column-level and class-level
+ *  audit flags are distinct capabilities. */
+@Entity("audited_cols_no_trail")
+class AuditedColsNoTrail extends Auditable(EntityBase) {
+  @Key() @Column({ pgType: "bigint" }) id!: bigint;
+  @Column({ nullable: false }) name!: string;
 }
 
 type ColView = { key: boolean; uniq: boolean; aud: unknown; del: unknown; pgType: unknown };
@@ -91,6 +112,20 @@ describe("Entity capability mixins (Auditable / Deletable)", () => {
     // Runtime props exist (useDefineForClassFields)
     expect("created_at" in e).toBe(true);
     expect("deleted_at" in e).toBe(true);
+  });
+
+  it("clonable derives from the Clonable mixin — columns, never a flag", () => {
+    expect(isClonableEntity(FullCaps)).toBe(true);
+    expect(isClonableEntity(MixinAudited)).toBe(false);
+    expect(isClonableEntity(AuditedColsNoTrail)).toBe(false);
+  });
+
+  it("hasAuditTrail is the class-level flag — audited columns alone do NOT imply a trail", () => {
+    expect(hasAuditTrail(FullCaps)).toBe(true);
+    // Auditable() stamps audit COLUMNS but no @AuditTrail → no trail table.
+    expect(hasAuditTrail(AuditedColsNoTrail)).toBe(false);
+    expect(hasAuditTrail(MixinAudited)).toBe(false);
+    expect(getEntityPersistenceMeta(AuditedColsNoTrail).isAuditable).toBeFalsy();
   });
 
   it("static annotation extraction resolves mixin fields through the chain", async () => {

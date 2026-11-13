@@ -778,6 +778,29 @@ export function isEntityClass(value: unknown): value is EntityClass {
   return typeof value === "function" && META.get(value as Function)?.tableName !== undefined;
 }
 
+/**
+ * Capability probes — the entity class is the only source of truth for
+ * what a service can do. The SDK cannot inspect decorators, so services
+ * expose these through the `EntityServiceLike` facet contract (same
+ * pattern as `DomainService.dictFacet`) and consumers never restate them.
+ */
+
+/** `true` when the entity class carries `@AuditTrail()` — i.e. it HAS an
+ *  audit-trail table. Distinct from column-level `@AuditableField`, which
+ *  only marks write-path-stamped columns. Named `hasAuditTrail` so it
+ *  never collides with the meta-level `isAuditableEntity` probe. */
+export function hasAuditTrail(ctor: EntityClass): boolean {
+  return getEntityPersistenceMeta(ctor).isAuditable === true;
+}
+
+/** `true` when the entity class declares a `@CloneField` column — the
+ *  `Clonable` mixin's `cloned_from`. Entities without it must not expose
+ *  `/duplicate`: a clone with no tracking columns writes an untracked copy. */
+export function isClonableEntity(ctor: EntityClass): boolean {
+  const meta = getEntityPersistenceMeta(ctor);
+  return Object.values(meta.columns).some((c) => c.isClone === true);
+}
+
 export function getTableName(ctor: EntityClass): string {
   if (!isEntityClass(ctor)) {
     throw new TypeError("Expected a class decorated with @Entity(…) or @Entity()");
