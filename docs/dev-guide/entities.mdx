@@ -388,7 +388,9 @@ Construction effects — all derived, never authored:
   the direction-reversed duplicate atomically (a reversed row is a circular
   reference in the hierarchy — no check-insert race exists because the
   guarantee lives in the index). A reversed direction with a DIFFERENT type is
-  a distinct claim and stays legal.
+  a distinct claim and stays legal. The `add`/`update`/`addMany` conflict
+  CTEs classify the collision: same-direction → `ERR04`/`ERR05`, reversed →
+  **`ERR11`** (circular reference) with the stored row's ends in `detail.keys`.
 - **Immutable ends** — the two end columns gain `immutable: true` in served
   meta (repointing an edge is delete+create); update-path enforcement is
   `checkEntityFields(partial)` in `@primebrick/core`. The `type_field` column
