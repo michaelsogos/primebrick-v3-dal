@@ -1391,6 +1391,13 @@ a compact inline-editable list (rows add/edit in place).
 | order_field | `string` | Column key owning row ordering (convention default: `sort` when the
  entity declares it). Reorder CTAs mutate it and persist through the
  page's atomic bulk save — no dedicated reorder endpoint. |
+| directional | `{ forward_label_field: string; inverse_label_field: string }` | Directional label pair — declared when the dict rows are link-type
+ vocabularies consumed by `@Relation` edges. `forward_label_field`
+ names the column read parent-side ("the child IS a ‹label›"),
+ `inverse_label_field` names the column read child-side ("the parent
+ IS a ‹label›"); a NULL inverse label means the type is
+ self-inverse — same vocabulary read from both ends (e.g. partner).
+ Fields are PHYSICAL column keys on this dict entity. |
 
 ### `DuplicateResult`
 
@@ -1478,7 +1485,12 @@ must not declare it. |
 | uid | `string` | Field key holding the entity primary key (usually `uuid`). |
 | display_field | `string` | Canonical display field — the column key identifying the entity's
  human-readable label. Drives first-column/sticky table identity and
- default display resolution. |
+ default display resolution. OPTIONAL on the wire type only:
+ `withColumnConstraints` still REQUIRES it on every main-entity meta
+ (construction gate — a missing key throws), while relation entities
+ (`@Relation` marker — directed parent→child edges) MUST NOT declare
+ one: a directed edge has no single-column identity, its display is
+ viewpoint-dependent (`relation` facet). |
 | display_name | `string` | Display expression template (`${field}` syntax, dot-paths allowed).
 OPTIONAL here: `assembleMeta` materializes it as
 `"${" + display_field + "}"` when absent — it is always present in the
@@ -1759,6 +1771,27 @@ sent as the initial SSE `snapshot` event on connect.
 | changed | `EntityChangedMarker \| null` | Most recent server-side change marker, or null if none in the TTL window. |
 | current_version | `number` | Current `version` of the entity (read from DB on snapshot build). |
 
+### `RelationFacet`
+
+The `relation` facet — runtime-injected on served meta when the entity
+class carries the `@Relation` marker (dal-pg). Declares a DIRECTED
+parent→child edge table (e.g. `customer_link`): rows are typed arcs,
+never standalone page entities — no `display_field`, no pinned
+column, viewpoint-dependent display. `parent_field`/`child_field` are
+the physical `@Ref` column keys forming the arc (immutable after
+create — repointing is delete+create); `type_field` optionally points
+at the directional vocabulary entity (a `directional` dict);
+`hierarchical` opts the table into deep-cycle detection on insert
+(the 2-cycle is always rejected by the derived unordered-pair unique
+index — construction-derived, never authored).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| parent_field | `string` |  |
+| child_field | `string` |  |
+| type_field | `string` |  |
+| hierarchical | `boolean` |  |
+
 ### `RowCustomAction`
 
 UI configuration for a non-standard row CTA (route-backed bare op).
@@ -2031,7 +2064,7 @@ contracts, not column sets.
 The served `GET /api/v1/entities/{entity}/meta` response:
 static meta + runtime-injected `display_name`, `actions`, `collaboration`.
 
-**Type:** `EntityMeta & { display_name: string; actions: EntityAction[]; collaboration: CollaborationMeta; dict: DictFacet }`
+**Type:** `EntityMeta & { display_name: string \| null; actions: EntityAction[]; collaboration: CollaborationMeta; dict: DictFacet; relation: RelationFacet }`
 
 ### `EntityPersistenceMeta`
 
@@ -4095,6 +4128,16 @@ returns `"schema"."table"`. Otherwise returns just `"table"` (relies on search_p
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 
+### `getRelationFacet(ctor): RelationFacet \| undefined`
+
+The entity's resolved `relation` facet — subclass-first walk of the
+meta chain (same precedence as `getDictFacet`). `undefined` when no
+ancestor carries `@Relation()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
 ### `getSchemaDomain(): SchemaDomain \| null`
 
 ### `getTableName(ctor): string`
@@ -4781,6 +4824,28 @@ Declares a served-meta reference: the column's value is the uid (uuid)
 |-----------|------|-------------|
 | pool | `Pool` |  |
 | schema | `string` |  |
+
+### `Relation(opts): ClassDecorator`
+
+`@Relation()` — declares a directed parent→child edge entity (e.g.
+`customer_link`): rows are typed arcs between two entity references,
+never standalone page entities. The served meta carries the `relation`
+facet (no `display_field`, no pinned column — the display is
+viewpoint-dependent: `{type.label} {child}` from the parent's page,
+`{type.inverse_label} {parent}` from the child's); `withColumnConstraints`
+injects `immutable: true` on the two end columns (repointing an edge is
+delete+create); `getEntityPersistenceMeta` derives the unordered-pair
+unique index `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` — the atomic
+rejection of both exact duplicates and direction-reversed duplicates
+(a reversed row is a circular reference, not "the same edge twice" —
+no check-insert race exists because the constraint lives in the index).
+`type_field` points at the directional vocabulary dict carrying the
+forward/inverse label pair; `hierarchical` opts into deep-cycle
+(3+ hops, same-type edges) detection on insert.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `RelationFacet` |  |
 
 ### `renderDisplayTemplate(template, entity, alias): string`
 

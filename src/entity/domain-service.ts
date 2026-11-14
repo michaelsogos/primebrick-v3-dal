@@ -30,6 +30,7 @@ import { getDal } from "../dal/dal.js";
 import type { Dal } from "../dal/dal.js";
 import {
   getDictFacet,
+  getRelationFacet,
   hasAuditTrail,
   isClonableEntity,
 } from "../meta/entity-decorators.js";
@@ -66,6 +67,12 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
    *  entity-router's assembleMeta injects it into the served meta. */
   get dictFacet() {
     return getDictFacet(this.cfg.entity);
+  }
+
+  /** The entity's `relation` facet when the class carries `@Relation` —
+   *  the entity-router's assembleMeta injects it into the served meta. */
+  get relationFacet() {
+    return getRelationFacet(this.cfg.entity);
   }
 
   /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail

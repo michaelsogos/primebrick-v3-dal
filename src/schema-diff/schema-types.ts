@@ -42,6 +42,15 @@ export type SchemaIndexMeta = {
   isUnique?: boolean;
   /** PG15+ `NULLS NOT DISTINCT` on unique indexes — NULL members conflict. */
   nullsNotDistinct?: boolean;
+  /** Raw SQL expression keys — emitted verbatim (parenthesized) BEFORE the
+   *  plain `columns`. Produced by the `@Relation` pair-unique derivation
+   *  (`LEAST`/`GREATEST` unordered-pair keys); index comparison normalizes
+   *  them against `pg_get_indexdef` output, never against column lists. */
+  expressions?: string[];
+  /** Full rendered index definition — captured from `pg_get_indexdef` on
+   *  database introspection; used as the normalized-comparison fallback
+   *  for expression indexes. */
+  definition?: string;
 };
 
 export type SchemaForeignKeyMeta = {

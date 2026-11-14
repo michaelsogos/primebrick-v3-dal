@@ -43,9 +43,9 @@
  *   ≥4 `sticky` columns emit a construction WARNING — allowed,
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
-import type { MetaColumn } from "@primebrick/core";
+import type { MetaColumn, RelationFacet } from "@primebrick/core";
 import { numericKindOf } from "@primebrick/core";
-import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
+import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -62,6 +62,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   entityClass: EntityClass,
 ): T {
   const persistence = getEntityPersistenceMeta(entityClass);
+  /** `@Relation` facet — present when the entity class is a directed
+   *  parent→child edge: reshapes the identity contract below (no
+   *  display_field, no pinned column, ends served + immutable). */
+  const relation = getRelationFacet(entityClass);
 
   // `hidden: true` is the ONLY authored opt-out: the column is suppressed
   // entirely — never emitted in meta.columns, never auto-derived, never
@@ -161,6 +165,19 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               `the ref contract derives from the entity class (@Ref / cloned_from self-ref → "${servedRef}"); never declared by hand`,
           );
         }
+      }
+      // `@Relation` end columns — `immutable` is a class fact (the facet
+      // declares the edge ends create-set / frozen afterwards); authoring
+      // it, in either direction, is drift.
+      if (
+        relation !== undefined &&
+        (col.key === relation.parent_field || col.key === relation.child_field) &&
+        col.immutable !== undefined
+      ) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors immutable — ` +
+            `the @Relation facet owns end mutability (ends are create-set, frozen afterwards); drop the authored value`,
+        );
       }
       // ── uom / unsigned — the unit-of-measure and sign contract live only
       //    on NUMERIC columns. `percent` is a display transform (no sibling);
@@ -523,7 +540,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       kind: "calculated",
     });
   }
-  enforceIdentityColumnContract(columns, meta, persistence.entityClassName);
+  enforceIdentityColumnContract(columns, meta, persistence.entityClassName, relation);
   return { ...meta, columns };
 }
 
@@ -546,12 +563,21 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
  *   other pin throws. The uid can NEVER carry the pin (it stays
  *   toggleable) — `display_field === uid` throws.
  *
+ *   relation entities (`@Relation` — directed parent→child edges):
+ *   reshape the contract — `display_field`/`display_name` FORBIDDEN (the
+ *   display is viewpoint-dependent, owned by the `relation` facet), the
+ *   pinned-column requirement is EXEMPT and an authored pin throws, and
+ *   every facet field (parent/child/type) must resolve to a SERVED
+ *   column carrying `@Ref` — `immutable:true` is injected on the two
+ *   ends (repointing an edge is delete+create).
+ *
  *   ≥4 sticky columns → construction warning (allowed, discouraged).
  */
 function enforceIdentityColumnContract(
   columns: MetaColumn[],
-  meta: { uid?: string; display_field?: string },
+  meta: { uid?: string; display_field?: string; display_name?: string },
   entityClassName: string,
+  relation?: RelationFacet,
 ): void {
   // ── uid contract ───────────────────────────────────────────────────
   if (meta.uid !== undefined) {
@@ -577,6 +603,51 @@ function enforceIdentityColumnContract(
     columns[uidIdx] = { ...uidCol, order: -1, sticky: true, default_visible: false };
   }
 
+  // ── relation entities — directed edges have no single-column identity
+  if (relation !== undefined) {
+    if (meta.display_field !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities never declare display_field — ` +
+          `a directed parent→child edge has no single-column identity; the display is viewpoint-dependent (relation facet)`,
+      );
+    }
+    if (meta.display_name !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities never declare display_name — ` +
+          `a static template would fork the viewpoint-dependent display contract owned by the relation facet`,
+      );
+    }
+    for (const [role, key] of [
+      ["parent_field", relation.parent_field],
+      ["child_field", relation.child_field],
+      ...(relation.type_field !== undefined ? [["type_field", relation.type_field] as const] : []),
+    ] as const) {
+      const idx = columns.findIndex((c) => c.key === key);
+      if (idx === -1) {
+        throw new Error(
+          `withColumnConstraints[${entityClassName}]: @Relation ${role} "${key}" is not a served column — ` +
+            `relation facet fields must resolve to served columns (never hidden:true, never absent)`,
+        );
+      }
+      if (role !== "type_field") {
+        const c = columns[idx]!;
+        if (c.immutable !== undefined && c.immutable !== true) {
+          throw new Error(
+            `withColumnConstraints[${entityClassName}]: @Relation end column "${key}" authors immutable:${c.immutable} — ` +
+              `the facet owns end mutability (ends are create-set, frozen afterwards)`,
+          );
+        }
+        columns[idx] = { ...c, immutable: true };
+      }
+    }
+    const pinned = columns.find((c) => c.sticky === true && c.hideable === false);
+    if (pinned !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities carry no pinned column — ` +
+          `"${pinned.key}" authors sticky:true + hideable:false; the edge's identity is composite and viewpoint-dependent`,
+      );
+    }
+  } else {
   // ── ≥1 pinned column — declared, or derived from display_field ─────
   const hasPin = columns.some((c) => c.sticky === true && c.hideable === false);
   if (!hasPin) {
@@ -605,6 +676,7 @@ function enforceIdentityColumnContract(
       );
     }
     columns[dfIdx] = { ...dfCol, sticky: true, hideable: false };
+  }
   }
 
   // ── ≥4 sticky — allowed, discouraged (construction warning) ────────

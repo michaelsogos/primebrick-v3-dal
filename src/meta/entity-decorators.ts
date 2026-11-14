@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import type { DictFacet } from "@primebrick/core";
+import type { DictFacet, RelationFacet } from "@primebrick/core";
 
 import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
@@ -237,6 +237,11 @@ type ClassEntityMeta = {
    *  shared base (e.g. DictEntityBase), inherited via collectMetaChain;
    *  redeclaring on the concrete class replaces the facet wholesale. */
   dict?: DictFacet;
+  /** `@Relation()` — the entity is a directed parent→child edge table: the
+   *  served meta carries the `relation` facet (no display_field, no pinned
+   *  column, viewpoint display) and the persistence meta derives the
+   *  unordered-pair+type unique index atomically. */
+  relation?: RelationFacet;
 };
 
 /** Options for `@PartitionField()` — the RANGE partition key declaration. */
@@ -774,6 +779,48 @@ export function getDictFacet(ctor: EntityClass): DictFacet | undefined {
   return undefined;
 }
 
+/**
+ * `@Relation()` — declares a directed parent→child edge entity (e.g.
+ * `customer_link`): rows are typed arcs between two entity references,
+ * never standalone page entities. The served meta carries the `relation`
+ * facet (no `display_field`, no pinned column — the display is
+ * viewpoint-dependent: `{type.label} {child}` from the parent's page,
+ * `{type.inverse_label} {parent}` from the child's); `withColumnConstraints`
+ * injects `immutable: true` on the two end columns (repointing an edge is
+ * delete+create); `getEntityPersistenceMeta` derives the unordered-pair
+ * unique index `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` — the atomic
+ * rejection of both exact duplicates and direction-reversed duplicates
+ * (a reversed row is a circular reference, not "the same edge twice" —
+ * no check-insert race exists because the constraint lives in the index).
+ * `type_field` points at the directional vocabulary dict carrying the
+ * forward/inverse label pair; `hierarchical` opts into deep-cycle
+ * (3+ hops, same-type edges) detection on insert.
+ */
+export function Relation(opts: RelationFacet): ClassDecorator {
+  return function <T extends Function>(target: T): T {
+    const m = ensureMeta(target);
+    m.relation = opts;
+    return target;
+  };
+}
+
+/**
+ * The entity's resolved `relation` facet — subclass-first walk of the
+ * meta chain (same precedence as `getDictFacet`). `undefined` when no
+ * ancestor carries `@Relation()`.
+ */
+export function getRelationFacet(ctor: EntityClass): RelationFacet | undefined {
+  for (
+    let p = ctor as Function;
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    const r = META.get(p)?.relation;
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
 export function isEntityClass(value: unknown): value is EntityClass {
   return typeof value === "function" && META.get(value as Function)?.tableName !== undefined;
 }
@@ -965,6 +1012,13 @@ export type EntityPersistenceMeta = {
     using: IndexMethod;
     opclass?: string;
     where?: string;
+    /** Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the
+     *  plain columns — produced by the `@Relation` pair-unique derivation
+     *  (`LEAST/GREATEST` unordered-pair keys); never authored by hand. */
+    expressions?: string[];
+    /** Derived unique indexes (the `@Relation` pair constraint) — plain
+     *  `@Index()` entries never carry it. */
+    isUnique?: boolean;
   }[];
   /** Resolved foreign keys — from `@ForeignKey()` columns. */
   foreignKeys?: {
@@ -1221,7 +1275,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0 });
     indexGroups.set(name, g);
   }
-  const indexes = indexGroups.size
+  let indexes = indexGroups.size
     ? [...indexGroups.entries()].map(([name, g]) => ({
         name,
         columns: g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName)).map((c) => c.sqlName),
@@ -1230,6 +1284,43 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         ...(g.where !== undefined ? { where: g.where } : {}),
       }))
     : undefined;
+
+  // ── @Relation derived pair-unique index ─────────────────────────────
+  // The unordered-pair constraint is DERIVED from the facet — never
+  // authored: `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` rejects both the
+  // exact duplicate and the direction-reversed duplicate atomically in
+  // ONE index (a reversed insert is a circular reference, not a second
+  // edge — and no check-insert race exists because the guarantee lives
+  // in the index itself, not in application code). Facet fields must
+  // resolve to columns carrying `@Ref` — relation ends and the type
+  // vocabulary are entity references by definition.
+  const relation = inherited((m) => m.relation);
+  if (relation !== undefined) {
+    const refSqlFor = (propKey: string, role: string): string => {
+      const reg = colMap.get(propKey);
+      if (reg === undefined || reg.refEntity === undefined) {
+        throw new TypeError(
+          `${entityClassName}: @Relation ${role} "${propKey}" must be a column carrying @Ref — relation ends and the type vocabulary are entity references by definition`,
+        );
+      }
+      return reg.sqlName;
+    };
+    const pSql = refSqlFor(relation.parent_field, "parent_field");
+    const cSql = refSqlFor(relation.child_field, "child_field");
+    if (pSql === cSql) {
+      throw new TypeError(
+        `${entityClassName}: @Relation parent_field and child_field resolve to the same column "${pSql}" — an edge needs two distinct ends`,
+      );
+    }
+    const pairIndex: NonNullable<EntityPersistenceMeta["indexes"]>[number] = {
+      name: `${tableName}_pair_uq`,
+      expressions: [`LEAST(${pSql}, ${cSql})`, `GREATEST(${pSql}, ${cSql})`],
+      columns: relation.type_field !== undefined ? [refSqlFor(relation.type_field, "type_field")] : [],
+      using: "btree",
+      isUnique: true,
+    };
+    (indexes ?? (indexes = [])).push(pairIndex);
+  }
 
   // ── @ForeignKey resolution ────────────────────────────────────────────
   const foreignKeys: NonNullable<EntityPersistenceMeta["foreignKeys"]> = [];

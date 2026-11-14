@@ -53,13 +53,20 @@ function slugifyIdent(s: string): string {
 
 function indexDdl(ix: SchemaIndexMeta, t: { schema: string; name: string }, concurrently: boolean): string {
   const fq = `${quoteIdent(t.schema)}.${quoteIdent(t.name)}`;
-  const cols = ix.columns.map((c) => (ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c))).join(", ");
+  // Expression keys emit verbatim, each wrapped in its own parens (PG
+  // requires parenthesized expressions in index key lists); plain column
+  // keys stay identifier-quoted. Expressions precede columns — the only
+  // producer today is the @Relation pair-unique derivation.
+  const keys = [
+    ...(ix.expressions ?? []).map((e) => `(${e})`),
+    ...ix.columns.map((c) => (ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c))),
+  ].join(", ");
   const unique = ix.isUnique ? "UNIQUE " : "";
   const using = ix.using === "btree" ? "" : ` USING ${ix.using}`;
   const nnd = ix.isUnique && ix.nullsNotDistinct ? " NULLS NOT DISTINCT" : "";
   const where = ix.where ? ` WHERE ${ix.where}` : "";
   const conc = concurrently ? " CONCURRENTLY" : "";
-  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${cols})${nnd}${where};`;
+  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${keys})${nnd}${where};`;
 }
 
 function fkActionSql(action: string): string {
@@ -172,9 +179,11 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
 
     // indexes (new table → plain CREATE INDEX, always fast on empty tables).
     // Composite @Unique groups land here (isUnique + multi-column); single-col
-    // uniques are emitted per-column below.
+    // uniques are emitted per-column below. Expression-bearing indexes
+    // (@Relation pair-unique) always take indexDdl — their key list lives in
+    // `expressions`, so the single-column shortcut would silently drop them.
     for (const ix of t.indexes ?? []) {
-      if (ix.isUnique && ix.columns.length <= 1) continue;
+      if (ix.isUnique && ix.columns.length <= 1 && !(ix.expressions?.length)) continue;
       safe.push(indexDdl(ix, t, false));
     }
     // single-column uniques not covered by composite UNIQUE constraints

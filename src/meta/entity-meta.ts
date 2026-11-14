@@ -18,6 +18,8 @@ export {
   PartitionChildOf,
   Dict,
   getDictFacet,
+  Relation,
+  getRelationFacet,
   Index,
   ForeignKey,
   Calculated,
