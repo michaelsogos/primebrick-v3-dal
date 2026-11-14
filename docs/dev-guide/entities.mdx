@@ -361,6 +361,61 @@ parent (telemetry, logs) don't declare this.
 export class AiMessageEntity { ... }
 ```
 
+### `@Relation(facet)` — directed parent→child edge (class decorator)
+
+Declares the entity a **directed relation edge** (e.g. `customer_link`), not a
+main entity and not a junction table: the edge's identity is the composite
+`(parent, type, child)` and its display is viewpoint-dependent — so the served
+meta carries NO `display_field`, NO `display_name`, and NO pinned column
+(authored ones throw at `withColumnConstraints` construction). The `relation`
+facet is injected into served meta through `DomainService.relationFacet`.
+
+```typescript
+@Entity("customer_links", "crm")
+@Relation({
+  parent_field: "parent_customer_uuid", // @Ref column — edge source
+  child_field:  "child_customer_uuid",  // @Ref column — edge target
+  type_field:   "type_uuid",            // optional @Ref → directional dict
+})
+export class CustomerLinkEntity extends Deletable(Auditable(EntityBase)) { ... }
+```
+
+Construction effects — all derived, never authored:
+
+- **Unordered-pair unique index** — `UNIQUE(LEAST(parent,child),
+  GREATEST(parent,child), type?)` is derived into persistence meta and emitted
+  by the schema patcher automatically. It rejects BOTH the exact duplicate and
+  the direction-reversed duplicate atomically (a reversed row is a circular
+  reference in the hierarchy — no check-insert race exists because the
+  guarantee lives in the index). A reversed direction with a DIFFERENT type is
+  a distinct claim and stays legal.
+- **Immutable ends** — the two end columns gain `immutable: true` in served
+  meta (repointing an edge is delete+create); update-path enforcement is
+  `checkEntityFields(partial)` in `@primebrick/core`. The `type_field` column
+  stays mutable — the relationship may evolve on the same edge.
+- **Facet validation** — `parent_field`/`child_field`/`type_field` must resolve
+  to served columns carrying `@Ref`, and parent ≠ child (both checked at
+  `getEntityPersistenceMeta`).
+
+The type vocabulary is a `DictEntityBase` declaring the directional pair —
+`@Dict({ directional: { forward_label_field, inverse_label_field } })`: the
+forward label reads parent-side ("the child IS a ‹label›"), the inverse label
+child-side ("the parent IS a ‹label›"); a NULL inverse label means the type is
+self-inverse by construction (e.g. partner).
+
+```typescript
+@Entity("customer_link_types", "crm")
+@Dict({ directional: { forward_label_field: "label_key", inverse_label_field: "inverse_label_key" } })
+export class CustomerLinkTypeEntity extends DictEntityBase {
+  @Column({ length: 100, nullable: false }) label_key!: string;
+  @Column({ length: 100, nullable: true }) inverse_label_key?: string;
+}
+```
+
+`hierarchical?: boolean` on the facet opts the table into deep-cycle (3+ hops,
+same-type edges) detection on insert — declared on the contract; the
+insert-path check is layered on top of the pair index, not a replacement.
+
 ## Entity interfaces
 
 The library ships four marker interfaces that document an entity's capabilities.
