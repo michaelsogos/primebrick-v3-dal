@@ -70,12 +70,33 @@ function toVectorLiteral(v: unknown): string {
  */
 function renderExprOperand(w: ParamWriter, o: { sql: string; params?: unknown[] }): string {
   let i = 0;
-  return o.sql.replace(/\?/g, () => {
-    if (i >= (o.params?.length ?? 0)) {
-      throw new Error(`expr operand has more '?' markers than params: ${o.sql}`);
+  let out = "";
+  let inLiteral = false;
+  for (let p = 0; p < o.sql.length; p++) {
+    const ch = o.sql[p]!;
+    if (inLiteral) {
+      out += ch;
+      if (ch === "'") {
+        if (o.sql[p + 1] === "'") out += o.sql[++p]!; // '' escape
+        else inLiteral = false;
+      }
+      continue;
     }
-    return w.add(o.params![i++]);
-  });
+    if (ch === "'") {
+      inLiteral = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "?") {
+      if (i >= (o.params?.length ?? 0)) {
+        throw new Error(`expr operand has more '?' markers than params: ${o.sql}`);
+      }
+      out += w.add(o.params![i++]);
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefined, joins: JoinExpr[] | undefined, tableNameOverride: string | undefined, w: ParamWriter): string[] {
