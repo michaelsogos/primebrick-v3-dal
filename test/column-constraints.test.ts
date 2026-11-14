@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import "reflect-metadata";
 
 import { Entity, Key, Unique, Column, Calculated, Ref, withColumnConstraints, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
@@ -7,6 +7,7 @@ import type { EntityMeta } from "@primebrick/core";
 @Entity("cc_rules", "job")
 class CcRuleEntity {
   @Key() id!: bigint;
+  @Unique() uuid!: UUID;
   @Column({ length: 200, nullable: false }) name!: string;
   @Column({ nullable: false }) event_subject!: string;
   @Column({ nullable: true }) filter?: unknown;
@@ -337,11 +338,15 @@ describe("withColumnConstraints — system column enforcement", () => {
   it("permits query-flag narrowing and visibility overrides on system columns", () => {
     const meta = auditableMeta();
     // uuid derives all-ON — authored `searchable:false` is a real narrowing, not a restatement
-    meta.columns.push({ key: "uuid", label_key: "system.common.fields.uuid", type: "text", order: -1, sticky: true, searchable: false, default_visible: true });
+    meta.columns.push({ key: "uuid", label_key: "system.common.fields.uuid", type: "text", order: -1, sticky: true, searchable: false });
+    // visibility override stays legal — on NON-uid system columns (the uid
+    // contract pins default_visible:false; see identity-contract describe)
+    meta.columns.push({ key: "created_at", label_key: "x.ca", type: "datetime", order: 20, default_visible: true });
     const out = withColumnConstraints(meta, CcJobEntity);
     const uuid = out.columns.find((c) => c.key === "uuid");
-    expect(uuid).toMatchObject({ searchable: false, default_visible: true, sticky: true });
+    expect(uuid).toMatchObject({ searchable: false, default_visible: false, sticky: true });
     expect(uuid?.filterable ?? true).toBe(true); // still ON (absent = ON)
+    expect(out.columns.find((c) => c.key === "created_at")?.default_visible).toBe(true);
   });
 
   it("hidden:true suppresses a system column entirely", () => {
@@ -384,8 +389,11 @@ describe("uom + unsigned constraints", () => {
 		@Column({ length: 4, nullable: true }) qty_uom?: string;
 	}
 
+	// No `uid` — the fixture exercises uom semantics only (a uid would get
+	// the order:-1 identity contract, irrelevant here). display_field keeps
+	// the pin derivation satisfied.
 	const pricedMeta = (cols: Partial<import("@primebrick/core").MetaColumn>[]): EntityMeta => ({
-		entity: "cc_priced", translation_key: "cc_priced", uid: "amount",
+		entity: "cc_priced", translation_key: "cc_priced",
 		display_field: "amount",
 		columns: cols.map((c, i) => ({
 			key: "amount", label_key: "x", type: "number", order: i + 1, ...c,
@@ -664,7 +672,8 @@ describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
     }
     const meta: EntityMeta = {
       entity: "cc_ref_domain", translation_key: "cc_ref_domain", uid: "uuid",
-      columns: [{ key: "uuid", label_key: "x", type: "text", order: 1 }],
+      display_field: "address_uuid",
+      columns: [{ key: "uuid", label_key: "x", type: "text" }],
     };
     const out = withColumnConstraints(meta, CcRefDomainEntity);
     const addr = out.columns.find((c) => c.key === "address_uuid");
@@ -742,5 +751,119 @@ describe("withColumnConstraints — canonical audit order", () => {
     // authored order on a system column stays — the escape hatch
     expect(createdAt?.order).toBe(70);
     expect(createdAt?.audited).toBe(true);
+  });
+});
+
+// ── Identity-column contract: uid invariant + pinned-column derivation ──
+describe("withColumnConstraints — identity-column contract", () => {
+  it("auto-derived uid resolves the contract (order:-1, sticky, hidden-default, toggleable)", () => {
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    expect(out.columns.find((c) => c.key === "uuid")).toMatchObject({
+      order: -1, sticky: true, default_visible: false,
+    });
+    expect(out.columns.find((c) => c.key === "uuid")?.hideable).not.toBe(false);
+  });
+
+  it.each([
+    [{ sticky: false } as never, "sticky:false"],
+    [{ hideable: false } as never, "hideable:false"],
+    [{ default_visible: true } as never, "default_visible:true"],
+    [{ order: 5 } as never, "order:5"],
+  ])("throws when the uid authors %s → %s", (extra, label) => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "uuid", label_key: "x", type: "text", ...extra } as never);
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(
+      new RegExp(`uid column "uuid" authors ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+  });
+
+  it("throws when the uid is suppressed via hidden:true", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "uuid", label_key: "x", type: "text", hidden: true } as never);
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/uid column "uuid" is not served/);
+  });
+
+  it("an authored uid conforming to the contract passes unchanged", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "uuid", label_key: "system.common.fields.uuid", type: "text", order: -1, sticky: true, default_visible: false });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.find((c) => c.key === "uuid")).toMatchObject({ order: -1, sticky: true, default_visible: false });
+  });
+
+  it("an authored uid missing contract props gets them injected", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "uuid", label_key: "x", type: "text" });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.find((c) => c.key === "uuid")).toMatchObject({ order: -1, sticky: true, default_visible: false });
+  });
+
+  it("derives the pin onto display_field when no column declares it", () => {
+    // auditableMeta declares no pinned column — `name` must gain it
+    const out = withColumnConstraints(auditableMeta(), CcJobEntity);
+    expect(out.columns.find((c) => c.key === "name")).toMatchObject({ sticky: true, hideable: false });
+  });
+
+  it("leaves an explicitly pinned non-display_field column alone (author's choice)", () => {
+    const meta = auditableMeta();
+    meta.columns.push({ key: "created_at", label_key: "x.ca", type: "datetime", order: 20, sticky: true, hideable: false });
+    const out = withColumnConstraints(meta, CcJobEntity);
+    expect(out.columns.find((c) => c.key === "created_at")).toMatchObject({ sticky: true, hideable: false });
+    // the pin exists → display_field `name` stays unpinned (no injection)
+    const name = out.columns.find((c) => c.key === "name");
+    expect(name?.hideable).not.toBe(false);
+    expect(name?.sticky).not.toBe(true);
+  });
+
+  it("throws when no pin exists and display_field is absent", () => {
+    const meta = auditableMeta();
+    delete (meta as { display_field?: string }).display_field;
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/no pinned column/);
+  });
+
+  it("throws when display_field names no served column", () => {
+    const meta = auditableMeta();
+    meta.display_field = "ghost_field";
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/display_field "ghost_field" names no served column/);
+  });
+
+  it("throws when display_field names the uid (the uid can never carry the pin)", () => {
+    const meta = auditableMeta();
+    meta.display_field = "uuid";
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/display_field "uuid" is the uid/);
+  });
+
+  it("throws when display_field is explicitly un-pinned with no alternative pin", () => {
+    const meta = auditableMeta();
+    meta.columns[0] = { ...meta.columns[0]!, hideable: true } as never;
+    expect(() => withColumnConstraints(meta, CcJobEntity)).toThrow(/display_field "name" is explicitly hideable:true/);
+    const stickyOff = auditableMeta();
+    stickyOff.columns[0] = { ...stickyOff.columns[0]!, sticky: false } as never;
+    expect(() => withColumnConstraints(stickyOff, CcJobEntity)).toThrow(/display_field "name" is explicitly sticky:false/);
+  });
+
+  it("warns at ≥4 sticky columns (allowed, discouraged)", () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const meta = auditableMeta();
+      // uuid(derived sticky) + name(derived pin) + 2 authored sticky = 4
+      meta.columns.push(
+        { key: "created_at", label_key: "x.ca", type: "datetime", order: 20, sticky: true },
+        { key: "updated_at", label_key: "x.ua", type: "datetime", order: 21, sticky: true },
+      );
+      withColumnConstraints(meta, CcJobEntity);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("4 sticky columns"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not warn below 4 sticky columns", () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      withColumnConstraints(auditableMeta(), CcJobEntity);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

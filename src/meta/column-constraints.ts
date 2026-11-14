@@ -31,6 +31,17 @@
  *   4. `kind:"virtual"` with `sortable`/`filterable`/`searchable` set to
  *      `true` — a virtual column can never be queried; opting IN is a
  *      construction error (opting OUT is legal but redundant).
+ *   5. the uid column (`meta.uid`) authoring `sticky:false`,
+ *      `hideable:false`, `default_visible:true`, `order` ≠ -1, or
+ *      `hidden:true` — the uid contract is fixed: `order:-1`, sticky,
+ *      hidden-by-default, always user-toggleable;
+ *   6. a served meta with NO pinned column (`sticky:true +
+ *      hideable:false` — always-visible, never-hideable identity) — when
+ *      none is declared, the `display_field` column derives the pin;
+ *      display_field absent, naming no served column, naming the uid, or
+ *      explicitly un-pinned (`hideable:true`/`sticky:false`) → throw.
+ *   ≥4 `sticky` columns emit a construction WARNING — allowed,
+ *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn } from "@primebrick/core";
 import { numericKindOf } from "@primebrick/core";
@@ -46,7 +57,7 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
 const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
 
-export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
+export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string; display_field?: string }>(
   meta: T,
   entityClass: EntityClass,
 ): T {
@@ -512,7 +523,98 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       kind: "calculated",
     });
   }
+  enforceIdentityColumnContract(columns, meta, persistence.entityClassName);
   return { ...meta, columns };
+}
+
+/**
+ * The identity-column contract — enforced at meta construction, never
+ * verified downstream:
+ *
+ *   uid column (`meta.uid`): always served, always `sticky:true`,
+ *   `order:-1` (first when visible), `default_visible:false`, and
+ *   user-toggleable (`hideable !== false`). Authored contradictions
+ *   throw; absent contract props are injected. `hidden:true` on the uid
+ *   throws — the identity column is never suppressed.
+ *
+ *   pinned column (`sticky:true + hideable:false`): the always-visible,
+ *   never-hideable identity column. Every served meta needs AT LEAST
+ *   one. When none is declared, the `display_field` column derives it —
+ *   display_field is the mandatory identity, so a pin always exists.
+ *   Explicit pins elsewhere are the authored opt-out; an explicitly
+ *   un-pinned display_field (`hideable:true`/`sticky:false`) with no
+ *   other pin throws. The uid can NEVER carry the pin (it stays
+ *   toggleable) — `display_field === uid` throws.
+ *
+ *   ≥4 sticky columns → construction warning (allowed, discouraged).
+ */
+function enforceIdentityColumnContract(
+  columns: MetaColumn[],
+  meta: { uid?: string; display_field?: string },
+  entityClassName: string,
+): void {
+  // ── uid contract ───────────────────────────────────────────────────
+  if (meta.uid !== undefined) {
+    const uidIdx = columns.findIndex((c) => c.key === meta.uid);
+    if (uidIdx === -1) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: uid column "${meta.uid}" is not served — ` +
+          `the identity column can never be hidden:true or absent (order:-1, sticky, hidden-by-default, toggleable)`,
+      );
+    }
+    const uidCol = columns[uidIdx]!;
+    const contradictions: string[] = [];
+    if (uidCol.sticky === false) contradictions.push("sticky:false");
+    if (uidCol.hideable === false) contradictions.push("hideable:false");
+    if (uidCol.default_visible === true) contradictions.push("default_visible:true");
+    if (uidCol.order !== undefined && uidCol.order !== -1) contradictions.push(`order:${uidCol.order}`);
+    if (contradictions.length > 0) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: uid column "${meta.uid}" authors ${contradictions.join(", ")} — ` +
+          `the uid contract is fixed (order:-1, sticky:true, default_visible:false, user-toggleable); drop the authored value(s)`,
+      );
+    }
+    columns[uidIdx] = { ...uidCol, order: -1, sticky: true, default_visible: false };
+  }
+
+  // ── ≥1 pinned column — declared, or derived from display_field ─────
+  const hasPin = columns.some((c) => c.sticky === true && c.hideable === false);
+  if (!hasPin) {
+    const dfIdx = meta.display_field === undefined ? -1 : columns.findIndex((c) => c.key === meta.display_field);
+    if (dfIdx === -1) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: no pinned column (sticky:true + hideable:false) and ` +
+          (meta.display_field === undefined
+            ? `display_field is not declared — every entity needs at least one always-visible identity column`
+            : `display_field "${meta.display_field}" names no served column — the pin cannot derive from a hidden/absent column`),
+      );
+    }
+    const dfCol = columns[dfIdx]!;
+    if (dfCol.key === meta.uid) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" is the uid — ` +
+          `the uid is always user-toggleable and can never carry the pinned-identity contract; ` +
+          `name a different display_field or pin another column explicitly`,
+      );
+    }
+    if (dfCol.hideable === true || dfCol.sticky === false) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" is explicitly ` +
+          `${dfCol.hideable === true ? "hideable:true" : "sticky:false"} — un-pinning the mandatory identity pin ` +
+          `needs an explicit pinned column (sticky:true + hideable:false) declared elsewhere`,
+      );
+    }
+    columns[dfIdx] = { ...dfCol, sticky: true, hideable: false };
+  }
+
+  // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
+  const stickyCount = columns.filter((c) => c.sticky === true).length;
+  if (stickyCount >= 4) {
+    console.warn(
+      `withColumnConstraints[${entityClassName}]: ${stickyCount} sticky columns — ≥4 sticky columns are allowed but discouraged ` +
+        `(sticky chrome is for identity columns, not data columns)`,
+    );
+  }
 }
 
 /** Canonical audit-section order — the record sheet sorts `audited` columns
