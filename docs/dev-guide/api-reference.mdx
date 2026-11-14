@@ -1546,7 +1546,7 @@ A single validation finding. `path` is the entity field key (or a
 | Field | Type | Description |
 |-------|------|-------------|
 | path | `string` |  |
-| code | `"required" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab"` |  |
+| code | `"required" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab" \| "immutable"` |  |
 | message | `string` |  |
 
 ### `IAuditableEntity`
@@ -2837,7 +2837,7 @@ PG-originated errors and TS-originated errors share the same code.
 Convention: `ERR` + 2 digits. The `ER` class is outside the SQL-standard
 SQLSTATE classes (`00`–`99`), so PostgreSQL accepts it as a custom code.
 
-**Type:** `{ ERR01: "ERR01"; ERR02: "ERR02"; ERR03: "ERR03"; ERR04: "ERR04"; ERR05: "ERR05"; ERR06: "ERR06"; ERR07: "ERR07"; ERR08: "ERR08"; ERR09: "ERR09"; ERR10: "ERR10" }`
+**Type:** `{ ERR01: "ERR01"; ERR02: "ERR02"; ERR03: "ERR03"; ERR04: "ERR04"; ERR05: "ERR05"; ERR06: "ERR06"; ERR07: "ERR07"; ERR08: "ERR08"; ERR09: "ERR09"; ERR10: "ERR10"; ERR11: "ERR11" }`
 
 | Field | Value |
 |-------|-------|
@@ -2851,6 +2851,7 @@ SQLSTATE classes (`00`–`99`), so PostgreSQL accepts it as a custom code.
 | ERR08 | "ERR08" |
 | ERR09 | "ERR09" |
 | ERR10 | "ERR10" |
+| ERR11 | "ERR11" |
 
 ### `decimalFromPG`
 
