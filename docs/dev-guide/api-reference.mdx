@@ -615,6 +615,20 @@ The contract every entity service must satisfy — enforced on the router.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+#### `DomainService.registerRefDisplay(display)`
+
+Ref-display registration sink — the route layer (which is DAL-free
+ and can't reach the registry directly) feeds the entity's
+ materialized display template, derived from the SAME authored
+ `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+ wiring — module-load time, so the registry is complete before any
+ `svc` builds and before the first request. Plain
+ `EntityServiceLike` facades simply don't carry it — duck-typed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| display | `string \| null` |  |
+
 #### `DomainService.buildConfig(): EntityServiceConfig<TEntity>`
 
 Subclass seam for config enrichment (auditPort / actor / userEntity
@@ -1847,10 +1861,12 @@ Audit action enum (mirrors BE's AuditAction).
 Closed action-color vocabulary — ONE semantic drives BOTH the icon and
  the label of a menu CTA (impossible to drift them apart). `neutral` is
  the default uncolored rendering; the destructive/warning/success/info/
- primary names map to the theme's semantic text utilities. A meta may
- never smuggle a Tailwind class here — the enum IS the contract.
+ primary names map to the theme's semantic text utilities. `violet` is
+ the clone/duplicate semantic — `duplicate.bulk` carries it by default
+ and the same hue marks `CLONE` entries in the version-history trail.
+ A meta may never smuggle a Tailwind class here — the enum IS the contract.
 
-**Type:** `"neutral" \| "primary" \| "info" \| "success" \| "warning" \| "destructive"`
+**Type:** `"neutral" \| "primary" \| "info" \| "success" \| "warning" \| "destructive" \| "violet"`
 
 ### `ActionsOverrides`
 
@@ -2676,6 +2692,10 @@ Sort direction for server-side list queries and header UI.
 
 **Type:** `typeof STANDARD_OPS[number]`
 
+### `SupportedLanguage`
+
+**Type:** `typeof SUPPORTED_LANGUAGES[number]`
+
 ### `TooltipPriority`
 
 Tooltip visual severity — drives icon and title color in priority
@@ -3166,6 +3186,25 @@ present in `meta.actions` — ops whose route is not registered are emitted
 with `enabled: false` (explicitly unavailable) instead of being omitted.
 
 **Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk"]`
+
+### `SUPPORTED_LANGUAGES`
+
+Supported languages — THE canonical vocabulary for the whole platform.
+
+BCP-47 full tags (language + region) — en-GB and en-US are distinct
+first-class locales because they carry different date/number/address
+formatting, not just different dictionaries.
+
+Consumers:
+- `@primebrick/sdk`/`@primebrick/ui` re-export (BE routers, FE pickers)
+- `check-standards` lint (relative-path import, sibling checkout)
+- DB `CHECK (language IN (...))` constraints on `*.translations` —
+  the SQL literals must mirror this list; the lint enforces it.
+
+Adding a language = add the tag here + seed translations + bump the
+CHECK constraints — a deliberate release-scoped change, never data.
+
+**Type:** `readonly ["en-GB", "en-US", "it-IT", "fr-FR", "es-ES", "de-DE", "pt-PT"]`
 
 ### `TEN`
 
@@ -4249,6 +4288,14 @@ Runtime validator for SnakeCaseSingular — rejects strings with
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | value | `string` |  |
+
+### `isSupportedLanguage(tag): tag is "en-GB" \| "en-US" \| "it-IT" \| "fr-FR" \| "es-ES" \| "de-DE" \| "pt-PT"`
+
+Type guard — is `tag` one of the platform-supported language tags?
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| tag | `string` |  |
 
 ### `isUUID(v): v is UUID`
 

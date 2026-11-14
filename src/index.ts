@@ -139,6 +139,15 @@ export { renderDisplayTemplate } from "./query/display-template.js";
 // — shared rule between served meta and the DAL's `_name` join projections.
 export { resolveDisplayTemplate } from "@primebrick/core";
 
+// Entity-service registry — the name→display map behind `@Ref` display
+// joins. Route wiring feeds it via `DomainService.registerRefDisplay`;
+// headless entities (no route decl) register directly.
+export {
+  registerEntityService,
+  lookupEntityService,
+  entityApiName,
+} from "./entity/entity-registry.js";
+
 // Streaming
 export { createStream } from "./query/streaming.js";
 

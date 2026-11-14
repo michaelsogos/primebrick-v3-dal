@@ -33,6 +33,7 @@ import {
   hasAuditTrail,
   isClonableEntity,
 } from "../meta/entity-decorators.js";
+import { registerEntityService } from "./entity-registry.js";
 import type { Repository } from "../repository/repository.js";
 import type {
   BulkItem,
@@ -79,6 +80,17 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
    *  route: a clone with no tracking columns writes an untracked copy. */
   get clonable() {
     return isClonableEntity(this.cfg.entity);
+  }
+
+  /** Ref-display registration sink — the route layer (which is DAL-free
+   *  and can't reach the registry directly) feeds the entity's
+   *  materialized display template, derived from the SAME authored
+   *  `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+   *  wiring — module-load time, so the registry is complete before any
+   *  `svc` builds and before the first request. Plain
+   *  `EntityServiceLike` facades simply don't carry it — duck-typed. */
+  registerRefDisplay(display: string | null): void {
+    registerEntityService({ entity: this.cfg.entity, display });
   }
 
   /**

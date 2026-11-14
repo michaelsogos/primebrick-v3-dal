@@ -125,6 +125,18 @@ export async function setupTestSchema(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS dal_test_users_uuid_idx ON dal_test_users (uuid);
   `);
 
+  // Ref-join test table — `target_uuid` refs dal_test_simple.uuid
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_ref_source (
+      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
+      label       text,
+      target_uuid uuid,
+      ghost_uuid  uuid
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_ref_source_uuid_idx ON dal_test_ref_source (uuid);
+  `);
+
   // Platform identity table — the dal-owned auditable display-name join
   // targets public.user_profiles statically, so the test env must provide it.
   // Minimal projection shape (id/uuid/idp_code/display_name); on a dev DB the
@@ -239,7 +251,7 @@ export async function setupTestSchema(): Promise<void> {
 export async function truncateTestTables(): Promise<void> {
   const db = getTestPool();
   await db.query(`
-    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source RESTART IDENTITY CASCADE;
   `);
 }
 
@@ -249,6 +261,7 @@ export async function truncateTestTables(): Promise<void> {
 export async function dropTestSchema(): Promise<void> {
   const db = getTestPool();
   await db.query(`
+    DROP TABLE IF EXISTS dal_test_ref_source CASCADE;
     DROP TABLE IF EXISTS dal_test_simple_audit CASCADE;
     DROP TABLE IF EXISTS dal_test_users CASCADE;
     DROP TABLE IF EXISTS dal_test_simple CASCADE;

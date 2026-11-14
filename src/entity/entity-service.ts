@@ -54,6 +54,8 @@ import {
 } from "../query/dsl.js";
 import { buildAuditableJoinsSelective } from "../audit/auditable-joins.js";
 import { renderDisplayTemplate } from "../query/display-template.js";
+import { getSchemaDomain } from "../meta/schema-domain.js";
+import { lookupEntityService, registerEntityService } from "./entity-registry.js";
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
@@ -321,6 +323,9 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       "EntityServiceConfig.repo is required — use `dal.entityService(cfg)` so the gateway injects its own Repository",
     );
   }
+  // Self-register under the derived api name — domain `@Ref` joins
+  // resolve their target's class + display template from this map.
+  registerEntityService(cfg);
   const auditPort = cfg.auditPort ?? makeTableAuditPort(repo);
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
@@ -367,6 +372,52 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   const selfDisplaySql = cfg.display
     ? renderDisplayTemplate(cfg.display, cfg.entity, "clone_src")
     : undefined;
+  /** Domain `@Ref` display joins — every ref column whose target entity
+   *  resolved inside this service's registry gets a LEFT JOIN projecting
+   *  `{key}_name` off the target's OWN display template (the same
+   *  `resolveDisplayTemplate` materialization `cloned_from_name` uses).
+   *  Actor columns and `cloned_from` stay on their dedicated joins
+   *  above; a ref that doesn't resolve (cross-domain, headless or
+   *  unregistered entity, no display template) is SKIPPED — the cell
+   *  falls back to the raw uuid and the record sheet still drills
+   *  through the target service's own endpoint. Segregation holds:
+   *  only same-schema or platform-shared tables may join. */
+  const refDisplayJoinsFor = (): JoinExpr[] => {
+    const out: JoinExpr[] = [];
+    const shared = getSchemaDomain()?.sharedTables;
+    for (const col of Object.values(meta.columns)) {
+      if (col.refEntity === undefined) continue;
+      if (col.isClone === true || col.cloneType !== undefined) continue;
+      if (col.auditableType !== undefined || col.deletableType !== undefined) continue;
+      const target = lookupEntityService(col.refEntity);
+      if (target === undefined || target.display === null) continue;
+      let targetMeta;
+      try {
+        targetMeta = getEntityPersistenceMeta(target.entity, meta.tableSchema);
+      } catch {
+        continue; // foreign-domain entity — the schema guard itself says no
+      }
+      const targetShared = shared !== undefined && shared.has(targetMeta.tableName);
+      if (targetMeta.tableSchema !== meta.tableSchema && !targetShared) continue;
+      const targetUid = Object.values(targetMeta.columns).find(
+        (c) => c.propertyKey === "uuid" || c.isUnique,
+      )?.propertyKey;
+      if (targetUid === undefined) continue;
+      const alias = `ref_${String(col.propertyKey)}`;
+      out.push({
+        left: field(target.entity, targetUid as never),
+        right: field(cfg.entity, col.propertyKey as never),
+        type: "LEFT" as const,
+        alias,
+        display: {
+          as: `${String(col.propertyKey)}_name`,
+          sql: renderDisplayTemplate(target.display, target.entity, alias),
+        },
+      });
+    }
+    return out;
+  };
+
   const joinsFor = (): JoinExpr[] => [
     ...(auditable || clonable
       ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
@@ -385,19 +436,23 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           display: { as: "cloned_from_name", sql: selfDisplaySql },
         }]
       : []),
+    ...refDisplayJoinsFor(),
   ];
   /** Joined-name descriptor per base column — derived from the joins' own
    *  `display` contracts. Search resolves `COALESCE(<expr>, <col>::text)`;
    *  `sort_key` orders on the projected `*_name` alias (the sorted
-   *  surface the FE shows), never the raw uid/uuid. */
-  const NAME_JOINS = new Map(
-    joinsFor()
-      .filter((j) => j.display !== undefined)
-      .map((j) => [
-        j.right.key as string,
-        { nameAlias: j.display!.as, sql: j.display!.sql },
-      ]),
-  );
+   *  surface the FE shows), never the raw uid/uuid. Rebuilt per request:
+   *  the ref registry warms after construction, so the map can never be
+   *  frozen against it. */
+  const nameJoinsFor = (joins: JoinExpr[]) =>
+    new Map(
+      joins
+        .filter((j) => j.display !== undefined)
+        .map((j) => [
+          j.right.key as string,
+          { nameAlias: j.display!.as, sql: j.display!.sql },
+        ]),
+    );
   const repoFor = (tx?: Repository) => tx ?? repo;
 
   /** Fail-closed `sort_key` gate: the wire can only sort on keys that
@@ -453,10 +508,22 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         filters.push(Filter.group([Filter.raw("1", "=", "0")], "AND"));
       } else {
         const looksLikeUuid = UUID_RE.test(raw);
-        const fields = (q.search_in?.length
-          ? q.search_in
-          : [...cfg.list.searchableKeys]) as string[];
-        const allowed = new Set([...cfg.list.searchableKeys, "uuid"]);
+        // `search_in` arrives as a single string for one key, an array
+        // for several — normalize before the allowed-set filter.
+        const fields = (q.search_in === undefined
+          ? [...cfg.list.searchableKeys]
+          : Array.isArray(q.search_in)
+            ? q.search_in
+            : [q.search_in]) as string[];
+        // `search_in` admits every joined-name key on top of the authored
+        // searchable set — a column carrying a display join is searchable
+        // on its `{key}_name` surface by construction.
+        const nameJoins = nameJoinsFor(joinsFor());
+        const allowed = new Set([
+          ...cfg.list.searchableKeys,
+          "uuid",
+          ...nameJoins.keys(),
+        ]);
         const ors = fields
           .filter((f) => allowed.has(f))
           .flatMap((f) => {
@@ -465,7 +532,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
                 ? [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", raw, "OR")]
                 : [Filter.fieldValue(field(cfg.entity, "uuid" as never), "ILIKE", needle, "OR")];
             }
-            const nameJoin = NAME_JOINS.get(f);
+            const nameJoin = nameJoins.get(f);
             if (nameJoin) {
               // Joined-name search resolves the join's display expression —
               // the searchable surface — COALESCE'd onto the raw column
@@ -543,7 +610,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const shape = buildListShape();
       // Joined-name sort orders on the projected `*_name` display column
       // (the sorted surface the FE shows), not the raw uuid.
-      const sortNameJoin = NAME_JOINS.get(sort_key);
+      const sortNameJoin = nameJoinsFor(shape.joins).get(sort_key);
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
