@@ -1101,6 +1101,30 @@ Enforcement points:
 | message | `string` |  |
 | details | `{ entity: string; schema: string; allowed: string[] }` |  |
 
+### `ServiceRegistryRefEntity`
+
+`ServiceRegistryRefEntity` — read-only projection of the platform
+registry table `public.service_registry`, owned by the DAL so any
+service may legally join the module-identity source (e.g. a schedule
+resolving its service armer for display).
+
+`public` is a cross-app platform domain (like `custom`), not a module
+domain: `service_registry` is exempted from the schema-domain check via
+the built-in `PLATFORM_SHARED_TABLES` set in `schema-domain.ts`, so the
+join resolves legally from every service domain — the same contract
+`UserProfileRefEntity` enjoys for `public.user_profiles`.
+
+This is NOT `ServiceRegistryEntity`: the full entity — registration
+lifecycle, all columns, admin routes — stays owned by the backend
+(`/api/v1/system/services`). Only the three columns an identity join
+needs are projected here.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| uuid | `string` |  |
+| code | `string` |  |
+| name | `string` |  |
+
 ### `TranslationEntityBase`
 
 TranslationEntityBase — standard i18n translations table entity.
@@ -3018,6 +3042,22 @@ Parseable ISO/RFC3339 datetime.
 
 **Type:** `(v: string) => boolean`
 
+### `JOB_TRIGGER_RUN_AS_VOCAB`
+
+`event_subject`/`schedule_spec` are mutually mandatory (at least one);
+`run_as` is closed-vocab (`originator`|`author`|`system`) and
+`run_as: "originator"` requires an event source to forward auth
+headers from; a one-shot `@at <ts>` must lie in the future — a past
+timestamp FIRES IMMEDIATELY at declare time (verified empirically:
+the declaration PubAcks, the scheduler dispatches at once, then the
+declaration self-purges — an unintended execution, not a dead one).
+`now` is injected so the predicate stays
+pure — the form passes the client clock, the write guard the server
+clock. On `partial` (update), fields not present in `entity` are
+treated from the merged record the caller passes.
+
+**Type:** `readonly ["originator", "author", "system"]`
+
 ### `Join`
 
 **Type:** `{ on:  }`
@@ -4398,17 +4438,6 @@ compare `keyNamespaceOf(key)` against `translationKeyNamespace(schema)`.
 | v | `string` |  |
 
 ### `jobTriggerShapeIssues(entity, now): FieldIssue[]`
-
-`event_subject`/`schedule_spec` are mutually mandatory (at least one);
-`execution_context: "user"` requires an event source to forward auth
-headers from; a one-shot `@at <ts>` must lie in the future — a past
-timestamp FIRES IMMEDIATELY at declare time (verified empirically:
-the declaration PubAcks, the scheduler dispatches at once, then the
-declaration self-purges — an unintended execution, not a dead one).
-`now` is injected so the predicate stays
-pure — the form passes the client clock, the write guard the server
-clock. On `partial` (update), fields not present in `entity` are
-treated from the merged record the caller passes.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

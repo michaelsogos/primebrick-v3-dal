@@ -299,6 +299,23 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           }
         }
       }
+      // ── ref target — exactly one source: `entity` (static) XOR
+      //    `entity_field` (lazy per-row resolution). A ref with neither
+      //    cannot be resolved; with both the static would silently win.
+      if (col.ref !== undefined) {
+        if (col.ref.entity !== undefined && col.ref.entity_field !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares both ref.entity and ref.entity_field — ` +
+              `the target source is exclusive: static "entity" or lazy "entity_field" (per-row entity name), never both`,
+          );
+        }
+        if (col.ref.entity === undefined && col.ref.entity_field === undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares a ref with no target — ` +
+              `either ref.entity (static target) or ref.entity_field (row column naming the per-row entity) is required`,
+          );
+        }
+      }
       // ── ref route/presentation — closed vocabularies validated at
       //    construction: malformed values must fail at meta assembly,
       //    never reach the wire as a silently-misparsed cell. */
