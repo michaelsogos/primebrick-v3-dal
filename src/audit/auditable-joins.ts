@@ -140,7 +140,10 @@ export function buildAuditableJoinsSelective(
           "LEFT",
           {
             alias: svcAlias,
-            rightExpr: `split_part({self}.${colSql}, ':', 2)`,
+            // `system:<code>` convention only — the CASE guard keeps any
+            // other `x:<code>` actor (nats subjects, migration stamps)
+            // from false-matching a registry row.
+            rightExpr: `CASE WHEN {self}.${colSql} LIKE 'system:%' THEN split_part({self}.${colSql}, ':', 2) END`,
           }
         )
       );
@@ -193,12 +196,12 @@ export function buildAuditTrailJoins(
         { castRightTo: "uuid", castLeftTo: "uuid", alias: "creator" },
       ),
       // `system:<code>` writers resolve through the platform registry —
-      // split_part yields '' for actors without ':', matching nothing.
+      // the CASE guard keeps other `x:<code>` actors from false-matching.
       Join.on(
         field(ServiceRegistryRefEntity, "code" as any),
         field(auditEntity, changedByCol as any),
         "LEFT",
-        { alias: "creator_svc", rightExpr: `split_part(${baseTableRef}.${changedByColSql}, ':', 2)` },
+        { alias: "creator_svc", rightExpr: `CASE WHEN ${baseTableRef}.${changedByColSql} LIKE 'system:%' THEN split_part(${baseTableRef}.${changedByColSql}, ':', 2) END` },
       ),
     ],
     projections: [

@@ -480,11 +480,11 @@ describe("Repository — buildAuditTrailJoins", () => {
     expect(joins[0].options?.castRightTo).toBe("uuid");
     expect(joins[0].options?.castLeftTo).toBe("uuid");
     // Second join: `system:<code>` writers resolve through the platform
-    // service registry (split_part yields '' for actors without ':').
+    // service registry (CASE guard keeps other `x:<code>` actors out).
     expect(joins[1].type).toBe("LEFT");
     expect(joins[1].alias).toBe("creator_svc");
     expect(joins[1].options?.rightExpr).toBe(
-      'split_part("public"."dal_test_simple_audit"."changed_by", \':\', 2)',
+      'CASE WHEN "public"."dal_test_simple_audit"."changed_by" LIKE \'system:%\' THEN split_part("public"."dal_test_simple_audit"."changed_by", \':\', 2) END',
     );
 
     expect(projections).toHaveLength(2);

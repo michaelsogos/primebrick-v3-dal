@@ -30302,9 +30302,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/audit/auditable-joins.ts",
-					"line": 178,
+					"line": 181,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L178"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L181"
 				}
 			],
 			"signatures": [
@@ -30400,9 +30400,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/audit/auditable-joins.ts",
-							"line": 178,
+							"line": 181,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L178"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L181"
 						}
 					],
 					"parameters": [
@@ -30518,9 +30518,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/audit/auditable-joins.ts",
-											"line": 182,
+											"line": 185,
 											"character": 5,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L182"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L185"
 										}
 									],
 									"type": {
@@ -30542,9 +30542,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/audit/auditable-joins.ts",
-											"line": 182,
+											"line": 185,
 											"character": 24,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L182"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/auditable-joins.ts#L185"
 										}
 									],
 									"type": {
