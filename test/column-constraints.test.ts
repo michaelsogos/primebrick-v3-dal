@@ -623,7 +623,7 @@ describe("uom + unsigned constraints", () => {
 
 // ── @Ref contract: the class owns served-meta refs, never authored ──────
 describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
-  it("audit actor columns auto-derive type:'ref' + ref.entity 'user_profile'", () => {
+  it("audit actor columns auto-derive type:'ref' + the LAZY ref (per-row user|service verdict)", () => {
     const out = withColumnConstraints(auditableMeta(), CcJobEntity);
     const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
     for (const k of ["created_by", "updated_by", "deleted_by"]) {
@@ -631,7 +631,10 @@ describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
         type: "ref",
         audited: true,
         options_source: "audit.actors",
-        ref: { entity: "user_profile" },
+        // `system:<code>` writers resolve per-row through the audit-join
+        // verdict projections — a static `ref.entity` could only name
+        // user_profile and leave service writers undrillable.
+        ref: { entity_field: `${k}_ref_entity`, key_field: `${k}_ref_key` },
       });
     }
   });
@@ -647,7 +650,7 @@ describe("withColumnConstraints — @Ref decorator → served-meta ref", () => {
       default_visible: true,
       label_key: "x.creator",
       type: "ref",
-      ref: { entity: "user_profile" },
+      ref: { entity_field: "created_by_ref_entity", key_field: "created_by_ref_key" },
     });
   });
 

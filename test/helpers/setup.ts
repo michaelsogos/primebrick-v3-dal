@@ -168,6 +168,19 @@ export async function setupTestSchema(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_uuid_idx ON user_profiles (uuid);
   `);
 
+  // Platform service registry — the audit-actor joins resolve `system:<code>`
+  // writers through `public.service_registry` (ServiceRegistryRefEntity).
+  // Minimal projection shape (uuid/code/name); the real table satisfies
+  // IF NOT EXISTS on dev DBs.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS service_registry (
+      uuid         uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
+      code         varchar(100) NOT NULL,
+      name         varchar(255)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS service_registry_code_idx ON service_registry (code);
+  `);
+
   // Type-rich test table
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_types (

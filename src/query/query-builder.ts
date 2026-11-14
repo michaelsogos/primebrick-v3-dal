@@ -126,7 +126,10 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
 
   // Display-name projections declared by the joins themselves
   // (`JoinExpr.display`): `COALESCE(<join-expr>, <base right col>::text)`
-  // so "system" / orphan uuids still render instead of NULL.
+  // so "system" / orphan uuids still render instead of NULL. Extra
+  // `JoinExpr.projections` are emitted verbatim (`<sql> AS "<as>"`) —
+  // wire verdict fields where NULL is meaningful and must NOT be
+  // coalesced onto the raw column.
   if (joins) {
     for (const j of joins) {
       if (j.display) {
@@ -135,6 +138,13 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
         projections.push(
           `COALESCE(${j.display.sql}, ${rightRef}::text) AS ${quoteIdent(j.display.as)}`
         );
+      }
+      if (j.projections) {
+        const selfRef = qTable(entity, tableNameOverride);
+        for (const p of j.projections) {
+          assertValidIdentPart(p.as, "projectionAlias");
+          projections.push(`${p.sql.replaceAll("{self}", selfRef)} AS ${quoteIdent(p.as)}`);
+        }
       }
     }
   }
@@ -158,13 +168,15 @@ function renderJoins(joins: JoinExpr[] | undefined, baseEntity?: EntityClass, ta
     assertValidIdentPart(rightColName, "columnName");
     // Right side should use the base table (not the alias) when it's the base entity
     const rightTableRef = (j.right.entity === baseEntity) ? qTable(j.right.entity, rightOverride) : (j.alias ? quoteIdent(j.alias) : qTable(j.right.entity, rightOverride));
-    let rightExpr = `${rightTableRef}.${quoteIdent(rightColName)}`;
+    let rightExpr = j.options?.rightExpr !== undefined
+      ? j.options.rightExpr.replaceAll("{self}", rightTableRef)
+      : `${rightTableRef}.${quoteIdent(rightColName)}`;
     let rightExprRaw = rightExpr; // Keep raw for regex guardrail
     let colMeta = null;
 
     if (j.options?.castRightTo) {
       rightExpr = `${rightExpr}::${j.options.castRightTo}`;
-    } else {
+    } else if (j.options?.rightExpr === undefined) {
       const meta = getEntityPersistenceMeta(j.right.entity);
       colMeta = meta.columns[rightColName];
       if (colMeta?.castInJoin) {
@@ -407,6 +419,7 @@ function renderGroupBy(input: SelectQueryInput, w: ParamWriter): string[] {
   if (input.joins) {
     for (const j of input.joins) {
       if (j.display) cols.add(quoteIdent(j.display.as));
+      if (j.projections) for (const p of j.projections) cols.add(quoteIdent(p.as));
     }
   }
 

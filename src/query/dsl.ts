@@ -190,22 +190,56 @@ export type JoinExpr = {
   left: FieldRef<any, any>;
   type: SqlJoinType;
   alias?: string;
-  options?: { castRightTo?: string; castLeftTo?: string };
+  options?: {
+    castRightTo?: string;
+    castLeftTo?: string;
+    /** Raw right-side ON expression — replaces `"<base>"."<right col>"`.
+     *  `{self}` resolves to the qualified base-table ref (honoring the
+     *  table-name override), the same substitution `@Calculated` uses.
+     *  For joins whose predicate is a function of the base column
+     *  (`split_part({self}."created_by", ':', 2) = <left>`). */
+    rightExpr?: string;
+  };
   /** Display-name projection this join contributes — emitted as
    *  `COALESCE(<sql>, <base>.<right col>::text) AS "<as>"`. `sql`
    *  references the join alias (typically a rendered display template).
    *  The join declares its own display contract — the builder never
    *  guesses by alias name. */
   display?: { as: string; sql: string };
+  /** Extra verbatim projections this join contributes — emitted as
+   *  `<sql> AS "<as>"` with NO COALESCE wrap: these wire fields carry the
+   *  join's own resolution verdicts (e.g. audit-actor `*_ref_entity` /
+   *  `*_ref_key` feeding the lazy-ref contract), where NULL is a
+   *  meaningful "unresolved" and must not fall back to the raw column. */
+  projections?: { as: string; sql: string }[];
 };
 export const Join = {
   on(
     left: FieldRef<any, any>,
     right: FieldRef<any, any>,
     type: SqlJoinType = "INNER",
-    options?: { castRightTo?: string; castLeftTo?: string; alias?: string; display?: { as: string; sql: string } }
+    options?: {
+      castRightTo?: string;
+      castLeftTo?: string;
+      rightExpr?: string;
+      alias?: string;
+      display?: { as: string; sql: string };
+      projections?: { as: string; sql: string }[];
+    }
   ): JoinExpr {
-    return { right, left, type, alias: options?.alias, options: { castRightTo: options?.castRightTo, castLeftTo: options?.castLeftTo }, display: options?.display };
+    return {
+      right,
+      left,
+      type,
+      alias: options?.alias,
+      options: {
+        castRightTo: options?.castRightTo,
+        castLeftTo: options?.castLeftTo,
+        rightExpr: options?.rightExpr,
+      },
+      display: options?.display,
+      projections: options?.projections,
+    };
   },
 };
 

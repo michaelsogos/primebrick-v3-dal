@@ -3525,11 +3525,21 @@ This prevents errors when the field contains non-UUID values like "system".
 Enhanced version that allows selective joins (e.g., only creator and updater).
 Useful when you only need specific audit fields to reduce query overhead.
 
+When `serviceEntity` is supplied (platform `service_registry` projection),
+every actor column also joins it on `code = split_part(actor, ':', 2)` —
+the `system:<code>` writer convention — so `<col>_name` resolves
+`COALESCE(user.display_name, service.name)` and two verbatim verdict
+projections feed the lazy-ref contract:
+`<col>_ref_entity` (`'user_profile' | 'service_registry' | NULL` — NULL
+for writers no join resolved, e.g. `migration-*`) and `<col>_ref_key`
+(the resolved key). The verdict is JOIN-MATCH driven, not string-shaped:
+whichever join found a row owns the ref.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass` | The entity class implementing IAuditableEntity |
 | userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) |
-| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean; includeCloner: boolean }` | Configuration for which joins to include |
+| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean; includeCloner: boolean; serviceEntity: EntityClass }` | Configuration for which joins to include |
 
 ### `buildAuditTrailJoins(auditEntity, userEntity, baseTableRef): { joins: JoinExpr[]; projections: FieldProjector[] }`
 

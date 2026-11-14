@@ -644,14 +644,19 @@ export class Repository {
       )
       .join("\n    UNION\n    ");
     // The regex guardrail on the LEFT side mirrors the audit-trail join —
-    // a non-uuid actor must not trip the uuid comparison cast.
+    // a non-uuid actor must not trip the uuid comparison cast. The second
+    // join resolves `system:<code>` writers through the platform registry
+    // (split_part yields '' for actors without ':', matching nothing) —
+    // `migration-*` and other unresolvable writers keep the raw value.
     const r = await this.db.query<{ value: unknown; label: unknown }>(
-      `SELECT a.actor AS value, COALESCE(up."display_name", a.actor) AS label
+      `SELECT a.actor AS value, COALESCE(up."display_name", sr."name", a.actor) AS label
        FROM (
          ${union}
        ) a
        LEFT JOIN "public"."user_profiles" up
          ON a.actor ~ '^[0-9a-fA-F-]{36}$' AND up."uuid"::text = a.actor
+       LEFT JOIN "public"."service_registry" sr
+         ON sr."code" = split_part(a.actor, ':', 2)
        ORDER BY label`,
       [],
     );

@@ -97,8 +97,17 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         : {}),
       // The ref contract is a class fact the same way: an authored column
       // entry may tune visibility/order but can never re-point or drop
-      // the ref (`@Ref` target, or the `cloned_from` self-ref).
-      ...(refEnt !== undefined ? { type: "ref" as const, ref: { entity: refEnt } } : {}),
+      // the ref (`@Ref` target, or the `cloned_from` self-ref). Audit
+      // actor columns serve the LAZY form — the static `user_profile`
+      // @Ref is only the human-writer default; `system:<code>` writers
+      // resolve per-row through the `<key>_ref_entity` / `<key>_ref_key`
+      // verdict projections the audit joins emit (user_profile |
+      // service_registry | NULL → plain text for `migration-*`).
+      ...(refEnt !== undefined
+        ? isAuditActorColumn(phys)
+          ? { type: "ref" as const, ref: { entity_field: `${col.key}_ref_entity`, key_field: `${col.key}_ref_key` } }
+          : { type: "ref" as const, ref: { entity: refEnt } }
+        : {}),
     };
   };
 

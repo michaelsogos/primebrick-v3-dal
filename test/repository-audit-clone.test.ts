@@ -474,16 +474,23 @@ describe("Repository — buildAuditTrailJoins", () => {
       '"public"."dal_test_simple_audit"',
     );
 
-    expect(joins).toHaveLength(1);
+    expect(joins).toHaveLength(2);
     expect(joins[0].type).toBe("LEFT");
     expect(joins[0].alias).toBe("creator");
     expect(joins[0].options?.castRightTo).toBe("uuid");
     expect(joins[0].options?.castLeftTo).toBe("uuid");
+    // Second join: `system:<code>` writers resolve through the platform
+    // service registry (split_part yields '' for actors without ':').
+    expect(joins[1].type).toBe("LEFT");
+    expect(joins[1].alias).toBe("creator_svc");
+    expect(joins[1].options?.rightExpr).toBe(
+      'split_part("public"."dal_test_simple_audit"."changed_by", \':\', 2)',
+    );
 
     expect(projections).toHaveLength(2);
     expect(projections[0]).toEqual({
       kind: "expr",
-      expr: 'COALESCE("creator"."display_name", "public"."dal_test_simple_audit"."changed_by")',
+      expr: 'COALESCE("creator"."display_name", "creator_svc"."name", "public"."dal_test_simple_audit"."changed_by")',
       alias: "changed_by_display_name",
     });
     expect(projections[1]).toEqual({ kind: "expr", expr: '"creator"."idp_code"', alias: "changed_by_idp_code" });

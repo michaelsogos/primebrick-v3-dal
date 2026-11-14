@@ -58,6 +58,7 @@ import { getSchemaDomain } from "../meta/schema-domain.js";
 import { lookupEntityService, registerEntityService } from "./entity-registry.js";
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
+import { ServiceRegistryRefEntity } from "../entities/service-registry-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
 import {
   AuditableFieldType,
@@ -425,6 +426,11 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           includeUpdater: auditable,
           includeDeleter: auditable && hasDeletedBy,
           includeCloner: clonable && hasClonedBy,
+          // Platform service-registry resolution for `system:<code>`
+          // actors — the second per-actor join feeds both the COALESCE'd
+          // `<col>_name` display and the `<col>_ref_entity|_ref_key`
+          // lazy-ref verdicts (match-driven, NULL when no join resolves).
+          serviceEntity: ServiceRegistryRefEntity,
         }) as JoinExpr[])
       : []),
     ...(clonable && selfDisplaySql
