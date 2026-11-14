@@ -489,6 +489,33 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   //    one visible-by-default. The same auto-derivation covers @Calculated
   //    props (kind:"calculated", no physical constraints injected).        */
   const declared = new Set(columns.map((c) => c.key));
+
+  // ── Declared standard-audit columns — legal, usually fuffa ─────────────
+  //    Auto-derivation already emits every standard audit stamp audited +
+  //    canonical band order (2000+rank). A declaration is justified only when
+  //    it carries semantics the derivation cannot express (hidden, relabel
+  //    like job_run's finished_at, a widget). Since `order` is REQUIRED in
+  //    the column type, declaring for visibility alone forces an authored
+  //    order — and any order <2000 ejects the column from the audit band, so
+  //    the record-sheet accordion misorders it. Warn at composition so the
+  //    author consciously owns the exception instead of inheriting
+  //    pre-refactoring cruft.
+  for (const c of meta.columns) {
+    const rank = STANDARD_AUDIT_RANK[c.key];
+    if (rank === undefined || c.hidden === true) continue;
+    const relabeled = c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`;
+    const outOfBand = c.order !== undefined && c.order < AUDIT_ORDER_BASE;
+    console.warn(
+      `withColumnConstraints[${persistence.entityClassName}]: standard audit column "${c.key}" is declared ` +
+        `(order:${c.order === undefined ? "auto→canonical band" : c.order}` +
+        `${outOfBand ? " — OUTSIDE the audit band 2000+, the record-sheet audit accordion will sort it away from its pair" : ""}` +
+        `${relabeled ? `, relabeled via label_key "${c.label_key}"` : ""}` +
+        `${c.default_visible === true ? ", default_visible:true" : ""}) — ` +
+        `auto-derivation already emits it audited at order ${AUDIT_ORDER_BASE + rank}; ` +
+        `keep the declaration only if it adds semantics the derivation cannot express (hidden, relabel, widget), otherwise drop it`,
+    );
+  }
+
   const ns = meta.entities_ns ?? "system";
   const entityKey = meta.translation_key ?? meta.entity ?? persistence.entityClassName;
   const labelFor = (key: string) => `${ns}.entities.${entityKey}.fields.${key}`;
