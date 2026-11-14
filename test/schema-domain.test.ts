@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Entity, Key } from "../src/index.js";
+import { ServiceRegistryRefEntity } from "../src/entities/service-registry-ref-entity.js";
 import {
   configureSchemaDomain,
   resetSchemaDomain,
@@ -83,6 +84,16 @@ describe("schema domain — resolveEntitySchema", () => {
     expect(getQualifiedTableName(EmailsenderTranslationEntity)).toBe('"emailsender"."translations"');
     expect(() => getQualifiedTableName(ForeignEntity)).toThrow(SchemaDomainViolationError);
   });
+
+  it("built-in set: service_registry resolves from a non-public domain (platform club)", () => {
+    // public.service_registry is a PLATFORM_SHARED_TABLES member — the
+    // same exemption user_profiles enjoys for auditable joins — so a
+    // domain-schema service may legally entity-op the ref projection.
+    configureSchemaDomain(["job"]);
+    expect(resolveEntitySchema({ tableSchema: "public", tableName: "service_registry" })).toBe("public");
+    expect(getQualifiedTableName(ServiceRegistryRefEntity)).toBe('"public"."service_registry"');
+    expect(() => getQualifiedTableName(ForeignEntity)).toThrow(SchemaDomainViolationError);
+  });
 });
 
 describe("schema domain — query-path enforcement", () => {
@@ -127,5 +138,16 @@ describe("schema domain — assertEntitySchemaDomain (boot guard)", () => {
 
   it("ignores non-entity entries in the registry", () => {
     expect(() => assertEntitySchemaDomain([WidgetEntity, "not-a-class", 42], ["ai"])).not.toThrow();
+  });
+
+  it("built-in shared tables exempt ServiceRegistryRefEntity at runtime, not at the caller-scoped boot guard", () => {
+    // The boot assert honors only the caller's explicit sharedTables
+    // (the SDK passes none) — ref projections are DAL-internal and
+    // never enter consumer registries, so their real gate is the
+    // runtime path (PLATFORM_SHARED unioned by configureSchemaDomain).
+    expect(() => assertEntitySchemaDomain([ServiceRegistryRefEntity], ["job"])).toThrow(SchemaDomainViolationError);
+    expect(() => assertEntitySchemaDomain([ServiceRegistryRefEntity], ["job"], ["service_registry"])).not.toThrow();
+    configureSchemaDomain(["job"]);
+    expect(getQualifiedTableName(ServiceRegistryRefEntity)).toBe('"public"."service_registry"');
   });
 });

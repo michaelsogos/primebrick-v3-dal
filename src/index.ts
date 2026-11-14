@@ -232,6 +232,7 @@ export { calculateDelta, calculateDeltaWithForcedFields } from "./audit/delta-ca
 
 export { AuditLogEntity } from "./audit/audit-log-entity.js";
 export { UserProfileRefEntity } from "./entities/user-profile-ref-entity.js";
+export { ServiceRegistryRefEntity } from "./entities/service-registry-ref-entity.js";
 export { isAuditableEntity } from "./repository/repository.js";
 
 // Entity capability mixins — declare shared audit/deletable columns once,
