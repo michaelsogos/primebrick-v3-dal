@@ -273,6 +273,7 @@ export {
 export {
   makeEntityService,
   makeTableAuditPort,
+  deriveListWireSets,
   type EntityService,
   type EntityServiceConfig,
   type EntityListQuery,

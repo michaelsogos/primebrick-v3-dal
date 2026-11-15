@@ -709,12 +709,6 @@ is available here.
 | page | `number` |  |
 | limit | `number` |  |
 
-#### `DomainService.auditActors(): Promise<{ value: string; label: string }[]>`
-
-`options_source:"audit.actors"` vocabulary feed — the distinct
- writers of THIS table, label-resolved through `public.user_profiles`.
- `[]` on entities with no audit actor columns.
-
 #### `DomainService.stream(query): AsyncGenerator<TEntity>`
 
 | Parameter | Type | Description |
@@ -1534,8 +1528,10 @@ The contract every entity service must satisfy — enforced on the router.
 |-------|------|-------------|
 | dictFacet | `DictFacet` | The entity's `dict` facet when the class carries `@Dict` — the
  entity-router injects it into served meta (`dict`). |
-| auditable | `boolean` | `@AuditTrail()` on the entity class — the entity HAS an audit-trail
- table. The router derives `collaboration.enabled` from this. |
+| auditable | `boolean` | `Auditable` mixin / `auditableType` columns on the entity class —
+ the entity HAS audit actor columns (`created_by`/`updated_by`/…).
+ Distinct from `@AuditTrail` (the separate history table): a table
+ can stamp writers without keeping a change log. |
 | clonable | `boolean` | `Clonable` mixin on the entity class — `/duplicate` may register
  only when true. Derived, never restated in the decl. |
 
@@ -1559,7 +1555,7 @@ The contract every entity service must satisfy — enforced on the router.
  Evaluated on self-ref joins: `cloned_from_name` projects the same
  string the FE uses for this entity's titles. Absent → self-join
  skipped, the ref cell renders the raw uid (COALESCE fallback). |
-| list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
@@ -3894,6 +3890,28 @@ Marks a field as deletable (deleted_at, deleted_by).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | what | `DeletableFieldType` |  |
+
+### `deriveListWireSets(columns, entity): { searchable: ReadonlySet<string>; filterable: ReadonlySet<string> }`
+
+Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
+column types — the single implementation behind `list.meta` derivation,
+also exported for service-side paths that run their own query (outside
+`makeEntityService`) yet must answer to the same contract:
+
+ - `searchable`: `searchable`-flagged text-physical columns plus
+   `@Calculated` projections (they render to SQL and are ILIKE-safe) —
+   the `search_in` allowlist + default scope base (`uuid` and joined-name
+   keys are admitted on top by the caller).
+ - `filterable`: `filterable`-flagged columns restricted to WHERE-
+   resolvable keys (physical + calculated).
+
+Meta `searchable`/`filterable` express product intent, the entity
+decorators express physical reality — the two cannot diverge.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `MetaColumn[]` |  |
+| entity | `EntityClass` |  |
 
 ### `Dict(opts): ClassDecorator`
 
