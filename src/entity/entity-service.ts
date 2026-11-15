@@ -81,6 +81,7 @@ import {
   isColumnFilterable,
   searchableTextColumns,
   type EntityMeta,
+  type MetaColumn,
 } from "@primebrick/core";
 
 // ─── Public contract ─────────────────────────────────────────────────────────
@@ -328,6 +329,63 @@ function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
+/** Physical PG types safe for `ILIKE` — `uuid` is searched via the
+ *  `CAST(col AS text)` the query-builder already applies. */
+const TEXTLIKE_PG_TYPES = new Set([
+  "character varying", "varchar", "character", "char",
+  "text", "citext", "name", "uuid",
+]);
+
+/**
+ * Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
+ * column types — the single implementation behind `list.meta` derivation,
+ * also exported for service-side paths that run their own query (outside
+ * `makeEntityService`) yet must answer to the same contract:
+ *
+ *  - `searchable`: `searchable`-flagged text-physical columns plus
+ *    `@Calculated` projections (they render to SQL and are ILIKE-safe) —
+ *    the `search_in` allowlist + default scope base (`uuid` and joined-name
+ *    keys are admitted on top by the caller).
+ *  - `filterable`: `filterable`-flagged columns restricted to WHERE-
+ *    resolvable keys (physical + calculated).
+ *
+ * Meta `searchable`/`filterable` express product intent, the entity
+ * decorators express physical reality — the two cannot diverge.
+ */
+export function deriveListWireSets(
+  columns: MetaColumn[],
+  entity: EntityClass,
+): { searchable: ReadonlySet<string>; filterable: ReadonlySet<string> } {
+  const persistence = getEntityPersistenceMeta(entity);
+  const calculatedKeys = new Set(Object.keys(persistence.calculated));
+  const physicalTextlike = new Set(
+    Object.values(persistence.columns)
+      .filter((c) =>
+        TEXTLIKE_PG_TYPES.has(
+          (c.pgType ?? c.inferredPgType ?? "").toLowerCase().replace(/\(.*\)/, ""),
+        ),
+      )
+      .map((c) => c.propertyKey),
+  );
+  const filterResolvable = new Set<string>([
+    ...Object.values(persistence.columns).map((c) => c.propertyKey),
+    ...calculatedKeys,
+  ]);
+  return {
+    searchable: new Set(
+      searchableTextColumns(columns)
+        .map((c) => c.key)
+        .filter((k) => physicalTextlike.has(k) || calculatedKeys.has(k)),
+    ),
+    filterable: new Set(
+      columns
+        .filter((c) => isColumnFilterable(c))
+        .map((c) => c.key)
+        .filter((k) => filterResolvable.has(k)),
+    ),
+  };
+}
+
 export function makeEntityService<TEntity extends Record<string, unknown>>(
   cfg: EntityServiceConfig<TEntity>,
 ): EntityService<TEntity> {
@@ -370,39 +428,9 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       )
       .map((c) => c.propertyKey),
   );
-  /** Physical PG types safe for `ILIKE` — `uuid` is searched via the
-   *  `CAST(col AS text)` the query-builder already applies. The canonical
-   *  search scope derivation used to live in the BE's `search-keys.ts`;
-   *  `list.meta` makes it internal — meta `searchable` expresses product
-   *  intent, the entity decorators express physical reality, and the two
-   *  cannot diverge. */
-  const TEXTLIKE_PG_TYPES = new Set([
-    "character varying", "varchar", "character", "char",
-    "text", "citext", "name", "uuid",
-  ]);
   const metaCols = cfg.list.meta?.columns;
-  const calculatedKeys = new Set(Object.keys(meta.calculated));
-  const physicalTextlike = new Set(
-    Object.values(meta.columns)
-      .filter((c) =>
-        TEXTLIKE_PG_TYPES.has(
-          (c.pgType ?? c.inferredPgType ?? "").toLowerCase().replace(/\(.*\)/, ""),
-        ),
-      )
-      .map((c) => c.propertyKey),
-  );
-  /** Derived searchable universe — `searchable`-flagged text-physical
-   *  columns plus `@Calculated` projections (they render to SQL and are
-   *  ILIKE-safe). `searchableKeys`, when authored, narrows it. */
-  const derivedSearchable = metaCols
-    ? new Set(
-        searchableTextColumns(metaCols)
-          .map((c) => c.key)
-          .filter(
-            (k) => physicalTextlike.has(k) || calculatedKeys.has(k),
-          ),
-      )
-    : undefined;
+  const wireSets = metaCols ? deriveListWireSets(metaCols, cfg.entity) : undefined;
+  const derivedSearchable = wireSets?.searchable;
   /** `searchableKeys` narrows both the default scope and the `search_in`
    *  allowlist when present; the derived set otherwise. `uuid` and every
    *  joined-name key stay admitted on top — by construction. */
@@ -413,20 +441,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         ),
       )
     : (derivedSearchable ?? new Set<string>());
-  /** WHERE-resolvable keys — physical columns plus `@Calculated`
-   *  projections (both render into the WHERE clause). */
-  const filterResolvable = new Set<string>([
-    ...Object.values(meta.columns).map((c) => c.propertyKey),
-    ...calculatedKeys,
-  ]);
-  const derivedFilterable = metaCols
-    ? new Set(
-        metaCols
-          .filter((c) => isColumnFilterable(c))
-          .map((c) => c.key)
-          .filter((k) => filterResolvable.has(k)),
-      )
-    : undefined;
+  const derivedFilterable = wireSets?.filterable;
   const allowedFilterFields: ReadonlySet<string> = new Set([
     ...(cfg.list.filterableKeys
       ? derivedFilterable
@@ -594,13 +609,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     if (q.search && q.search.trim()) {
       const raw = q.search.trim();
       const { needle, trueChars, hasEscapedWildcard } = buildIlikeNeedle(raw);
-      // `search_in` arrives as a single string for one key, an array
-      // for several — normalize before the allowed-set filter.
+      // `search_in` wire forms — comma-joined single param (the FE's
+      // canonical serialization: `search_in=a,b`), `search_in[]` brackets,
+      // or repeated params — all normalize to the key array. Column keys
+      // are snake_case: ',' can never appear inside one, so splitting is
+      // unambiguous (same contract as be-v3's csvToStringArray).
       const fields = (q.search_in === undefined
         ? [...searchableScope]
         : Array.isArray(q.search_in)
           ? q.search_in
-          : [q.search_in]) as string[];
+          : [q.search_in]
+      ).flatMap((v) => String(v).split(",")) as string[];
       // `search_in` admits every joined-name key on top of the authored
       // searchable set — a column carrying a display join is searchable
       // on its `{key}_name` surface by construction.

@@ -75,6 +75,26 @@ describe("EntityService — list.meta wire-set derivation", () => {
     expect(hit.rows.length).toBe(1);
   });
 
+  it("search_in accepts the comma-joined wire form (FE canonical)", async () => {
+    // The FE serializes the scope as ONE comma-joined param
+    // (`search_in=email,name`) — schema-less routers pass it through as a
+    // single string; it must split, not be read as one invalid key.
+    const hit = await svc().list({
+      search: "mario@x",
+      search_in: "email,name" as unknown as string[],
+    });
+    expect(hit.rows.length).toBe(1);
+  });
+
+  it("search_in comma-joined rejects invalid keys fail-closed", async () => {
+    await expect(
+      svc().list({
+        search: "mario",
+        search_in: "email,description" as unknown as string[],
+      }),
+    ).rejects.toThrow(ValidationError);
+  });
+
   it("search_in on served-searchable:false → ValidationError", async () => {
     await expect(
       svc().list({ search: "mario", search_in: ["description"] }),
