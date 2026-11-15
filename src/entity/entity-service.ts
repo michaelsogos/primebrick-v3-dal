@@ -76,6 +76,12 @@ import {
 import type { AuditPort } from "../types/types.js";
 import { NotFoundError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
+import {
+  extJsonStringify,
+  isColumnFilterable,
+  searchableTextColumns,
+  type EntityMeta,
+} from "@primebrick/core";
 
 // ─── Public contract ─────────────────────────────────────────────────────────
 
@@ -169,8 +175,16 @@ export interface EntityServiceConfig<TEntity> {
    *  skipped, the ref cell renders the raw uid (COALESCE fallback). */
   display?: string | null;
   list: {
-    searchableKeys: readonly string[];
-    filterableKeys: ReadonlySet<string>;
+    /** Resolved entity meta — the single source of truth for the list wire
+     *  contract: the `search_in` allowlist, the default search scope and the
+     *  `filters[i][field]` allowlist all derive from its columns. When
+     *  present, `searchableKeys`/`filterableKeys` are optional NARROWINGS
+     *  intersected with the derived universe (the `sortableKeys` pattern);
+     *  when absent (headless entities with no served meta) both stay
+     *  required — a missing pair throws at construction, never mid-query. */
+    meta?: EntityMeta;
+    searchableKeys?: readonly string[];
+    filterableKeys?: ReadonlySet<string>;
     /** Optional narrowing of the derived sortable universe (physical +
      *  calculated column keys + aggregate aliases). When omitted, every
      *  resolvable key is accepted; a `sort_key` outside the universe is
@@ -356,10 +370,81 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       )
       .map((c) => c.propertyKey),
   );
+  /** Physical PG types safe for `ILIKE` — `uuid` is searched via the
+   *  `CAST(col AS text)` the query-builder already applies. The canonical
+   *  search scope derivation used to live in the BE's `search-keys.ts`;
+   *  `list.meta` makes it internal — meta `searchable` expresses product
+   *  intent, the entity decorators express physical reality, and the two
+   *  cannot diverge. */
+  const TEXTLIKE_PG_TYPES = new Set([
+    "character varying", "varchar", "character", "char",
+    "text", "citext", "name", "uuid",
+  ]);
+  const metaCols = cfg.list.meta?.columns;
+  const calculatedKeys = new Set(Object.keys(meta.calculated));
+  const physicalTextlike = new Set(
+    Object.values(meta.columns)
+      .filter((c) =>
+        TEXTLIKE_PG_TYPES.has(
+          (c.pgType ?? c.inferredPgType ?? "").toLowerCase().replace(/\(.*\)/, ""),
+        ),
+      )
+      .map((c) => c.propertyKey),
+  );
+  /** Derived searchable universe — `searchable`-flagged text-physical
+   *  columns plus `@Calculated` projections (they render to SQL and are
+   *  ILIKE-safe). `searchableKeys`, when authored, narrows it. */
+  const derivedSearchable = metaCols
+    ? new Set(
+        searchableTextColumns(metaCols)
+          .map((c) => c.key)
+          .filter(
+            (k) => physicalTextlike.has(k) || calculatedKeys.has(k),
+          ),
+      )
+    : undefined;
+  /** `searchableKeys` narrows both the default scope and the `search_in`
+   *  allowlist when present; the derived set otherwise. `uuid` and every
+   *  joined-name key stay admitted on top — by construction. */
+  const searchableScope: ReadonlySet<string> = cfg.list.searchableKeys
+    ? new Set(
+        [...cfg.list.searchableKeys].filter((k) =>
+          derivedSearchable ? derivedSearchable.has(k) : true,
+        ),
+      )
+    : (derivedSearchable ?? new Set<string>());
+  /** WHERE-resolvable keys — physical columns plus `@Calculated`
+   *  projections (both render into the WHERE clause). */
+  const filterResolvable = new Set<string>([
+    ...Object.values(meta.columns).map((c) => c.propertyKey),
+    ...calculatedKeys,
+  ]);
+  const derivedFilterable = metaCols
+    ? new Set(
+        metaCols
+          .filter((c) => isColumnFilterable(c))
+          .map((c) => c.key)
+          .filter((k) => filterResolvable.has(k)),
+      )
+    : undefined;
   const allowedFilterFields: ReadonlySet<string> = new Set([
-    ...cfg.list.filterableKeys,
+    ...(cfg.list.filterableKeys
+      ? derivedFilterable
+        ? [...cfg.list.filterableKeys].filter((k) => derivedFilterable.has(k))
+        : cfg.list.filterableKeys
+      : (derivedFilterable ?? [])),
     ...wireAlwaysFilterable,
   ]);
+  if (derivedSearchable === undefined && cfg.list.searchableKeys === undefined) {
+    throw new ValidationError(
+      `EntityServiceConfig.list requires \`meta\` or \`searchableKeys\` for ${meta.entityClassName} — without either, the search scope cannot be derived.`,
+    );
+  }
+  if (derivedFilterable === undefined && cfg.list.filterableKeys === undefined) {
+    throw new ValidationError(
+      `EntityServiceConfig.list requires \`meta\` or \`filterableKeys\` for ${meta.entityClassName} — without either, the filter allowlist cannot be derived.`,
+    );
+  }
   const auditable = isAuditableEntity(meta);
   const clonable = isClonableEntity(cfg.entity);
   /** `cloned_by` actor join — only when the column actually exists
@@ -509,27 +594,42 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     if (q.search && q.search.trim()) {
       const raw = q.search.trim();
       const { needle, trueChars, hasEscapedWildcard } = buildIlikeNeedle(raw);
+      // `search_in` arrives as a single string for one key, an array
+      // for several — normalize before the allowed-set filter.
+      const fields = (q.search_in === undefined
+        ? [...searchableScope]
+        : Array.isArray(q.search_in)
+          ? q.search_in
+          : [q.search_in]) as string[];
+      // `search_in` admits every joined-name key on top of the authored
+      // searchable set — a column carrying a display join is searchable
+      // on its `{key}_name` surface by construction.
+      const nameJoins = nameJoinsFor(joinsFor());
+      const allowed = new Set([
+        ...searchableScope,
+        "uuid",
+        ...nameJoins.keys(),
+      ]);
+      // Fail closed like `filters[i][field]` and `sort_key`, BEFORE the
+      // needle-length gate: a scope key outside the allowlist used to be
+      // silently dropped, which turned "search this column" into "search
+      // nothing, return all".
+      const rejected = fields.filter((f) => !allowed.has(f));
+      if (rejected.length) {
+        throw new ValidationError(
+          `Invalid search_in ${extJsonStringify(rejected)} for ${meta.entityClassName} — must be one of: ${[...allowed].sort().join(", ")}`,
+        );
+      }
+      if (!fields.length) {
+        throw new ValidationError(
+          `Entity ${meta.entityClassName} exposes no searchable fields — \`search\` cannot be evaluated`,
+        );
+      }
       const canSearch = trueChars >= 3 || (hasEscapedWildcard && trueChars >= 1);
       if (!canSearch) {
         filters.push(Filter.group([Filter.raw("1", "=", "0")], "AND"));
       } else {
         const looksLikeUuid = UUID_RE.test(raw);
-        // `search_in` arrives as a single string for one key, an array
-        // for several — normalize before the allowed-set filter.
-        const fields = (q.search_in === undefined
-          ? [...cfg.list.searchableKeys]
-          : Array.isArray(q.search_in)
-            ? q.search_in
-            : [q.search_in]) as string[];
-        // `search_in` admits every joined-name key on top of the authored
-        // searchable set — a column carrying a display join is searchable
-        // on its `{key}_name` surface by construction.
-        const nameJoins = nameJoinsFor(joinsFor());
-        const allowed = new Set([
-          ...cfg.list.searchableKeys,
-          "uuid",
-          ...nameJoins.keys(),
-        ]);
         const ors = fields
           .filter((f) => allowed.has(f))
           .flatMap((f) => {
