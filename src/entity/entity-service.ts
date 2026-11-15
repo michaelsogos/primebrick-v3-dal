@@ -738,6 +738,18 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     return n;
   }
 
+  /** Hard ceiling on paged reads — one page of 1000 rows is a resource
+   *  attack, not a list request. The FE never asks above 100; the wire
+   *  tolerates up to 250 and rejects beyond with a 400. */
+  const PAGE_SIZE_MAX = 250;
+  function coercePageSize(v: unknown, name: string, fallback: number): number {
+    const n = coercePositiveInt(v, name, fallback);
+    if (n > PAGE_SIZE_MAX) {
+      throw new ValidationError(`Invalid ${name} "${String(v)}" — maximum is ${PAGE_SIZE_MAX}`);
+    }
+    return n;
+  }
+
   const VALID_DELETED_RECORDS = new Set(["EXCLUDED", "INCLUDED", "ONLY"]);
   function coerceDeletedRecords(v: unknown): "EXCLUDED" | "INCLUDED" | "ONLY" {
     if (v === undefined || v === null || v === "") return "EXCLUDED";
@@ -753,7 +765,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   return {
     async list(q) {
       const page = coercePositiveInt(q.page, "page", 1);
-      const page_size = coercePositiveInt(q.page_size, "page_size", 25);
+      const page_size = coercePageSize(q.page_size, "page_size", 25);
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
       const sort_dir =
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
@@ -949,7 +961,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         tableName: auditTable,
         entityUuid: uuid,
         page: coercePositiveInt(page, "page", 1),
-        limit: coercePositiveInt(limit, "limit", 25),
+        limit: coercePageSize(limit, "limit", 25),
       });
       return {
         ...r,

@@ -382,4 +382,14 @@ describe("EntityService — page out of range", () => {
     expect(r.rows.length).toBe(1);
     expect(r.total).toBe(2n);
   });
+
+  it("page_size above the 250 wire ceiling → ValidationError", async () => {
+    await expect(svc().list({ page_size: 251 })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page_size: 99999 })).rejects.toThrow(ValidationError);
+  });
+
+  it("page_size 250 (the ceiling) stays legal", async () => {
+    const r = await svc().list({ page_size: 250 });
+    expect(r.total).toBe(2n);
+  });
 });
