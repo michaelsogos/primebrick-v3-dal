@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Dal, ValidationError } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
+import { RefSourceEntity } from "./entities/ref-source-entity.js";
 import { setupTestSchema, truncateTestTables } from "./helpers/setup.js";
 
 /**
@@ -179,5 +180,148 @@ describe("EntityService — list.meta wire-set derivation", () => {
         list: { searchableKeys: ["name"] },
       }),
     ).toThrow(ValidationError);
+  });
+});
+
+/** Wire envelope guards — on schema-less services `q` arrives raw:
+ *  strings/floats/garbage must fail closed as 400 here, never reach SQL
+ *  and escape as a PG cast-error 500. */
+describe("EntityService — wire envelope guards", () => {
+  let dal: Dal;
+
+  const meta = {
+    columns: [
+      { key: "uuid", label_key: "x", type: "text" },
+      { key: "name", label_key: "x", type: "text" },
+      { key: "created_at", label_key: "x", type: "datetime" },
+      { key: "version", label_key: "x", type: "number" },
+      { key: "created_by", label_key: "x", type: "text" },
+      { key: "updated_by", label_key: "x", type: "text" },
+    ],
+  } as unknown as EntityMeta;
+
+  const svc = (list?: object) =>
+    dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      list: { meta, ...list },
+    });
+
+  beforeAll(async () => {
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      statementTimeoutMs: 30000,
+      applicationName: "dal-test-envelope-guards",
+    });
+    await setupTestSchema();
+  });
+
+  afterAll(async () => {
+    await dal.close();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+    await dal.add(SimpleTestEntity, { name: "Mario" }, { actor: "test" });
+  });
+
+  it("page/page_size: non-numeric, float and <1 → ValidationError (not a PG 500)", async () => {
+    await expect(svc().list({ page: "abc" as never })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page_size: "abc" as never })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page: 1.5 })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page: 0 })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page_size: 0 })).rejects.toThrow(ValidationError);
+    await expect(svc().list({ page_size: -5 })).rejects.toThrow(ValidationError);
+    const ok = await svc().list({ page: "1" as never, page_size: "10" as never });
+    expect(ok.rows.length).toBe(1);
+  });
+
+  it("deleted_records outside the enum → ValidationError (no silent default)", async () => {
+    await expect(
+      svc().list({ deleted_records: "BOGUS" as never }),
+    ).rejects.toThrow(ValidationError);
+    const ok = await svc().list({ deleted_records: "excluded" as never });
+    expect(ok.rows.length).toBe(1);
+  });
+
+  it("filter value typed check — temporal", async () => {
+    await expect(
+      svc().list({ filters: [{ field: "created_at", op: ">", value: "not-a-date" }] }),
+    ).rejects.toThrow(ValidationError);
+    const ok = await svc().list({ filters: [{ field: "created_at", op: "<", value: "2099-01-01" }] });
+    expect(ok.rows.length).toBe(1);
+  });
+
+  it("filter value typed check — skipped when the meta can't prove the type", async () => {
+    // SimpleTestEntity's uuid column carries only inferredPgType="text" —
+    // the validator deliberately does not over-reject what it cannot
+    // prove. Real entities declare pgType:"uuid" (job_schedule does) —
+    // the strict uuid check is locked by the live wire-attack E2E.
+    const hit = await svc().list({ filters: [{ field: "name", op: "=", value: "Mario" }] });
+    expect(hit.rows.length).toBe(1);
+  });
+
+  it("filter value typed check — integer", async () => {
+    const s2 = svc();
+    await expect(
+      s2.list({ filters: [{ field: "version", op: "=", value: "not-a-number" }] }),
+    ).rejects.toThrow(ValidationError);
+    const ok = await s2.list({ filters: [{ field: "version", op: ">=", value: "1" }] });
+    expect(ok.rows.length).toBe(1);
+  });
+
+  it("IN-list elements are each type-checked", async () => {
+    await expect(
+      svc().list({ filters: [{ field: "version", op: "IN", value: ["1", "bogus"] }] }),
+    ).rejects.toThrow(ValidationError);
+    const ok = await svc().list({ filters: [{ field: "version", op: "IN", value: ["1", "2"] }] });
+    expect(ok.rows.length).toBe(1);
+  });
+
+  it("ILIKE bypasses the typed check — the builder casts to text", async () => {
+    const hit = await svc().list({ filters: [{ field: "uuid", op: "ILIKE", value: "%-%" }] });
+    expect(hit.rows.length).toBe(1);
+  });
+});
+
+/** `auditActors` capability — present iff the entity stamps audit
+ *  columns (`Auditable` mixin), never gated on the audit-trail table. */
+describe("EntityService — auditActors capability", () => {
+  let dal: Dal;
+
+  beforeAll(async () => {
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      statementTimeoutMs: 30000,
+      applicationName: "dal-test-audit-actors-cap",
+    });
+    await setupTestSchema();
+  });
+
+  afterAll(async () => {
+    await dal.close();
+  });
+
+  it("present when audit columns exist", async () => {
+    const s = dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+    });
+    expect(typeof s.auditActors).toBe("function");
+    expect(Array.isArray(await s.auditActors!())).toBe(true);
+  });
+
+  it("absent on a non-auditable entity", () => {
+    const s = dal.entityService<RefSourceEntity>({
+      entity: RefSourceEntity as never,
+      actor: () => "test",
+      list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+    });
+    expect(s.auditActors).toBeUndefined();
   });
 });

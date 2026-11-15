@@ -227,14 +227,18 @@ export interface EntityService<TEntity> {
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
-   *  `[]` on entities with no audit actor columns. */
-  auditActors(): Promise<{ value: string; label: string }[]>;
+   *  PRESENT only when the entity has audit actor columns (`Auditable`
+   *  mixin / `auditableType`) — the route registers on this capability,
+   *  never on the audit-trail-table flag. */
+  auditActors?(): Promise<{ value: string; label: string }[]>;
   stream(query: EntityListQuery): AsyncGenerator<TEntity>;
   /** The entity's `dict` facet when the class carries `@Dict` — the
    *  entity-router injects it into served meta (`dict`). */
   dictFacet?: import("@primebrick/core").DictFacet;
-  /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail
-   *  table. The router derives `collaboration.enabled` from this. */
+  /** `Auditable` mixin / `auditableType` columns on the entity class —
+   *  the entity HAS audit actor columns (`created_by`/`updated_by`/…).
+   *  Distinct from `@AuditTrail` (the separate history table): a table
+   *  can stamp writers without keeping a change log. */
   auditable?: boolean;
   /** `Clonable` mixin on the entity class — `/duplicate` may register
    *  only when true. Derived, never restated in the decl. */
@@ -721,10 +725,35 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     await cfg.hooks?.afterWrite?.(op, entity);
   }
 
+  /** Wire envelope guards — `q` arrives raw when the service carries no
+   *  `listQuery` schema (job-handler, emailsender): strings, floats and
+   *  garbage must fail closed as 400 here, never reach SQL as 500s.
+   *  Pure CPU checks — zero query cost. */
+  function coercePositiveInt(v: unknown, name: string, fallback: number): number {
+    if (v === undefined || v === null || v === "") return fallback;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new ValidationError(`Invalid ${name} "${String(v)}" — must be a positive integer`);
+    }
+    return n;
+  }
+
+  const VALID_DELETED_RECORDS = new Set(["EXCLUDED", "INCLUDED", "ONLY"]);
+  function coerceDeletedRecords(v: unknown): "EXCLUDED" | "INCLUDED" | "ONLY" {
+    if (v === undefined || v === null || v === "") return "EXCLUDED";
+    const s = String(v).toUpperCase();
+    if (!VALID_DELETED_RECORDS.has(s)) {
+      throw new ValidationError(
+        `Invalid deleted_records "${String(v)}" — must be one of: EXCLUDED, INCLUDED, ONLY`,
+      );
+    }
+    return s as "EXCLUDED" | "INCLUDED" | "ONLY";
+  }
+
   return {
     async list(q) {
-      const page = q.page ?? 1;
-      const page_size = q.page_size ?? 25;
+      const page = coercePositiveInt(q.page, "page", 1);
+      const page_size = coercePositiveInt(q.page_size, "page_size", 25);
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
       const sort_dir =
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
@@ -748,7 +777,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
               ? Sort.byAlias(sortNameJoin.nameAlias, sort_dir)
               : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
           ],
-          deletedRecords: q.deleted_records ?? "EXCLUDED",
+          deletedRecords: coerceDeletedRecords(q.deleted_records),
           joins: shape.joins,
           groupBy: shape.groupBy,
         } as never,
@@ -895,8 +924,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const r = await findAuditPage(repo, {
         tableName: auditTable,
         entityUuid: uuid,
-        page,
-        limit,
+        page: coercePositiveInt(page, "page", 1),
+        limit: coercePositiveInt(limit, "limit", 25),
       });
       return {
         ...r,
@@ -907,9 +936,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       };
     },
 
-    async auditActors() {
-      return repo.distinctAuditActors(cfg.entity);
-    },
+    // `auditActors` exists ONLY when the entity stamps audit columns —
+    // the route registers on this capability. A non-auditable entity has
+    // no writers to vocabularize (and no `Auditable` mixin implies no
+    // `auditableType` column to DISTINCT over).
+    ...(auditable
+      ? {
+          async auditActors() {
+            return repo.distinctAuditActors(cfg.entity);
+          },
+        }
+      : {}),
 
     async *stream(q) {
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
@@ -925,7 +962,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           filters: buildListFilters(q),
           sorting: [Sort.by(field(cfg.entity, sort_key as never), sort_dir)],
-          deletedRecords: q.deleted_records ?? "EXCLUDED",
+          deletedRecords: coerceDeletedRecords(q.deleted_records),
           joins: shape.joins,
           groupBy: shape.groupBy,
           stream: true,

@@ -30,10 +30,12 @@ import { getDal } from "../dal/dal.js";
 import type { Dal } from "../dal/dal.js";
 import {
   getDictFacet,
+  getEntityPersistenceMeta,
   getRelationFacet,
   hasAuditTrail,
   isClonableEntity,
 } from "../meta/entity-decorators.js";
+import { isAuditableEntity } from "../repository/repository.js";
 import { registerEntityService } from "./entity-registry.js";
 import type { Repository } from "../repository/repository.js";
 import type {
@@ -146,8 +148,15 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
   }
-  auditActors(): Promise<{ value: string; label: string }[]> {
-    return this.svc.auditActors();
+  /** Vocabulary feed for `options_source:"audit.actors"` — present ONLY
+   *  when the entity stamps audit columns (`Auditable` mixin). The
+   *  entity-router registers `/audit-actors` on this capability's
+   *  presence, so presence must be provable WITHOUT touching `this.svc`
+   *  (the DAL resolves lazily — dereferencing it at route-registration
+   *  time crashes the boot). The call itself still resolves lazily. */
+  get auditActors() {
+    if (!isAuditableEntity(getEntityPersistenceMeta(this.cfg.entity))) return undefined;
+    return () => this.svc.auditActors!();
   }
   stream(query: EntityListQuery): AsyncGenerator<TEntity> {
     return this.svc.stream(query);
