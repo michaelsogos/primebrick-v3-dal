@@ -125,6 +125,35 @@ export async function setupTestSchema(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS dal_test_users_uuid_idx ON dal_test_users (uuid);
   `);
 
+  // Ref-join test table — `target_uuid` refs dal_test_simple.uuid
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_ref_source (
+      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
+      label       text,
+      target_uuid uuid,
+      ghost_uuid  uuid
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_ref_source_uuid_idx ON dal_test_ref_source (uuid);
+  `);
+
+  // Relation-edge test table — mirrors `crm.customer_links`: directed
+  // parent→child edge + the @Relation-derived unordered-pair unique index
+  // (LEAST/GREATEST expressions + type), the same DDL the schema patcher emits.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_rel_links (
+      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid        uuid NOT NULL DEFAULT uuidv7(),
+      parent_uuid uuid NOT NULL,
+      child_uuid  uuid NOT NULL,
+      type_uuid   uuid NOT NULL,
+      note        text
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_rel_links_uuid_idx ON dal_test_rel_links (uuid);
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_rel_links_pair_uq ON dal_test_rel_links
+      (LEAST(parent_uuid, child_uuid), GREATEST(parent_uuid, child_uuid), type_uuid);
+  `);
+
   // Platform identity table — the dal-owned auditable display-name join
   // targets public.user_profiles statically, so the test env must provide it.
   // Minimal projection shape (id/uuid/idp_code/display_name); on a dev DB the
@@ -137,6 +166,19 @@ export async function setupTestSchema(): Promise<void> {
       display_name varchar(255)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS user_profiles_uuid_idx ON user_profiles (uuid);
+  `);
+
+  // Platform service registry — the audit-actor joins resolve `system:<code>`
+  // writers through `public.service_registry` (ServiceRegistryRefEntity).
+  // Minimal projection shape (uuid/code/name); the real table satisfies
+  // IF NOT EXISTS on dev DBs.
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS service_registry (
+      uuid         uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
+      code         varchar(100) NOT NULL,
+      name         varchar(255)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS service_registry_code_idx ON service_registry (code);
   `);
 
   // Type-rich test table
@@ -239,7 +281,7 @@ export async function setupTestSchema(): Promise<void> {
 export async function truncateTestTables(): Promise<void> {
   const db = getTestPool();
   await db.query(`
-    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source, dal_test_rel_links RESTART IDENTITY CASCADE;
   `);
 }
 
@@ -249,6 +291,8 @@ export async function truncateTestTables(): Promise<void> {
 export async function dropTestSchema(): Promise<void> {
   const db = getTestPool();
   await db.query(`
+    DROP TABLE IF EXISTS dal_test_rel_links CASCADE;
+    DROP TABLE IF EXISTS dal_test_ref_source CASCADE;
     DROP TABLE IF EXISTS dal_test_simple_audit CASCADE;
     DROP TABLE IF EXISTS dal_test_users CASCADE;
     DROP TABLE IF EXISTS dal_test_simple CASCADE;

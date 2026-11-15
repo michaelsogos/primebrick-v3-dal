@@ -28,7 +28,8 @@
  *   inside a group are joined uniformly by the group connector.
  */
 
-import type { EntityClass } from "../meta/entity-meta.js";
+import { getEntityPersistenceMeta, type EntityClass } from "../meta/entity-meta.js";
+import { extJsonStringify } from "@primebrick/core";
 import { ValidationError } from "../errors/errors.js";
 import { field, Filter, type FilterExpr, type SqlExpressionOperand, type SqlOperator } from "./dsl.js";
 
@@ -53,6 +54,56 @@ export type ListFilterOptions = {
    */
   escapeIlike?: (raw: string) => string;
 };
+
+/* ── Typed-value validation ───────────────────────────────────────────
+ * `filters[i][value]` arrives as raw strings on schema-less services —
+ * `version=not-a-number` used to reach SQL and escape as a PG cast error
+ * (500). Validate coercion against the column's physical pg type at
+ * translate time: cheap string checks, zero query cost.
+ *
+ * LIKE/ILIKE need no check (any string is a legal pattern; non-text
+ * columns are CAST to text by the builder). IS/IS NOT only bind
+ * null/boolean (enforced downstream). Calculated/virtual columns carry
+ * no provable pg type — skipped rather than over-rejected. */
+const VALUE_UNCHECKED_OPS = new Set(["LIKE", "ILIKE", "IS", "IS NOT"]);
+
+const INT_PG = new Set(["int2", "int4", "int8", "smallint", "integer", "bigint", "serial", "bigserial", "oid"]);
+const NUMERIC_PG = new Set(["numeric", "decimal", "real", "double precision", "float4", "float8", "money"]);
+const TEMPORAL_PG = new Set(["timestamptz", "timestamp", "date", "time", "timetz"]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function assertFilterValueType(fieldKey: string, value: unknown, pgType: string): void {
+  const elements = Array.isArray(value) ? value : [value];
+  for (const el of elements) {
+    if (el === null || el === undefined) continue;
+    const s = String(el).trim();
+    let ok: boolean;
+    let expected: string;
+    if (INT_PG.has(pgType)) {
+      ok = typeof el === "number" ? Number.isInteger(el) : /^[+-]?\d+$/.test(s);
+      expected = "integer";
+    } else if (NUMERIC_PG.has(pgType)) {
+      ok = s !== "" && Number.isFinite(Number(el));
+      expected = "number";
+    } else if (pgType === "bool" || pgType === "boolean") {
+      ok = el === true || el === false || s === "true" || s === "false";
+      expected = "boolean";
+    } else if (TEMPORAL_PG.has(pgType)) {
+      ok = s !== "" && Number.isFinite(Date.parse(s));
+      expected = "date/time";
+    } else if (pgType === "uuid") {
+      ok = UUID_RE.test(s);
+      expected = "uuid";
+    } else {
+      continue;
+    }
+    if (!ok) {
+      throw new ValidationError(
+        `Invalid filter value ${extJsonStringify(el)} for "${fieldKey}" — expected ${expected}`,
+      );
+    }
+  }
+}
 
 const DEFAULT_VALID_OPS: ReadonlySet<string> = new Set([
   "=",
@@ -80,6 +131,14 @@ export function translateFilterConditions(
 
   const validOps = options.validOps ?? DEFAULT_VALID_OPS;
   const connector = options.connector ?? "AND";
+
+  // Physical pg type per propertyKey — calculated/virtual keys are absent
+  // (no provable type → skip, never over-reject).
+  const pgTypeByProp = new Map<string, string>();
+  for (const c of Object.values(getEntityPersistenceMeta(entity).columns)) {
+    const t = (c.pgType ?? c.inferredPgType ?? "").toLowerCase().replace(/\(.*\)/, "").trim();
+    if (t) pgTypeByProp.set(c.propertyKey, t);
+  }
 
   const exprs: FilterExpr[] = [];
 
@@ -112,6 +171,11 @@ export function translateFilterConditions(
       } else if (!Array.isArray(value)) {
         throw new ValidationError(`BETWEEN on "${cond.field}" needs {start,end} or [start,end]`);
       }
+    }
+
+    if (!VALUE_UNCHECKED_OPS.has(cond.op)) {
+      const pgType = pgTypeByProp.get(cond.field);
+      if (pgType) assertFilterValueType(cond.field, value, pgType);
     }
 
     exprs.push(Filter.fieldValue(field(entity, cond.field as never), cond.op as SqlOperator, value, connector));

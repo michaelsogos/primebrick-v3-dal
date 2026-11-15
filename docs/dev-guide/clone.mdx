@@ -29,16 +29,18 @@ The clone operation:
 1. Fetches the source record by UUID (including soft-deleted rows).
 2. Excludes the PK column (DB auto-generates) and all `@Unique` columns
    (including `uuid` — a new UUID is generated).
-3. Sets the `@CloneField` column to the source UUID (so the clone knows its
-   origin).
+3. Sets the `@CloneField` (`CLONED_FROM`) column to the source UUID (so the
+   clone knows its origin) and stamps the immutable clone-audit pair —
+   `cloned_at` = now, `cloned_by` = actor — when declared.
 4. Resets audit fields: `created_at` = now, `created_by` = actor,
    `updated_at` = now, `updated_by` = actor, `version` = 1.
 5. Resets deletable fields: `deleted_at` = null, `deleted_by` = null.
 6. Copies all other fields from the source.
 7. Inserts the new row with `RETURNING *`.
 
-No audit log is written for the clone itself (matches backend behavior — clone
-does not audit).
+When `options.audit` is provided, the clone emits an `AuditAction.CLONE`
+audit-trail row (full-row delta like `INSERT`) — the `cloned_*` columns
+mirror that provenance directly on the record.
 
 ## Use cases
 
@@ -54,24 +56,31 @@ does not audit).
 ## Usage
 
 The entity must implement `IAuditableEntity` and `IClonableEntity`, and have at
-least one `@CloneField` column:
+least one `@CloneField` column. The `Clonable` mixin owns the whole
+clone-audit vocabulary — compose it like `Auditable`/`Deletable`:
 
 ```typescript
-import { Entity, Column, Key, Unique, CloneField, EntityBase, Auditable, Deletable } from "@primebrick/dal-pg";
+import { Entity, Column, Key, Unique, EntityBase, Auditable, Clonable, Deletable } from "@primebrick/dal-pg";
 import type { IClonableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
 export class CustomerEntity
-  extends Deletable(Auditable(EntityBase))
+  extends Clonable(Deletable(Auditable(EntityBase)))
   implements IClonableEntity {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
   @Column() name!: string;
   @Column() email!: string;
 
-  @CloneField() @Column({ nullable: true }) cloned_from?: UUID | null;
+  // Inherited from Clonable — immutable clone stamps, never user-editable:
+  //   cloned_from?: uuid  (self-ref to the source record)
+  //   cloned_at?:   timestamptz
+  //   cloned_by?:   text  (audit actor — @Ref("user_profile"))
 }
 ```
+
+Hand-declaring `@CloneField()` on a `cloned_from` column still works —
+the mixin is the canonical way to get the full triple.
 
 ```typescript
 // Repository is sealed — clone via the Dal proxy:
@@ -85,6 +94,7 @@ const cloned = await dal.clone(
 // - new id (auto-generated)
 // - new uuid (randomUUID())
 // - cloned_from = sourceCustomerUuid
+// - cloned_at = now, cloned_by = actor
 // - created_at/updated_at = now, created_by/updated_by = userUuid
 // - version = 1
 // - deleted_at/deleted_by = null

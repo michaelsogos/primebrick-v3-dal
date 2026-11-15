@@ -70,12 +70,33 @@ function toVectorLiteral(v: unknown): string {
  */
 function renderExprOperand(w: ParamWriter, o: { sql: string; params?: unknown[] }): string {
   let i = 0;
-  return o.sql.replace(/\?/g, () => {
-    if (i >= (o.params?.length ?? 0)) {
-      throw new Error(`expr operand has more '?' markers than params: ${o.sql}`);
+  let out = "";
+  let inLiteral = false;
+  for (let p = 0; p < o.sql.length; p++) {
+    const ch = o.sql[p]!;
+    if (inLiteral) {
+      out += ch;
+      if (ch === "'") {
+        if (o.sql[p + 1] === "'") out += o.sql[++p]!; // '' escape
+        else inLiteral = false;
+      }
+      continue;
     }
-    return w.add(o.params![i++]);
-  });
+    if (ch === "'") {
+      inLiteral = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "?") {
+      if (i >= (o.params?.length ?? 0)) {
+        throw new Error(`expr operand has more '?' markers than params: ${o.sql}`);
+      }
+      out += w.add(o.params![i++]);
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefined, joins: JoinExpr[] | undefined, tableNameOverride: string | undefined, w: ParamWriter): string[] {
@@ -103,23 +124,26 @@ function renderProjection(entity: EntityClass, fields: FieldProjector[] | undefi
     }
   }
 
-  // Add projections for display_name fields from joined tables (auditable joins).
-  // COALESCE falls back to the raw actor column so "system" / orphan uuids
-  // still render instead of NULL.
+  // Display-name projections declared by the joins themselves
+  // (`JoinExpr.display`): `COALESCE(<join-expr>, <base right col>::text)`
+  // so "system" / orphan uuids still render instead of NULL. Extra
+  // `JoinExpr.projections` are emitted verbatim (`<sql> AS "<as>"`) —
+  // wire verdict fields where NULL is meaningful and must NOT be
+  // coalesced onto the raw column.
   if (joins) {
     for (const j of joins) {
-      if (j.alias) {
-        let fieldName = '';
-        if (j.alias === 'creator') fieldName = 'created_by_name';
-        else if (j.alias === 'updater') fieldName = 'updated_by_name';
-        else if (j.alias === 'deleter') fieldName = 'deleted_by_name';
-
-        if (fieldName) {
-          const actorCol = getColumnName(j.right.entity, j.right.key);
-          const actorRef = `${qTable(j.right.entity, j.right.entity === entity ? tableNameOverride : undefined)}.${quoteIdent(actorCol)}`;
-          projections.push(
-            `COALESCE(${quoteIdent(j.alias)}.display_name, ${actorRef}) AS ${quoteIdent(fieldName)}`
-          );
+      if (j.display) {
+        const rightCol = getColumnName(j.right.entity, j.right.key);
+        const rightRef = `${qTable(j.right.entity, j.right.entity === entity ? tableNameOverride : undefined)}.${quoteIdent(rightCol)}`;
+        projections.push(
+          `COALESCE(${j.display.sql}, ${rightRef}::text) AS ${quoteIdent(j.display.as)}`
+        );
+      }
+      if (j.projections) {
+        const selfRef = qTable(entity, tableNameOverride);
+        for (const p of j.projections) {
+          assertValidIdentPart(p.as, "projectionAlias");
+          projections.push(`${p.sql.replaceAll("{self}", selfRef)} AS ${quoteIdent(p.as)}`);
         }
       }
     }
@@ -144,13 +168,15 @@ function renderJoins(joins: JoinExpr[] | undefined, baseEntity?: EntityClass, ta
     assertValidIdentPart(rightColName, "columnName");
     // Right side should use the base table (not the alias) when it's the base entity
     const rightTableRef = (j.right.entity === baseEntity) ? qTable(j.right.entity, rightOverride) : (j.alias ? quoteIdent(j.alias) : qTable(j.right.entity, rightOverride));
-    let rightExpr = `${rightTableRef}.${quoteIdent(rightColName)}`;
+    let rightExpr = j.options?.rightExpr !== undefined
+      ? j.options.rightExpr.replaceAll("{self}", rightTableRef)
+      : `${rightTableRef}.${quoteIdent(rightColName)}`;
     let rightExprRaw = rightExpr; // Keep raw for regex guardrail
     let colMeta = null;
 
     if (j.options?.castRightTo) {
       rightExpr = `${rightExpr}::${j.options.castRightTo}`;
-    } else {
+    } else if (j.options?.rightExpr === undefined) {
       const meta = getEntityPersistenceMeta(j.right.entity);
       colMeta = meta.columns[rightColName];
       if (colMeta?.castInJoin) {
@@ -386,13 +412,14 @@ function renderGroupBy(input: SelectQueryInput, w: ParamWriter): string[] {
     }
   }
 
-  // Auditable-join display columns are projected as `<alias>.display_name`
-  // (see renderProjection) — they must be grouped too.
+  // Join display projections (`COALESCE(<expr>, right) AS "<as>"` — see
+  // renderProjection) group by their output alias — PostgreSQL accepts
+  // output column names in GROUP BY, and the alias is the only safe ref
+  // for arbitrary display expressions.
   if (input.joins) {
     for (const j of input.joins) {
-      if (j.alias === "creator" || j.alias === "updater" || j.alias === "deleter") {
-        cols.add(`${quoteIdent(j.alias)}.display_name`);
-      }
+      if (j.display) cols.add(quoteIdent(j.display.as));
+      if (j.projections) for (const p of j.projections) cols.add(quoteIdent(p.as));
     }
   }
 

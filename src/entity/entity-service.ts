@@ -53,13 +53,19 @@ import {
   type JoinExpr,
 } from "../query/dsl.js";
 import { buildAuditableJoinsSelective } from "../audit/auditable-joins.js";
+import { renderDisplayTemplate } from "../query/display-template.js";
+import { getSchemaDomain } from "../meta/schema-domain.js";
+import { lookupEntityService, registerEntityService } from "./entity-registry.js";
 import { AuditLogEntity } from "../audit/audit-log-entity.js";
 import { UserProfileRefEntity } from "../entities/user-profile-ref-entity.js";
+import { ServiceRegistryRefEntity } from "../entities/service-registry-ref-entity.js";
 import { isAuditableEntity } from "../repository/repository.js";
 import {
   AuditableFieldType,
+  CloneFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
+  isClonableEntity,
   type EntityClass,
 } from "../meta/entity-decorators.js";
 import { entityDateToApiIso } from "../meta/column-pg-io.js";
@@ -68,8 +74,15 @@ import {
   type ListFilterCondition,
 } from "../query/list-filters.js";
 import type { AuditPort } from "../types/types.js";
-import { NotFoundError, ValidationError } from "../errors/errors.js";
+import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
+import {
+  extJsonStringify,
+  isColumnFilterable,
+  searchableTextColumns,
+  type EntityMeta,
+  type MetaColumn,
+} from "@primebrick/core";
 
 // ─── Public contract ─────────────────────────────────────────────────────────
 
@@ -156,9 +169,23 @@ export interface EntityServiceConfig<TEntity> {
   actor?: () => string;
   /** Audit trail table override — default `${tableName}_audit`. */
   auditTableName?: string;
+  /** The entity's OWN display template (`"${name} (${code})"` syntax —
+   *  `resolveDisplayTemplate(meta)` applied to the authored meta).
+   *  Evaluated on self-ref joins: `cloned_from_name` projects the same
+   *  string the FE uses for this entity's titles. Absent → self-join
+   *  skipped, the ref cell renders the raw uid (COALESCE fallback). */
+  display?: string | null;
   list: {
-    searchableKeys: readonly string[];
-    filterableKeys: ReadonlySet<string>;
+    /** Resolved entity meta — the single source of truth for the list wire
+     *  contract: the `search_in` allowlist, the default search scope and the
+     *  `filters[i][field]` allowlist all derive from its columns. When
+     *  present, `searchableKeys`/`filterableKeys` are optional NARROWINGS
+     *  intersected with the derived universe (the `sortableKeys` pattern);
+     *  when absent (headless entities with no served meta) both stay
+     *  required — a missing pair throws at construction, never mid-query. */
+    meta?: EntityMeta;
+    searchableKeys?: readonly string[];
+    filterableKeys?: ReadonlySet<string>;
     /** Optional narrowing of the derived sortable universe (physical +
      *  calculated column keys + aggregate aliases). When omitted, every
      *  resolvable key is accepted; a `sort_key` outside the universe is
@@ -200,12 +227,22 @@ export interface EntityService<TEntity> {
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
-   *  `[]` on entities with no audit actor columns. */
-  auditActors(): Promise<{ value: string; label: string }[]>;
+   *  PRESENT only when the entity has audit actor columns (`Auditable`
+   *  mixin / `auditableType`) — the route registers on this capability,
+   *  never on the audit-trail-table flag. */
+  auditActors?(): Promise<{ value: string; label: string }[]>;
   stream(query: EntityListQuery): AsyncGenerator<TEntity>;
   /** The entity's `dict` facet when the class carries `@Dict` — the
    *  entity-router injects it into served meta (`dict`). */
   dictFacet?: import("@primebrick/core").DictFacet;
+  /** `Auditable` mixin / `auditableType` columns on the entity class —
+   *  the entity HAS audit actor columns (`created_by`/`updated_by`/…).
+   *  Distinct from `@AuditTrail` (the separate history table): a table
+   *  can stamp writers without keeping a change log. */
+  auditable?: boolean;
+  /** `Clonable` mixin on the entity class — `/duplicate` may register
+   *  only when true. Derived, never restated in the decl. */
+  clonable?: boolean;
 }
 
 // ─── Standard audit port ─────────────────────────────────────────────────────
@@ -296,6 +333,63 @@ function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
+/** Physical PG types safe for `ILIKE` — `uuid` is searched via the
+ *  `CAST(col AS text)` the query-builder already applies. */
+const TEXTLIKE_PG_TYPES = new Set([
+  "character varying", "varchar", "character", "char",
+  "text", "citext", "name", "uuid",
+]);
+
+/**
+ * Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
+ * column types — the single implementation behind `list.meta` derivation,
+ * also exported for service-side paths that run their own query (outside
+ * `makeEntityService`) yet must answer to the same contract:
+ *
+ *  - `searchable`: `searchable`-flagged text-physical columns plus
+ *    `@Calculated` projections (they render to SQL and are ILIKE-safe) —
+ *    the `search_in` allowlist + default scope base (`uuid` and joined-name
+ *    keys are admitted on top by the caller).
+ *  - `filterable`: `filterable`-flagged columns restricted to WHERE-
+ *    resolvable keys (physical + calculated).
+ *
+ * Meta `searchable`/`filterable` express product intent, the entity
+ * decorators express physical reality — the two cannot diverge.
+ */
+export function deriveListWireSets(
+  columns: MetaColumn[],
+  entity: EntityClass,
+): { searchable: ReadonlySet<string>; filterable: ReadonlySet<string> } {
+  const persistence = getEntityPersistenceMeta(entity);
+  const calculatedKeys = new Set(Object.keys(persistence.calculated));
+  const physicalTextlike = new Set(
+    Object.values(persistence.columns)
+      .filter((c) =>
+        TEXTLIKE_PG_TYPES.has(
+          (c.pgType ?? c.inferredPgType ?? "").toLowerCase().replace(/\(.*\)/, ""),
+        ),
+      )
+      .map((c) => c.propertyKey),
+  );
+  const filterResolvable = new Set<string>([
+    ...Object.values(persistence.columns).map((c) => c.propertyKey),
+    ...calculatedKeys,
+  ]);
+  return {
+    searchable: new Set(
+      searchableTextColumns(columns)
+        .map((c) => c.key)
+        .filter((k) => physicalTextlike.has(k) || calculatedKeys.has(k)),
+    ),
+    filterable: new Set(
+      columns
+        .filter((c) => isColumnFilterable(c))
+        .map((c) => c.key)
+        .filter((k) => filterResolvable.has(k)),
+    ),
+  };
+}
+
 export function makeEntityService<TEntity extends Record<string, unknown>>(
   cfg: EntityServiceConfig<TEntity>,
 ): EntityService<TEntity> {
@@ -306,6 +400,9 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       "EntityServiceConfig.repo is required — use `dal.entityService(cfg)` so the gateway injects its own Repository",
     );
   }
+  // Self-register under the derived api name — domain `@Ref` joins
+  // resolve their target's class + display template from this map.
+  registerEntityService(cfg);
   const auditPort = cfg.auditPort ?? makeTableAuditPort(repo);
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
@@ -335,24 +432,137 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       )
       .map((c) => c.propertyKey),
   );
+  const metaCols = cfg.list.meta?.columns;
+  const wireSets = metaCols ? deriveListWireSets(metaCols, cfg.entity) : undefined;
+  const derivedSearchable = wireSets?.searchable;
+  /** `searchableKeys` narrows both the default scope and the `search_in`
+   *  allowlist when present; the derived set otherwise. `uuid` and every
+   *  joined-name key stay admitted on top — by construction. */
+  const searchableScope: ReadonlySet<string> = cfg.list.searchableKeys
+    ? new Set(
+        [...cfg.list.searchableKeys].filter((k) =>
+          derivedSearchable ? derivedSearchable.has(k) : true,
+        ),
+      )
+    : (derivedSearchable ?? new Set<string>());
+  const derivedFilterable = wireSets?.filterable;
   const allowedFilterFields: ReadonlySet<string> = new Set([
-    ...cfg.list.filterableKeys,
+    ...(cfg.list.filterableKeys
+      ? derivedFilterable
+        ? [...cfg.list.filterableKeys].filter((k) => derivedFilterable.has(k))
+        : cfg.list.filterableKeys
+      : (derivedFilterable ?? [])),
     ...wireAlwaysFilterable,
   ]);
+  if (derivedSearchable === undefined && cfg.list.searchableKeys === undefined) {
+    throw new ValidationError(
+      `EntityServiceConfig.list requires \`meta\` or \`searchableKeys\` for ${meta.entityClassName} — without either, the search scope cannot be derived.`,
+    );
+  }
+  if (derivedFilterable === undefined && cfg.list.filterableKeys === undefined) {
+    throw new ValidationError(
+      `EntityServiceConfig.list requires \`meta\` or \`filterableKeys\` for ${meta.entityClassName} — without either, the filter allowlist cannot be derived.`,
+    );
+  }
   const auditable = isAuditableEntity(meta);
-  /** Audit actor column → user_profile join alias + the `*_by_name` display
-   *  column the join auto-projects (COALESCE display_name → raw actor). */
-  const AUDIT_ACTOR_JOIN_ALIAS: Readonly<Record<string, { join: string; nameAlias: string }>> = {
-    created_by: { join: "creator", nameAlias: "created_by_name" },
-    updated_by: { join: "updater", nameAlias: "updated_by_name" },
-    deleted_by: { join: "deleter", nameAlias: "deleted_by_name" },
+  const clonable = isClonableEntity(cfg.entity);
+  /** `cloned_by` actor join — only when the column actually exists
+   *  (`Clonable` mixin carries it; a hand-rolled entity may declare the
+   *  `cloned_from` pointer alone). */
+  const hasClonedBy = Object.values(meta.columns).some(
+    (c) => c.cloneType === CloneFieldType.CLONED_BY,
+  );
+  /** Display template rendered once at construction — an unknown `${key}`
+   *  fails here, never mid-query. `clone_src` = the self-join alias. */
+  const selfDisplaySql = cfg.display
+    ? renderDisplayTemplate(cfg.display, cfg.entity, "clone_src")
+    : undefined;
+  /** Domain `@Ref` display joins — every ref column whose target entity
+   *  resolved inside this service's registry gets a LEFT JOIN projecting
+   *  `{key}_name` off the target's OWN display template (the same
+   *  `resolveDisplayTemplate` materialization `cloned_from_name` uses).
+   *  Actor columns and `cloned_from` stay on their dedicated joins
+   *  above; a ref that doesn't resolve (cross-domain, headless or
+   *  unregistered entity, no display template) is SKIPPED — the cell
+   *  falls back to the raw uuid and the record sheet still drills
+   *  through the target service's own endpoint. Segregation holds:
+   *  only same-schema or platform-shared tables may join. */
+  const refDisplayJoinsFor = (): JoinExpr[] => {
+    const out: JoinExpr[] = [];
+    const shared = getSchemaDomain()?.sharedTables;
+    for (const col of Object.values(meta.columns)) {
+      if (col.refEntity === undefined) continue;
+      if (col.isClone === true || col.cloneType !== undefined) continue;
+      if (col.auditableType !== undefined || col.deletableType !== undefined) continue;
+      const target = lookupEntityService(col.refEntity);
+      if (target === undefined || target.display === null) continue;
+      let targetMeta;
+      try {
+        targetMeta = getEntityPersistenceMeta(target.entity, meta.tableSchema);
+      } catch {
+        continue; // foreign-domain entity — the schema guard itself says no
+      }
+      const targetShared = shared !== undefined && shared.has(targetMeta.tableName);
+      if (targetMeta.tableSchema !== meta.tableSchema && !targetShared) continue;
+      const targetUid = Object.values(targetMeta.columns).find(
+        (c) => c.propertyKey === "uuid" || c.isUnique,
+      )?.propertyKey;
+      if (targetUid === undefined) continue;
+      const alias = `ref_${String(col.propertyKey)}`;
+      out.push({
+        left: field(target.entity, targetUid as never),
+        right: field(cfg.entity, col.propertyKey as never),
+        type: "LEFT" as const,
+        alias,
+        display: {
+          as: `${String(col.propertyKey)}_name`,
+          sql: renderDisplayTemplate(target.display, target.entity, alias),
+        },
+      });
+    }
+    return out;
   };
-  const joinsFor = (): JoinExpr[] =>
-    auditable
+
+  const joinsFor = (): JoinExpr[] => [
+    ...(auditable || clonable
       ? (buildAuditableJoinsSelective(cfg.entity, UserProfileRefEntity, {
-          includeDeleter: hasDeletedBy,
+          includeCreator: auditable,
+          includeUpdater: auditable,
+          includeDeleter: auditable && hasDeletedBy,
+          includeCloner: clonable && hasClonedBy,
+          // Platform service-registry resolution for `system:<code>`
+          // actors — the second per-actor join feeds both the COALESCE'd
+          // `<col>_name` display and the `<col>_ref_entity|_ref_key`
+          // lazy-ref verdicts (match-driven, NULL when no join resolves).
+          serviceEntity: ServiceRegistryRefEntity,
         }) as JoinExpr[])
-      : [];
+      : []),
+    ...(clonable && selfDisplaySql
+      ? [{
+          left: field(cfg.entity, "uuid" as never),
+          right: field(cfg.entity, "cloned_from" as never),
+          type: "LEFT" as const,
+          alias: "clone_src",
+          display: { as: "cloned_from_name", sql: selfDisplaySql },
+        }]
+      : []),
+    ...refDisplayJoinsFor(),
+  ];
+  /** Joined-name descriptor per base column — derived from the joins' own
+   *  `display` contracts. Search resolves `COALESCE(<expr>, <col>::text)`;
+   *  `sort_key` orders on the projected `*_name` alias (the sorted
+   *  surface the FE shows), never the raw uid/uuid. Rebuilt per request:
+   *  the ref registry warms after construction, so the map can never be
+   *  frozen against it. */
+  const nameJoinsFor = (joins: JoinExpr[]) =>
+    new Map(
+      joins
+        .filter((j) => j.display !== undefined)
+        .map((j) => [
+          j.right.key as string,
+          { nameAlias: j.display!.as, sql: j.display!.sql },
+        ]),
+    );
   const repoFor = (tx?: Repository) => tx ?? repo;
 
   /** Fail-closed `sort_key` gate: the wire can only sort on keys that
@@ -403,15 +613,46 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     if (q.search && q.search.trim()) {
       const raw = q.search.trim();
       const { needle, trueChars, hasEscapedWildcard } = buildIlikeNeedle(raw);
+      // `search_in` wire forms — comma-joined single param (the FE's
+      // canonical serialization: `search_in=a,b`), `search_in[]` brackets,
+      // or repeated params — all normalize to the key array. Column keys
+      // are snake_case: ',' can never appear inside one, so splitting is
+      // unambiguous (same contract as be-v3's csvToStringArray).
+      const fields = (q.search_in === undefined
+        ? [...searchableScope]
+        : Array.isArray(q.search_in)
+          ? q.search_in
+          : [q.search_in]
+      ).flatMap((v) => String(v).split(",")) as string[];
+      // `search_in` admits every joined-name key on top of the authored
+      // searchable set — a column carrying a display join is searchable
+      // on its `{key}_name` surface by construction.
+      const nameJoins = nameJoinsFor(joinsFor());
+      const allowed = new Set([
+        ...searchableScope,
+        "uuid",
+        ...nameJoins.keys(),
+      ]);
+      // Fail closed like `filters[i][field]` and `sort_key`, BEFORE the
+      // needle-length gate: a scope key outside the allowlist used to be
+      // silently dropped, which turned "search this column" into "search
+      // nothing, return all".
+      const rejected = fields.filter((f) => !allowed.has(f));
+      if (rejected.length) {
+        throw new ValidationError(
+          `Invalid search_in ${extJsonStringify(rejected)} for ${meta.entityClassName} — must be one of: ${[...allowed].sort().join(", ")}`,
+        );
+      }
+      if (!fields.length) {
+        throw new ValidationError(
+          `Entity ${meta.entityClassName} exposes no searchable fields — \`search\` cannot be evaluated`,
+        );
+      }
       const canSearch = trueChars >= 3 || (hasEscapedWildcard && trueChars >= 1);
       if (!canSearch) {
         filters.push(Filter.group([Filter.raw("1", "=", "0")], "AND"));
       } else {
         const looksLikeUuid = UUID_RE.test(raw);
-        const fields = (q.search_in?.length
-          ? q.search_in
-          : [...cfg.list.searchableKeys]) as string[];
-        const allowed = new Set([...cfg.list.searchableKeys, "uuid"]);
         const ors = fields
           .filter((f) => allowed.has(f))
           .flatMap((f) => {
@@ -420,14 +661,14 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
                 ? [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", raw, "OR")]
                 : [Filter.fieldValue(field(cfg.entity, "uuid" as never), "ILIKE", needle, "OR")];
             }
-            const actorJoin = auditable ? AUDIT_ACTOR_JOIN_ALIAS[f] : undefined;
-            if (actorJoin) {
-              // Actor search resolves the user_profile join display_name —
-              // the searchable surface — COALESCE'd onto the raw actor value
-              // (same fallback as the `*_by_name` projection; a uuid column
-              // cannot serve ILIKE directly → 42883).
+            const nameJoin = nameJoins.get(f);
+            if (nameJoin) {
+              // Joined-name search resolves the join's display expression —
+              // the searchable surface — COALESCE'd onto the raw column
+              // value (same fallback as the `*_name` projection; a uuid
+              // column cannot serve ILIKE directly → 42883).
               return [Filter.expr(
-                { sql: `COALESCE("${actorJoin.join}".display_name, ${selfRef}."${f}"::text)` },
+                { sql: `COALESCE(${nameJoin.sql}, ${selfRef}."${f}"::text)` },
                 "ILIKE",
                 { sql: "? ESCAPE '#'", params: [needle] },
                 "OR",
@@ -484,10 +725,47 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     await cfg.hooks?.afterWrite?.(op, entity);
   }
 
+  /** Wire envelope guards — `q` arrives raw when the service carries no
+   *  `listQuery` schema (job-handler, emailsender): strings, floats and
+   *  garbage must fail closed as 400 here, never reach SQL as 500s.
+   *  Pure CPU checks — zero query cost. */
+  function coercePositiveInt(v: unknown, name: string, fallback: number): number {
+    if (v === undefined || v === null || v === "") return fallback;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new ValidationError(`Invalid ${name} "${String(v)}" — must be a positive integer`);
+    }
+    return n;
+  }
+
+  /** Hard ceiling on paged reads — one page of 1000 rows is a resource
+   *  attack, not a list request. The FE never asks above 100; the wire
+   *  tolerates up to 250 and rejects beyond with a 400. */
+  const PAGE_SIZE_MAX = 250;
+  function coercePageSize(v: unknown, name: string, fallback: number): number {
+    const n = coercePositiveInt(v, name, fallback);
+    if (n > PAGE_SIZE_MAX) {
+      throw new ValidationError(`Invalid ${name} "${String(v)}" — maximum is ${PAGE_SIZE_MAX}`);
+    }
+    return n;
+  }
+
+  const VALID_DELETED_RECORDS = new Set(["EXCLUDED", "INCLUDED", "ONLY"]);
+  function coerceDeletedRecords(v: unknown): "EXCLUDED" | "INCLUDED" | "ONLY" {
+    if (v === undefined || v === null || v === "") return "EXCLUDED";
+    const s = String(v).toUpperCase();
+    if (!VALID_DELETED_RECORDS.has(s)) {
+      throw new ValidationError(
+        `Invalid deleted_records "${String(v)}" — must be one of: EXCLUDED, INCLUDED, ONLY`,
+      );
+    }
+    return s as "EXCLUDED" | "INCLUDED" | "ONLY";
+  }
+
   return {
     async list(q) {
-      const page = q.page ?? 1;
-      const page_size = q.page_size ?? 25;
+      const page = coercePositiveInt(q.page, "page", 1);
+      const page_size = coercePageSize(q.page_size, "page_size", 25);
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
       const sort_dir =
         (q.sort_dir ?? cfg.list.defaultSort?.dir ?? "desc").toUpperCase() === "ASC"
@@ -496,26 +774,50 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       assertSortableKey(sort_key);
 
       const shape = buildListShape();
-      // Actor sort orders on the projected `*_by_name` display column (the
-      // sorted surface the FE shows), not the raw uuid.
-      const sortActor = auditable ? AUDIT_ACTOR_JOIN_ALIAS[sort_key] : undefined;
+      // Joined-name sort orders on the projected `*_name` display column
+      // (the sorted surface the FE shows), not the raw uuid.
+      const sortNameJoin = nameJoinsFor(shape.joins).get(sort_key);
+      const findOptions = {
+        filters: buildListFilters(q),
+        sorting: [
+          sortNameJoin
+            ? Sort.byAlias(sortNameJoin.nameAlias, sort_dir)
+            : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
+        ],
+        deletedRecords: coerceDeletedRecords(q.deleted_records),
+        joins: shape.joins,
+        groupBy: shape.groupBy,
+      } as never;
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
         page_size,
         shape.fields as never,
-        {
-          filters: buildListFilters(q),
-          sorting: [
-            sortActor
-              ? Sort.byAlias(sortActor.nameAlias, sort_dir)
-              : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
-          ],
-          deletedRecords: q.deleted_records ?? "EXCLUDED",
-          joins: shape.joins,
-          groupBy: shape.groupBy,
-        } as never,
+        findOptions,
       );
+
+      if (result.entities.length === 0 && page > 1) {
+        // Empty non-first page: legitimate empty filter result OR an
+        // out-of-range request — `COUNT(*) OVER()` cannot distinguish
+        // (no row survives to carry the window count). One page-1 probe
+        // resolves the real total; this anomaly path is the ONLY place
+        // a second query ever runs — in-range traffic pays nothing.
+        const probe = await repo.findByPage<TEntity, TEntity>(
+          cfg.entity,
+          1,
+          1,
+          shape.fields as never,
+          findOptions,
+        );
+        if (probe.total_records > 0n) {
+          const total = Number(probe.total_records);
+          const last_page = Math.ceil(total / page_size);
+          throw new PageOutOfRangeError(
+            `Invalid page ${page} — ${total} record(s) fit ${last_page} page(s)`,
+            { page, last_page, total },
+          );
+        }
+      }
 
       return {
         rows: result.entities.map((r) => toDto(r)),
@@ -616,6 +918,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         throw new NotFoundError(
           `${meta.entityClassName} has no uuid column — duplicate unsupported`,
         );
+      if (!isClonableEntity(cfg.entity))
+        throw new ValidationError(
+          `${meta.entityClassName} is not Clonable — /duplicate must not be reached`,
+        );
       const results: string[] = [];
       const errors: Array<{ uuid: string; error: string }> = [];
       for (const uuid of uuids) {
@@ -654,8 +960,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const r = await findAuditPage(repo, {
         tableName: auditTable,
         entityUuid: uuid,
-        page,
-        limit,
+        page: coercePositiveInt(page, "page", 1),
+        limit: coercePageSize(limit, "limit", 25),
       });
       return {
         ...r,
@@ -666,9 +972,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       };
     },
 
-    async auditActors() {
-      return repo.distinctAuditActors(cfg.entity);
-    },
+    // `auditActors` exists ONLY when the entity stamps audit columns —
+    // the route registers on this capability. A non-auditable entity has
+    // no writers to vocabularize (and no `Auditable` mixin implies no
+    // `auditableType` column to DISTINCT over).
+    ...(auditable
+      ? {
+          async auditActors() {
+            return repo.distinctAuditActors(cfg.entity);
+          },
+        }
+      : {}),
 
     async *stream(q) {
       const sort_key = (q.sort_key ?? cfg.list.defaultSort?.key ?? "updated_at") as string;
@@ -684,7 +998,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           filters: buildListFilters(q),
           sorting: [Sort.by(field(cfg.entity, sort_key as never), sort_dir)],
-          deletedRecords: q.deleted_records ?? "EXCLUDED",
+          deletedRecords: coerceDeletedRecords(q.deleted_records),
           joins: shape.joins,
           groupBy: shape.groupBy,
           stream: true,
@@ -694,5 +1008,10 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         yield toDto(row);
       }
     },
+
+    // Capability contract — derived from the entity class, consumed by the
+    // router (collaboration.enabled, /duplicate gate). Never restated.
+    auditable,
+    clonable,
   };
 }

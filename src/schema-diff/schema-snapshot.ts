@@ -153,11 +153,39 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     // CREATE (INDEX|UNIQUE INDEX) CONCURRENTLY.
     const normWhere = (w?: string) =>
       (w ?? "").replace(/[\s()]+/g, "").toLowerCase();
+    /** Expression indexes (`@Relation` pair-unique) can't compare column
+     *  lists — `pg_get_indexdef` renders keys as expressions, not column
+     *  names. Both sides collapse to a normalized key signature: the
+     *  entity renders `expressions` + `columns` in emission order, the
+     *  database side extracts the paren-balanced key section of the
+     *  stored `definition`; comparison is whitespace/parens/quotes/case
+     *  insensitive. */
+    const normKeys = (s: string) => s.replace(/[\s()"]+/g, "").toLowerCase();
+    const entityKeySig = (ei: SchemaIndexMeta) =>
+      ei.expressions?.length ? normKeys([...ei.expressions, ...ei.columns].join(",")) : null;
+    const dbKeySig = (di: SchemaIndexMeta): string => {
+      const def = di.definition ?? "";
+      const open = def.indexOf("(", def.search(/\busing\s+\w+/i));
+      if (open < 0) return "";
+      let depth = 0;
+      for (let i = open; i < def.length; i++) {
+        if (def[i] === "(") depth++;
+        else if (def[i] === ")" && --depth === 0) return normKeys(def.slice(open + 1, i));
+      }
+      return "";
+    };
+    const sameIndexKeys = (ei: SchemaIndexMeta, di: SchemaIndexMeta): boolean => {
+      const eSig = entityKeySig(ei);
+      if (eSig !== null) return eSig === dbKeySig(di);
+      return (
+        ei.columns.length === di.columns.length &&
+        ei.columns.every((c, i) => c === di.columns[i])
+      );
+    };
     const equivIndex = (ei: SchemaIndexMeta, di: SchemaIndexMeta) =>
       !!ei.isUnique === !!di.isUnique &&
       (ei.using ?? "btree") === (di.using ?? "btree") &&
-      ei.columns.length === di.columns.length &&
-      ei.columns.every((c, i) => c === di.columns[i]) &&
+      sameIndexKeys(ei, di) &&
       normWhere(ei.where) === normWhere(di.where);
     const dIdxList = [...dIdx.values()];
     const onlyInEntityIndexes = [...eIdx.entries()]
@@ -170,10 +198,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     for (const [nm, ei] of eIdx) {
       const di = dIdx.get(nm);
       if (!di) continue;
-      const sameCols =
-        ei.columns.length === di.columns.length &&
-        ei.columns.every((c, i) => c === di.columns[i]);
-      if (ei.using !== di.using || !sameCols || (ei.where ?? "") !== (di.where ?? "")) {
+      if (ei.using !== di.using || !sameIndexKeys(ei, di) || (ei.where ?? "") !== (di.where ?? "")) {
         indexMismatches.push({
           name: nm,
           entityUsing: ei.using ?? null,

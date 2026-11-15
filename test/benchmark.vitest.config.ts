@@ -1,6 +1,14 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // Same decorator transform as vitest.config.ts — benchmark entities are
+  // decorated classes (@Entity/@Column), they fail to parse without it.
+  oxc: {
+    decorator: {
+      legacy: true,
+      emitDecoratorMetadata: true,
+    },
+  },
   test: {
     globals: true,
     environment: "node",

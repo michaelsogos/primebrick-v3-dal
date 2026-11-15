@@ -1,11 +1,14 @@
 import {
   AuditableField,
   AuditableFieldType,
+  CloneField,
+  CloneFieldType,
+  Column,
   DeletableField,
   DeletableFieldType,
   Ref,
 } from "../meta/entity-decorators.js";
-import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
+import type { IAuditableEntity, IClonableEntity, IDeletableEntity } from "../types/entities.js";
 
 /**
  * Entity capability mixins — declare shared audit/deletable columns ONCE,
@@ -70,4 +73,25 @@ export function Deletable<TBase extends EntityCtor>(Base: TBase) {
     deleted_by?: string;
   }
   return DeletableEntity;
+}
+
+/** Adds the immutable clone-audit triple — `cloned_from` (self-ref to the
+ *  source record), `cloned_at` (clone instant), `cloned_by` (clone actor,
+ *  user_profile ref). All three are clone-write-path-owned: written once
+ *  at clone time, never user-editable. */
+export function Clonable<TBase extends EntityCtor>(Base: TBase) {
+  abstract class ClonableEntity extends Base implements IClonableEntity {
+    @Column({ pgType: "uuid", nullable: true })
+    @CloneField()
+    cloned_from?: string;
+
+    @Column({ jsType: "instant", nullable: true })
+    @CloneField(CloneFieldType.CLONED_AT)
+    cloned_at?: Date;
+
+    @CloneField(CloneFieldType.CLONED_BY)
+    @Ref("user_profile")
+    cloned_by?: string;
+  }
+  return ClonableEntity;
 }

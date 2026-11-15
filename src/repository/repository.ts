@@ -12,7 +12,9 @@ import {
 } from "../meta/entity-meta.js";
 import {
   AuditableFieldType,
+  CloneFieldType,
   DeletableFieldType,
+  getRelationFacet,
 } from "../meta/entity-decorators.js";
 import {
   columnHintsFromMetaColumn,
@@ -642,14 +644,19 @@ export class Repository {
       )
       .join("\n    UNION\n    ");
     // The regex guardrail on the LEFT side mirrors the audit-trail join —
-    // a non-uuid actor must not trip the uuid comparison cast.
+    // a non-uuid actor must not trip the uuid comparison cast. The second
+    // join resolves `system:<code>` writers through the platform registry
+    // (the CASE guard keeps other `x:<code>` actors from false-matching) —
+    // `migration-*` and other unresolvable writers keep the raw value.
     const r = await this.db.query<{ value: unknown; label: unknown }>(
-      `SELECT a.actor AS value, COALESCE(up."display_name", a.actor) AS label
+      `SELECT a.actor AS value, COALESCE(up."display_name", sr."name", a.actor) AS label
        FROM (
          ${union}
        ) a
        LEFT JOIN "public"."user_profiles" up
          ON a.actor ~ '^[0-9a-fA-F-]{36}$' AND up."uuid"::text = a.actor
+       LEFT JOIN "public"."service_registry" sr
+         ON sr."code" = CASE WHEN a.actor LIKE 'system:%' THEN split_part(a.actor, ':', 2) END
        ORDER BY label`,
       [],
     );
@@ -838,7 +845,7 @@ conflict AS (
 ),
 raised AS (
   SELECT public.pg_raise(
-    CASE WHEN c.c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END,
+    ${this.conflictErrCode(entity, meta, "c.c_deleted_at", "c.c_constraint")},
     ${escapeLiteral(`add: unique constraint violation on ${meta.entityClassName}`)},
     jsonb_build_object(
       'entity', ${escapeLiteral(meta.entityClassName)},
@@ -1200,6 +1207,24 @@ guard AS (
    * meaningful). Groups containing DB-generated columns are skipped: their
    * attempted value is generated inside PG and cannot be bound.
    */
+  /**
+   * pg_raise code selection for the conflict-reporting CTEs: a
+   * reversed-direction match on the `@Relation` pair index is a circular
+   * reference (ERR11); otherwise a live-row collision is ERR04 and an
+   * all-soft-deleted collision is ERR05.
+   */
+  private conflictErrCode(
+    entity: EntityClass,
+    meta: EntityPersistenceMeta,
+    deletedRef: string,
+    constraintRef: string,
+  ): string {
+    const rev = getRelationFacet(entity) !== undefined
+      ? ` WHEN ${constraintRef} = ${escapeLiteral(`${meta.tableName}_pair_uq_reversed`)} THEN 'ERR11'`
+      : "";
+    return `CASE${rev} WHEN ${deletedRef} IS NULL THEN 'ERR04' ELSE 'ERR05' END`;
+  }
+
   private uniqueConflictPredicates(
     entity: EntityClass,
     meta: EntityPersistenceMeta,
@@ -1257,6 +1282,51 @@ guard AS (
       }
       if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND "), keyRefs });
     }
+
+    // ── @Relation pair predicates ─────────────────────────────────────
+    // The derived `<table>_pair_uq` index keys on LEAST/GREATEST — the
+    // conflict CTE must match the same unordered semantics and split the
+    // verdict by direction: same-direction = duplicate claim (ERR04/ERR05),
+    // reversed = circular reference (ERR11, selected in the raised CASE).
+    // The `keys` detail reports the STORED row's ends (`t.*` refs) — for a
+    // reversed collision that is the information a consumer needs.
+    const rel = getRelationFacet(entity);
+    if (rel !== undefined) {
+      const relRef = (propKey: string): { sqlName: string; ref: string } | undefined => {
+        const col = Object.values(meta.columns).find((c) => c.propertyKey === propKey);
+        if (!col) return undefined;
+        const ref =
+          attemptedParam.get(col.propertyKey) ??
+          this.constantDefaultSql(col.defaultSql) ??
+          (col.defaultSql ? undefined : "NULL");
+        if (!ref || ref === "NULL") return undefined;
+        return { sqlName: col.sqlName, ref };
+      };
+      const p = relRef(rel.parent_field);
+      const c = relRef(rel.child_field);
+      const t = rel.type_field !== undefined ? relRef(rel.type_field) : undefined;
+      // Either end unbindable (NULL/volatile default) → no pair conflict
+      // possible (NULLS DISTINCT keeps NULL ends from colliding anyway).
+      if (p && c && (rel.type_field === undefined || t !== undefined)) {
+        const pairName = `${meta.tableName}_pair_uq`;
+        const typeClause = t ? ` AND t.${quoteIdent(t.sqlName)} IS NOT DISTINCT FROM ${t.ref}` : "";
+        const storedEnds = [
+          { sqlName: p.sqlName, ref: `t.${quoteIdent(p.sqlName)}` },
+          { sqlName: c.sqlName, ref: `t.${quoteIdent(c.sqlName)}` },
+          ...(t ? [{ sqlName: t.sqlName, ref: `t.${quoteIdent(t.sqlName)}` }] : []),
+        ];
+        predicates.push({
+          name: pairName,
+          sql: `t.${quoteIdent(p.sqlName)} IS NOT DISTINCT FROM ${p.ref} AND t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${c.ref}${typeClause}`,
+          keyRefs: storedEnds,
+        });
+        predicates.push({
+          name: `${pairName}_reversed`,
+          sql: `t.${quoteIdent(p.sqlName)} IS NOT DISTINCT FROM ${c.ref} AND t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${p.ref}${typeClause}`,
+          keyRefs: storedEnds,
+        });
+      }
+    }
     return predicates;
   }
 
@@ -1312,6 +1382,45 @@ guard AS (
         refs.push(`t.${quoteIdent(c.sqlName)} IS NOT DISTINCT FROM ${ref} AND ${ref} IS NOT NULL`);
       }
       if (bindable) predicates.push({ name: g.name, sql: refs.join(" AND "), keys: g.cols.map((c) => c.sqlName) });
+    }
+
+    // ── @Relation pair predicates (bulk) ──────────────────────────────
+    // Same unordered-pair semantics as uniqueConflictPredicates, with the
+    // attempted ends read from the temp table. Reversed-direction matches
+    // surface as `<pair>_reversed` → ERR11 (per-row code + top raise).
+    const rel = getRelationFacet(entity);
+    if (rel !== undefined) {
+      const relRef = (propKey: string): string | undefined => {
+        const col = Object.values(meta.columns).find((c) => c.propertyKey === propKey);
+        if (!col) return undefined;
+        const ref = inPayload.has(col.propertyKey)
+          ? `tmp.${quoteIdent(col.sqlName)}`
+          : (this.constantDefaultSql(col.defaultSql) ?? (col.defaultSql ? undefined : "NULL"));
+        return ref && ref !== "NULL" ? ref : undefined;
+      };
+      const pCol = Object.values(meta.columns).find((c) => c.propertyKey === rel.parent_field);
+      const cCol = Object.values(meta.columns).find((c) => c.propertyKey === rel.child_field);
+      const tCol = rel.type_field !== undefined
+        ? Object.values(meta.columns).find((c) => c.propertyKey === rel.type_field)
+        : undefined;
+      const pRef = relRef(rel.parent_field);
+      const cRef = relRef(rel.child_field);
+      const tRef = rel.type_field !== undefined ? relRef(rel.type_field) : undefined;
+      if (pCol && cCol && pRef && cRef && (rel.type_field === undefined || (tCol && tRef))) {
+        const pairName = `${meta.tableName}_pair_uq`;
+        const typeClause = tCol && tRef ? ` AND t.${quoteIdent(tCol.sqlName)} IS NOT DISTINCT FROM ${tRef}` : "";
+        const pairKeys = [pCol.sqlName, cCol.sqlName, ...(tCol ? [tCol.sqlName] : [])];
+        predicates.push({
+          name: pairName,
+          sql: `t.${quoteIdent(pCol.sqlName)} IS NOT DISTINCT FROM ${pRef} AND t.${quoteIdent(cCol.sqlName)} IS NOT DISTINCT FROM ${cRef}${typeClause}`,
+          keys: pairKeys,
+        });
+        predicates.push({
+          name: `${pairName}_reversed`,
+          sql: `t.${quoteIdent(pCol.sqlName)} IS NOT DISTINCT FROM ${cRef} AND t.${quoteIdent(cCol.sqlName)} IS NOT DISTINCT FROM ${pRef}${typeClause}`,
+          keys: pairKeys,
+        });
+      }
     }
     return predicates;
   }
@@ -1818,7 +1927,7 @@ conflict AS (
 ),
 raised AS (
   SELECT public.pg_raise(
-    CASE WHEN c.c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END,
+    ${this.conflictErrCode(entity, meta, "c.c_deleted_at", "c.c_constraint")},
     ${escapeLiteral(`update: unique constraint violation on ${meta.entityClassName}`)},
     jsonb_build_object(
       'entity', ${escapeLiteral(meta.entityClassName)},
@@ -2354,10 +2463,20 @@ SELECT * FROM w`;
     // Set the new UUID
     clonedRecord[uuidColMeta.sqlName] = newUuid;
 
-    // Set the clone-tracking field to source UUID
+    // Set the clone-tracking field to source UUID, and stamp the
+    // immutable clone-audit pair (cloned_at / cloned_by) when declared —
+    // mirror of the CLONE audit-trail row the entity may emit below.
     const cloneField = Object.values(meta.columns).find((c) => c.isClone);
     if (cloneField) {
       clonedRecord[cloneField.sqlName] = sourceUuid;
+    }
+    const clonedAtField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_AT);
+    if (clonedAtField) {
+      clonedRecord[clonedAtField.sqlName] = now;
+    }
+    const clonedByField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_BY);
+    if (clonedByField && actor !== undefined) {
+      clonedRecord[clonedByField.sqlName] = actor;
     }
 
     // Build and execute INSERT
@@ -2563,19 +2682,19 @@ SELECT * FROM w`;
   FROM ${quoteIdent(tmpName)} tmp
   JOIN ${table} t ON ${joinOr}
 ),
-agg AS (SELECT count(*) AS n, bool_and(c_deleted_at IS NOT NULL) AS all_del FROM conf),
+agg AS (SELECT count(*) AS n, bool_and(c_deleted_at IS NOT NULL) AS all_del${getRelationFacet(entity) !== undefined ? `, bool_or(c_constraint = ${escapeLiteral(`${meta.tableName}_pair_uq_reversed`)}) AS any_rev` : ""} FROM conf),
 det AS (
   SELECT coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) AS rows
   FROM (
     SELECT c_uuid AS uuid, c_input_uuid AS input_uuid,
-           CASE WHEN c_deleted_at IS NULL THEN 'ERR04' ELSE 'ERR05' END AS code,
+           ${this.conflictErrCode(entity, meta, "c_deleted_at", "c_constraint")} AS code,
            (c_deleted_at IS NOT NULL) AS deleted, c_constraint AS "constraint",
            c_keys AS keys
     FROM conf LIMIT 10
   ) x
 )
 SELECT public.pg_raise(
-  CASE WHEN agg.all_del THEN 'ERR05' ELSE 'ERR04' END,
+  ${getRelationFacet(entity) !== undefined ? `CASE WHEN agg.any_rev THEN 'ERR11' WHEN agg.all_del THEN 'ERR05' ELSE 'ERR04' END` : `CASE WHEN agg.all_del THEN 'ERR05' ELSE 'ERR04' END`},
   ${escapeLiteral(`addMany: unique constraint violation on ${meta.entityClassName}`)},
   jsonb_build_object(
     'entity', ${escapeLiteral(meta.entityClassName)},

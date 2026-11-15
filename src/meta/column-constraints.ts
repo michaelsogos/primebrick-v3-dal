@@ -31,10 +31,21 @@
  *   4. `kind:"virtual"` with `sortable`/`filterable`/`searchable` set to
  *      `true` — a virtual column can never be queried; opting IN is a
  *      construction error (opting OUT is legal but redundant).
+ *   5. the uid column (`meta.uid`) authoring `sticky:false`,
+ *      `hideable:false`, `default_visible:true`, `order` ≠ -1, or
+ *      `hidden:true` — the uid contract is fixed: `order:-1`, sticky,
+ *      hidden-by-default, always user-toggleable;
+ *   6. a served meta with NO pinned column (`sticky:true +
+ *      hideable:false` — always-visible, never-hideable identity) — when
+ *      none is declared, the `display_field` column derives the pin;
+ *      display_field absent, naming no served column, naming the uid, or
+ *      explicitly un-pinned (`hideable:true`/`sticky:false`) → throw.
+ *   ≥4 `sticky` columns emit a construction WARNING — allowed,
+ *   discouraged: sticky chrome is for identity columns, not data columns.
  */
-import type { MetaColumn } from "@primebrick/core";
+import type { MetaColumn, RelationFacet } from "@primebrick/core";
 import { numericKindOf } from "@primebrick/core";
-import { AuditableFieldType, DeletableFieldType, getEntityPersistenceMeta, type EntityClass } from "./entity-decorators.js";
+import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -46,11 +57,15 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
 const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
 
-export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string }>(
+export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string; display_field?: string }>(
   meta: T,
   entityClass: EntityClass,
 ): T {
   const persistence = getEntityPersistenceMeta(entityClass);
+  /** `@Relation` facet — present when the entity class is a directed
+   *  parent→child edge: reshapes the identity contract below (no
+   *  display_field, no pinned column, ends served + immutable). */
+  const relation = getRelationFacet(entityClass);
 
   // `hidden: true` is the ONLY authored opt-out: the column is suppressed
   // entirely — never emitted in meta.columns, never auto-derived, never
@@ -60,6 +75,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   const injectDerived = (col: MetaColumn): MetaColumn => {
     const phys = persistence.columns[col.key];
     if (!phys) return col;
+    const refEnt = servedRefEntity(phys, meta.entity);
     return {
       ...col,
       nullable: phys.nullable ?? false,
@@ -73,15 +89,47 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // derived, never authored (the vocab is the table's own writers
       // by definition; an authored options_source on `*_by` is drift).
       ...(isAuditActorColumn(phys) ? { options_source: "audit.actors" as const } : {}),
-      // `audited` is a class fact too (audit/deletion decorators) — inject
-      // even on authored columns so a mere relabel can't drop the flag
-      // (it gates dict inline-editability and soft-delete detection).
-      ...(phys.isAuditable === true || phys.isDeletable === true ? { audited: true } : {}),
-      // `@Ref` is a class fact the same way: an authored column entry may
-      // tune visibility/order but can never re-point or drop the ref.
-      ...(phys.refEntity !== undefined ? { type: "ref" as const, ref: { entity: phys.refEntity } } : {}),
+      // `audited` is a class fact too (audit/deletion/sync decorators) —
+      // inject even on authored columns so a mere relabel can't drop the
+      // flag (it gates dict inline-editability and soft-delete detection).
+      ...(phys.isAuditable === true || phys.isDeletable === true || phys.isSynchronizable === true
+        ? { audited: true }
+        : {}),
+      // The ref contract is a class fact the same way: an authored column
+      // entry may tune visibility/order but can never re-point or drop
+      // the ref (`@Ref` target, or the `cloned_from` self-ref). Audit
+      // actor columns serve the LAZY form — the static `user_profile`
+      // @Ref is only the human-writer default; `system:<code>` writers
+      // resolve per-row through the `<key>_ref_entity` / `<key>_ref_key`
+      // verdict projections the audit joins emit (user_profile |
+      // service_registry | NULL → plain text for `migration-*`).
+      ...(refEnt !== undefined
+        ? isAuditActorColumn(phys)
+          ? { type: "ref" as const, ref: { entity_field: `${col.key}_ref_entity`, key_field: `${col.key}_ref_key` } }
+          : { type: "ref" as const, ref: { entity: refEnt } }
+        : {}),
     };
   };
+
+  let extraAuditIdx = 0;
+  /** Canonical audit-section sequence — emitted `order` bands so the record
+   *  sheet's audit accordion reads extras → created pair → updated pair →
+   *  deleted pair → clone triple → version-last by construction, regardless
+   *  of mixin declaration order in the class. Authored `order` still wins:
+   *  a declared column carrying one is the explicit escape hatch. */
+  const auditOrderFor = (key: string): number => {
+    const rank = STANDARD_AUDIT_RANK[key];
+    if (rank !== undefined) return AUDIT_ORDER_BASE + rank;
+    // Non-standard audited columns (sync/lifecycle stamps) rank FIRST of
+    // the audit block, in emission order among themselves.
+    return AUDIT_ORDER_BASE + extraAuditIdx++ * 10;
+  };
+  /** After injectDerived: an audited column WITHOUT an authored order gets
+   *  its canonical band (uid is pinned separately and is never audited). */
+  const withAuditOrder = (col: MetaColumn): MetaColumn =>
+    col.audited === true && col.order === undefined && col.key !== meta.uid
+      ? { ...col, order: auditOrderFor(col.key) }
+      : col;
 
   const columns = meta.columns
     .filter((col) => !hiddenKeys.has(col.key))
@@ -118,13 +166,27 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // "ref" literal (system columns must declare the derived type),
       // anything else contradicts the class.
       const physForRef = persistence.columns[col.key];
-      if (physForRef?.refEntity !== undefined) {
+      const servedRef = physForRef ? servedRefEntity(physForRef, meta.entity) : undefined;
+      if (servedRef !== undefined) {
         if (col.ref !== undefined || (col.type !== undefined && col.type !== "ref")) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors ref/type — ` +
-              `the ref contract derives from @Ref("${physForRef.refEntity}") on the entity class; never declared by hand`,
+              `the ref contract derives from the entity class (@Ref / cloned_from self-ref → "${servedRef}"); never declared by hand`,
           );
         }
+      }
+      // `@Relation` end columns — `immutable` is a class fact (the facet
+      // declares the edge ends create-set / frozen afterwards); authoring
+      // it, in either direction, is drift.
+      if (
+        relation !== undefined &&
+        (col.key === relation.parent_field || col.key === relation.child_field) &&
+        col.immutable !== undefined
+      ) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors immutable — ` +
+            `the @Relation facet owns end mutability (ends are create-set, frozen afterwards); drop the authored value`,
+        );
       }
       // ── uom / unsigned — the unit-of-measure and sign contract live only
       //    on NUMERIC columns. `percent` is a display transform (no sibling);
@@ -246,6 +308,23 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           }
         }
       }
+      // ── ref target — exactly one source: `entity` (static) XOR
+      //    `entity_field` (lazy per-row resolution). A ref with neither
+      //    cannot be resolved; with both the static would silently win.
+      if (col.ref !== undefined) {
+        if (col.ref.entity !== undefined && col.ref.entity_field !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares both ref.entity and ref.entity_field — ` +
+              `the target source is exclusive: static "entity" or lazy "entity_field" (per-row entity name), never both`,
+          );
+        }
+        if (col.ref.entity === undefined && col.ref.entity_field === undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares a ref with no target — ` +
+              `either ref.entity (static target) or ref.entity_field (row column naming the per-row entity) is required`,
+          );
+        }
+      }
       // ── ref route/presentation — closed vocabularies validated at
       //    construction: malformed values must fail at meta assembly,
       //    never reach the wire as a silently-misparsed cell. */
@@ -309,11 +388,11 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                 `declared via @Calculated(expr, { pgType, nullable }) on the entity class`,
             );
           }
-          return {
+          return withAuditOrder({
             ...col,
             nullable: calc.nullable ?? false,
             ...(calc.pgType !== undefined ? { pg_type: calc.pgType } : {}),
-          };
+          });
         }
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: meta column "${col.key}" has no matching column on the entity class — ` +
@@ -360,8 +439,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    the writable-validation contract (system cols never enter
       //    create/edit forms).                                         */
       if (COMMON_SYSTEM_FIELD_KEYS.has(col.key)) {
-        // @Ref pins the served type to "ref" — a class fact like pg_type.
-        const derivedType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
+        // A served ref pins the type to "ref" — a class fact like
+        // pg_type (@Ref target or the cloned_from self-ref).
+        const derivedType = servedRefEntity(phys, meta.entity) !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
         if (col.type !== derivedType) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: system column "${col.key}" authors type:"${col.type}" but ` +
@@ -406,9 +486,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         const flagDefaults: Record<string, boolean> = {};
         for (const f of QUERY_FLAGS)
           if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type)) flagDefaults[f] = false;
-        return injectDerived({ ...col, ...flagDefaults });
+        return withAuditOrder(injectDerived({ ...col, ...flagDefaults }));
       }
-      return injectDerived(col);
+      return withAuditOrder(injectDerived(col));
     });
 
   // ── Class → meta completeness: every PHYSICAL column not declared and not
@@ -418,6 +498,33 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   //    one visible-by-default. The same auto-derivation covers @Calculated
   //    props (kind:"calculated", no physical constraints injected).        */
   const declared = new Set(columns.map((c) => c.key));
+
+  // ── Declared standard-audit columns — legal, usually fuffa ─────────────
+  //    Auto-derivation already emits every standard audit stamp audited +
+  //    canonical band order (2000+rank). A declaration is justified only when
+  //    it carries semantics the derivation cannot express (hidden, relabel
+  //    like job_run's finished_at, a widget). Since `order` is REQUIRED in
+  //    the column type, declaring for visibility alone forces an authored
+  //    order — and any order <2000 ejects the column from the audit band, so
+  //    the record-sheet accordion misorders it. Warn at composition so the
+  //    author consciously owns the exception instead of inheriting
+  //    pre-refactoring cruft.
+  for (const c of meta.columns) {
+    const rank = STANDARD_AUDIT_RANK[c.key];
+    if (rank === undefined || c.hidden === true) continue;
+    const relabeled = c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`;
+    const outOfBand = c.order !== undefined && c.order < AUDIT_ORDER_BASE;
+    console.warn(
+      `withColumnConstraints[${persistence.entityClassName}]: standard audit column "${c.key}" is declared ` +
+        `(order:${c.order === undefined ? "auto→canonical band" : c.order}` +
+        `${outOfBand ? " — OUTSIDE the audit band 2000+, the record-sheet audit accordion will sort it away from its pair" : ""}` +
+        `${relabeled ? `, relabeled via label_key "${c.label_key}"` : ""}` +
+        `${c.default_visible === true ? ", default_visible:true" : ""}) — ` +
+        `auto-derivation already emits it audited at order ${AUDIT_ORDER_BASE + rank}; ` +
+        `keep the declaration only if it adds semantics the derivation cannot express (hidden, relabel, widget), otherwise drop it`,
+    );
+  }
+
   const ns = meta.entities_ns ?? "system";
   const entityKey = meta.translation_key ?? meta.entity ?? persistence.entityClassName;
   const labelFor = (key: string) => `${ns}.entities.${entityKey}.fields.${key}`;
@@ -428,9 +535,22 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     // contract (read projections already exclude isKey). Excluded unless it
     // IS the entity's public uid (legacy id-keyed tables).
     if (phys.isKey === true && key !== meta.uid) continue;
-    const isAudit = phys.isAuditable === true || phys.isDeletable === true;
+    const isAudit =
+      phys.isAuditable === true ||
+      phys.isDeletable === true ||
+      phys.isClone === true ||
+      phys.cloneType !== undefined;
+    // The `audited` section flag also covers synchronization stamps
+    // (@SynchronizableField e.g. last_synced_at) — non-standard audit
+    // fields land in the extras group, ranked first of the block. Kept
+    // out of `isAudit` itself: that flag also drives the shared
+    // system.common.fields label_key which has no sync entry.
+    const auditedField = isAudit || phys.isSynchronizable === true;
     const isUid = key === meta.uid;
-    const colType = phys.refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
+    // `cloned_from` self-references the owning entity — the source record
+    // lives in the same table, so the ref target is the entity itself.
+    const refEntity = servedRefEntity(phys, meta.entity);
+    const colType = refEntity !== undefined ? "ref" : columnTypeForPg(phys.inferredPgType);
     const derived: MetaColumn = {
       key,
       // System columns share ONE translation dict (`system.common.fields.*`)
@@ -438,10 +558,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // the label is identical for every entity by definition.
       label_key: isAudit || isUid || COMMON_SYSTEM_FIELD_KEYS.has(key) ? `system.common.fields.${key}` : labelFor(key),
       type: colType,
-      order: isUid ? -1 : 1000 + derivedIdx++,
+      order: isUid ? -1 : auditedField ? auditOrderFor(key) : 1000 + derivedIdx++,
       sticky: isUid || undefined,
       default_visible: false,
-      audited: isAudit || undefined,
+      audited: auditedField || undefined,
       // Every emitted column is filter criteria-eligible (the uid powers
       // ref/actor `IN` lookups; version supports "changed since" filters)
       // and sortable — audit actor uuids resolve `*_display_name` through
@@ -456,7 +576,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // distinct vocab of THIS table's actors, label-resolved through
       // user_profile by the entity's /audit-actors route.
       options_source: isAuditActorColumn(phys) ? "audit.actors" : undefined,
-      ...(phys.refEntity !== undefined ? { ref: { entity: phys.refEntity } } : {}),
+      ...(refEntity !== undefined ? { ref: { entity: refEntity } } : {}),
     };
     columns.push(injectDerived(derived));
   }
@@ -473,8 +593,173 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       kind: "calculated",
     });
   }
+  enforceIdentityColumnContract(columns, meta, persistence.entityClassName, relation);
   return { ...meta, columns };
 }
+
+/**
+ * The identity-column contract — enforced at meta construction, never
+ * verified downstream:
+ *
+ *   uid column (`meta.uid`): always served, always `sticky:true`,
+ *   `order:-1` (first when visible), `default_visible:false`, and
+ *   user-toggleable (`hideable !== false`). Authored contradictions
+ *   throw; absent contract props are injected. `hidden:true` on the uid
+ *   throws — the identity column is never suppressed.
+ *
+ *   pinned column (`sticky:true + hideable:false`): the always-visible,
+ *   never-hideable identity column. Every served meta needs AT LEAST
+ *   one. When none is declared, the `display_field` column derives it —
+ *   display_field is the mandatory identity, so a pin always exists.
+ *   Explicit pins elsewhere are the authored opt-out; an explicitly
+ *   un-pinned display_field (`hideable:true`/`sticky:false`) with no
+ *   other pin throws. The uid can NEVER carry the pin (it stays
+ *   toggleable) — `display_field === uid` throws.
+ *
+ *   relation entities (`@Relation` — directed parent→child edges):
+ *   reshape the contract — `display_field`/`display_name` FORBIDDEN (the
+ *   display is viewpoint-dependent, owned by the `relation` facet), the
+ *   pinned-column requirement is EXEMPT and an authored pin throws, and
+ *   every facet field (parent/child/type) must resolve to a SERVED
+ *   column carrying `@Ref` — `immutable:true` is injected on the two
+ *   ends (repointing an edge is delete+create).
+ *
+ *   ≥4 sticky columns → construction warning (allowed, discouraged).
+ */
+function enforceIdentityColumnContract(
+  columns: MetaColumn[],
+  meta: { uid?: string; display_field?: string; display_name?: string },
+  entityClassName: string,
+  relation?: RelationFacet,
+): void {
+  // ── uid contract ───────────────────────────────────────────────────
+  if (meta.uid !== undefined) {
+    const uidIdx = columns.findIndex((c) => c.key === meta.uid);
+    if (uidIdx === -1) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: uid column "${meta.uid}" is not served — ` +
+          `the identity column can never be hidden:true or absent (order:-1, sticky, hidden-by-default, toggleable)`,
+      );
+    }
+    const uidCol = columns[uidIdx]!;
+    const contradictions: string[] = [];
+    if (uidCol.sticky === false) contradictions.push("sticky:false");
+    if (uidCol.hideable === false) contradictions.push("hideable:false");
+    if (uidCol.default_visible === true) contradictions.push("default_visible:true");
+    if (uidCol.order !== undefined && uidCol.order !== -1) contradictions.push(`order:${uidCol.order}`);
+    if (contradictions.length > 0) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: uid column "${meta.uid}" authors ${contradictions.join(", ")} — ` +
+          `the uid contract is fixed (order:-1, sticky:true, default_visible:false, user-toggleable); drop the authored value(s)`,
+      );
+    }
+    columns[uidIdx] = { ...uidCol, order: -1, sticky: true, default_visible: false };
+  }
+
+  // ── relation entities — directed edges have no single-column identity
+  if (relation !== undefined) {
+    if (meta.display_field !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities never declare display_field — ` +
+          `a directed parent→child edge has no single-column identity; the display is viewpoint-dependent (relation facet)`,
+      );
+    }
+    if (meta.display_name !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities never declare display_name — ` +
+          `a static template would fork the viewpoint-dependent display contract owned by the relation facet`,
+      );
+    }
+    for (const [role, key] of [
+      ["parent_field", relation.parent_field],
+      ["child_field", relation.child_field],
+      ...(relation.type_field !== undefined ? [["type_field", relation.type_field] as const] : []),
+    ] as const) {
+      const idx = columns.findIndex((c) => c.key === key);
+      if (idx === -1) {
+        throw new Error(
+          `withColumnConstraints[${entityClassName}]: @Relation ${role} "${key}" is not a served column — ` +
+            `relation facet fields must resolve to served columns (never hidden:true, never absent)`,
+        );
+      }
+      if (role !== "type_field") {
+        const c = columns[idx]!;
+        if (c.immutable !== undefined && c.immutable !== true) {
+          throw new Error(
+            `withColumnConstraints[${entityClassName}]: @Relation end column "${key}" authors immutable:${c.immutable} — ` +
+              `the facet owns end mutability (ends are create-set, frozen afterwards)`,
+          );
+        }
+        columns[idx] = { ...c, immutable: true };
+      }
+    }
+    const pinned = columns.find((c) => c.sticky === true && c.hideable === false);
+    if (pinned !== undefined) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: relation entities carry no pinned column — ` +
+          `"${pinned.key}" authors sticky:true + hideable:false; the edge's identity is composite and viewpoint-dependent`,
+      );
+    }
+  } else {
+  // ── ≥1 pinned column — declared, or derived from display_field ─────
+  const hasPin = columns.some((c) => c.sticky === true && c.hideable === false);
+  if (!hasPin) {
+    const dfIdx = meta.display_field === undefined ? -1 : columns.findIndex((c) => c.key === meta.display_field);
+    if (dfIdx === -1) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: no pinned column (sticky:true + hideable:false) and ` +
+          (meta.display_field === undefined
+            ? `display_field is not declared — every entity needs at least one always-visible identity column`
+            : `display_field "${meta.display_field}" names no served column — the pin cannot derive from a hidden/absent column`),
+      );
+    }
+    const dfCol = columns[dfIdx]!;
+    if (dfCol.key === meta.uid) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" is the uid — ` +
+          `the uid is always user-toggleable and can never carry the pinned-identity contract; ` +
+          `name a different display_field or pin another column explicitly`,
+      );
+    }
+    if (dfCol.hideable === true || dfCol.sticky === false) {
+      throw new Error(
+        `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" is explicitly ` +
+          `${dfCol.hideable === true ? "hideable:true" : "sticky:false"} — un-pinning the mandatory identity pin ` +
+          `needs an explicit pinned column (sticky:true + hideable:false) declared elsewhere`,
+      );
+    }
+    columns[dfIdx] = { ...dfCol, sticky: true, hideable: false };
+  }
+  }
+
+  // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
+  const stickyCount = columns.filter((c) => c.sticky === true).length;
+  if (stickyCount >= 4) {
+    console.warn(
+      `withColumnConstraints[${entityClassName}]: ${stickyCount} sticky columns — ≥4 sticky columns are allowed but discouraged ` +
+        `(sticky chrome is for identity columns, not data columns)`,
+    );
+  }
+}
+
+/** Canonical audit-section order — the record sheet sorts `audited` columns
+ *  by `order`; these bands make the sequence a construction fact instead of
+ *  mixin-declaration luck. extras (non-standard audited cols) fill 2000-2090
+ *  by emission order; standard stamps follow by pair; `version` is pinned
+ *  unconditional last. */
+const AUDIT_ORDER_BASE = 2000;
+const STANDARD_AUDIT_RANK: Record<string, number> = {
+  created_by: 100,
+  created_at: 110,
+  updated_by: 120,
+  updated_at: 130,
+  deleted_by: 140,
+  deleted_at: 150,
+  cloned_from: 160,
+  cloned_at: 170,
+  cloned_by: 180,
+  version: 900,
+};
 
 /** System physical fields whose label is entity-independent — auto-derived
  *  columns for these always resolve `system.common.fields.<key>` (seeded once
@@ -483,6 +768,7 @@ const COMMON_SYSTEM_FIELD_KEYS = new Set([
   "id", "uuid", "version",
   "created_at", "created_by", "updated_at", "updated_by",
   "deleted_at", "deleted_by",
+  "cloned_from", "cloned_at", "cloned_by",
 ]);
 
 /** Audit actor physical columns — `@AuditableField(CREATED_BY|UPDATED_BY)`
@@ -491,11 +777,13 @@ const COMMON_SYSTEM_FIELD_KEYS = new Set([
 function isAuditActorColumn(phys: {
   auditableType?: AuditableFieldType;
   deletableType?: DeletableFieldType;
+  cloneType?: CloneFieldType;
 }): boolean {
   return (
     phys.auditableType === AuditableFieldType.CREATED_BY ||
     phys.auditableType === AuditableFieldType.UPDATED_BY ||
-    phys.deletableType === DeletableFieldType.DELETED_BY
+    phys.deletableType === DeletableFieldType.DELETED_BY ||
+    phys.cloneType === CloneFieldType.CLONED_BY
   );
 }
 
@@ -516,6 +804,18 @@ function defaultQueryFlag(
   if (flag === "filterable") return true;
   if (flag === "sortable") return key !== "version";
   return key !== "version" && metaType !== "date" && metaType !== "datetime";
+}
+
+/** Served-meta ref target for a physical column: `@Ref` wins; a
+ *  `cloned_from` column (`isClone`) self-references the OWNING entity —
+ *  the source record lives in the same table. The target is the entity
+ *  NAME, never a class thunk or inlined meta, so a self-ref can never
+ *  recurse (the FE resolves it lazily through the route census). */
+function servedRefEntity(
+  phys: { refEntity?: string; isClone?: boolean },
+  entityName: string | undefined,
+): string | undefined {
+  return phys.refEntity ?? (phys.isClone === true ? entityName : undefined);
 }
 
 /** Entity-class `inferredPgType` → MetaColumn `type` for auto-derived columns. */

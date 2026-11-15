@@ -615,6 +615,20 @@ The contract every entity service must satisfy — enforced on the router.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+#### `DomainService.registerRefDisplay(display)`
+
+Ref-display registration sink — the route layer (which is DAL-free
+ and can't reach the registry directly) feeds the entity's
+ materialized display template, derived from the SAME authored
+ `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+ wiring — module-load time, so the registry is complete before any
+ `svc` builds and before the first request. Plain
+ `EntityServiceLike` facades simply don't carry it — duck-typed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| display | `string \| null` |  |
+
 #### `DomainService.buildConfig(): EntityServiceConfig<TEntity>`
 
 Subclass seam for config enrichment (auditPort / actor / userEntity
@@ -694,12 +708,6 @@ is available here.
 | uuid | `string` |  |
 | page | `number` |  |
 | limit | `number` |  |
-
-#### `DomainService.auditActors(): Promise<{ value: string; label: string }[]>`
-
-`options_source:"audit.actors"` vocabulary feed — the distinct
- writers of THIS table, label-resolved through `public.user_profiles`.
- `[]` on entities with no audit actor columns.
 
 #### `DomainService.stream(query): AsyncGenerator<TEntity>`
 
@@ -816,6 +824,28 @@ Code: `ERR01`. PG-originated. HTTP 409.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | message | `string` |  |
+
+### `PageOutOfRangeError`
+
+Out-of-range page on a paginated list — the requested page exceeds the
+last available page while matching rows DO exist. An empty page-1 result
+is a legitimate empty set, never this error; `page > last_page` on a
+non-empty filter is a request violation (probing or stale client state),
+not data to fabricate — the wire answers an error, not a lying total.
+
+Code: `PAGE_OUT_OF_RANGE`. TS-originated. HTTP 400.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"PAGE_OUT_OF_RANGE"` |  |
+| detail | `unknown` | `{page, last_page, total}` — lets the caller clamp-and-retry. |
+
+#### `PageOutOfRangeError(message, detail)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+| detail | `unknown` |  |
 
 ### `RecordVanishedError`
 
@@ -1086,6 +1116,30 @@ Enforcement points:
 |-----------|------|-------------|
 | message | `string` |  |
 | details | `{ entity: string; schema: string; allowed: string[] }` |  |
+
+### `ServiceRegistryRefEntity`
+
+`ServiceRegistryRefEntity` — read-only projection of the platform
+registry table `public.service_registry`, owned by the DAL so any
+service may legally join the module-identity source (e.g. a schedule
+resolving its service armer for display).
+
+`public` is a cross-app platform domain (like `custom`), not a module
+domain: `service_registry` is exempted from the schema-domain check via
+the built-in `PLATFORM_SHARED_TABLES` set in `schema-domain.ts`, so the
+join resolves legally from every service domain — the same contract
+`UserProfileRefEntity` enjoys for `public.user_profiles`.
+
+This is NOT `ServiceRegistryEntity`: the full entity — registration
+lifecycle, all columns, admin routes — stays owned by the backend
+(`/api/v1/system/services`). Only the three columns an identity join
+needs are projected here.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| uuid | `string` |  |
+| code | `string` |  |
+| name | `string` |  |
 
 ### `TranslationEntityBase`
 
@@ -1377,6 +1431,13 @@ a compact inline-editable list (rows add/edit in place).
 | order_field | `string` | Column key owning row ordering (convention default: `sort` when the
  entity declares it). Reorder CTAs mutate it and persist through the
  page's atomic bulk save — no dedicated reorder endpoint. |
+| directional | `{ forward_label_field: string; inverse_label_field: string }` | Directional label pair — declared when the dict rows are link-type
+ vocabularies consumed by `@Relation` edges. `forward_label_field`
+ names the column read parent-side ("the child IS a ‹label›"),
+ `inverse_label_field` names the column read child-side ("the parent
+ IS a ‹label›"); a NULL inverse label means the type is
+ self-inverse — same vocabulary read from both ends (e.g. partner).
+ Fields are PHYSICAL column keys on this dict entity. |
 
 ### `DuplicateResult`
 
@@ -1464,7 +1525,12 @@ must not declare it. |
 | uid | `string` | Field key holding the entity primary key (usually `uuid`). |
 | display_field | `string` | Canonical display field — the column key identifying the entity's
  human-readable label. Drives first-column/sticky table identity and
- default display resolution. |
+ default display resolution. OPTIONAL on the wire type only:
+ `withColumnConstraints` still REQUIRES it on every main-entity meta
+ (construction gate — a missing key throws), while relation entities
+ (`@Relation` marker — directed parent→child edges) MUST NOT declare
+ one: a directed edge has no single-column identity, its display is
+ viewpoint-dependent (`relation` facet). |
 | display_name | `string` | Display expression template (`${field}` syntax, dot-paths allowed).
 OPTIONAL here: `assembleMeta` materializes it as
 `"${" + display_field + "}"` when absent — it is always present in the
@@ -1484,6 +1550,12 @@ The contract every entity service must satisfy — enforced on the router.
 |-------|------|-------------|
 | dictFacet | `DictFacet` | The entity's `dict` facet when the class carries `@Dict` — the
  entity-router injects it into served meta (`dict`). |
+| auditable | `boolean` | `Auditable` mixin / `auditableType` columns on the entity class —
+ the entity HAS audit actor columns (`created_by`/`updated_by`/…).
+ Distinct from `@AuditTrail` (the separate history table): a table
+ can stamp writers without keeping a change log. |
+| clonable | `boolean` | `Clonable` mixin on the entity class — `/duplicate` may register
+ only when true. Derived, never restated in the decl. |
 
 ### `EntityServiceConfig`
 
@@ -1500,7 +1572,12 @@ The contract every entity service must satisfy — enforced on the router.
  effects (e.g. the BE entity-changed marker publisher). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
-| list | `{ searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
+ `resolveDisplayTemplate(meta)` applied to the authored meta).
+ Evaluated on self-ref joins: `cloned_from_name` projects the same
+ string the FE uses for this entity's titles. Absent → self-join
+ skipped, the ref cell renders the raw uid (COALESCE fallback). |
+| list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
@@ -1511,7 +1588,7 @@ A single validation finding. `path` is the entity field key (or a
 | Field | Type | Description |
 |-------|------|-------------|
 | path | `string` |  |
-| code | `"required" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab"` |  |
+| code | `"required" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab" \| "immutable"` |  |
 | message | `string` |  |
 
 ### `IAuditableEntity`
@@ -1531,11 +1608,15 @@ both are required (the Dal write-path signatures already do this).
 
 ### `IClonableEntity`
 
-Entity supports cloning (cloned_from stores UUID of source record).
+Entity supports cloning — `cloned_from` points at the source record;
+ `cloned_at`/`cloned_by` are the immutable clone-audit pair the write
+ path stamps at clone time.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | cloned_from | `string` |  |
+| cloned_at | `Date` |  |
+| cloned_by | `string` |  |
 
 ### `IDeletableEntity`
 
@@ -1732,6 +1813,27 @@ sent as the initial SSE `snapshot` event on connect.
 | changed | `EntityChangedMarker \| null` | Most recent server-side change marker, or null if none in the TTL window. |
 | current_version | `number` | Current `version` of the entity (read from DB on snapshot build). |
 
+### `RelationFacet`
+
+The `relation` facet — runtime-injected on served meta when the entity
+class carries the `@Relation` marker (dal-pg). Declares a DIRECTED
+parent→child edge table (e.g. `customer_link`): rows are typed arcs,
+never standalone page entities — no `display_field`, no pinned
+column, viewpoint-dependent display. `parent_field`/`child_field` are
+the physical `@Ref` column keys forming the arc (immutable after
+create — repointing is delete+create); `type_field` optionally points
+at the directional vocabulary entity (a `directional` dict);
+`hierarchical` opts the table into deep-cycle detection on insert
+(the 2-cycle is always rejected by the derived unordered-pair unique
+index — construction-derived, never authored).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| parent_field | `string` |  |
+| child_field | `string` |  |
+| type_field | `string` |  |
+| hierarchical | `boolean` |  |
+
 ### `RowCustomAction`
 
 UI configuration for a non-standard row CTA (route-backed bare op).
@@ -1834,10 +1936,12 @@ Audit action enum (mirrors BE's AuditAction).
 Closed action-color vocabulary — ONE semantic drives BOTH the icon and
  the label of a menu CTA (impossible to drift them apart). `neutral` is
  the default uncolored rendering; the destructive/warning/success/info/
- primary names map to the theme's semantic text utilities. A meta may
- never smuggle a Tailwind class here — the enum IS the contract.
+ primary names map to the theme's semantic text utilities. `violet` is
+ the clone/duplicate semantic — `duplicate.bulk` carries it by default
+ and the same hue marks `CLONE` entries in the version-history trail.
+ A meta may never smuggle a Tailwind class here — the enum IS the contract.
 
-**Type:** `"neutral" \| "primary" \| "info" \| "success" \| "warning" \| "destructive"`
+**Type:** `"neutral" \| "primary" \| "info" \| "success" \| "warning" \| "destructive" \| "violet"`
 
 ### `ActionsOverrides`
 
@@ -2002,7 +2106,7 @@ contracts, not column sets.
 The served `GET /api/v1/entities/{entity}/meta` response:
 static meta + runtime-injected `display_name`, `actions`, `collaboration`.
 
-**Type:** `EntityMeta & { display_name: string; actions: EntityAction[]; collaboration: CollaborationMeta; dict: DictFacet }`
+**Type:** `EntityMeta & { display_name: string \| null; actions: EntityAction[]; collaboration: CollaborationMeta; dict: DictFacet; relation: RelationFacet }`
 
 ### `EntityPersistenceMeta`
 
@@ -2175,6 +2279,10 @@ SIBLING column that persists the per-row avatar color — same pattern
 value carries the initials; the sibling carries the color.
 The sibling requirement is verified by `withColumnConstraints`: an
 avatar column without its color column is a construction error.
+`initials_field` (optional) names the sibling column the initials
+DERIVE from (typically `display_name`): edit surfaces recompute the
+initials live from it and persist the derived value when that sibling
+crosses the wire. Same physical-column rule as `color_field`.
 
 ### `MetaColumnDependsCondition`
 
@@ -2196,7 +2304,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
 
 ### `MetaColumnOptionsSource`
 
@@ -2659,6 +2767,10 @@ Sort direction for server-side list queries and header UI.
 
 **Type:** `typeof STANDARD_OPS[number]`
 
+### `SupportedLanguage`
+
+**Type:** `typeof SUPPORTED_LANGUAGES[number]`
+
 ### `TooltipPriority`
 
 Tooltip visual severity — drives icon and title color in priority
@@ -2767,7 +2879,7 @@ PG-originated errors and TS-originated errors share the same code.
 Convention: `ERR` + 2 digits. The `ER` class is outside the SQL-standard
 SQLSTATE classes (`00`–`99`), so PostgreSQL accepts it as a custom code.
 
-**Type:** `{ ERR01: "ERR01"; ERR02: "ERR02"; ERR03: "ERR03"; ERR04: "ERR04"; ERR05: "ERR05"; ERR06: "ERR06"; ERR07: "ERR07"; ERR08: "ERR08"; ERR09: "ERR09"; ERR10: "ERR10" }`
+**Type:** `{ ERR01: "ERR01"; ERR02: "ERR02"; ERR03: "ERR03"; ERR04: "ERR04"; ERR05: "ERR05"; ERR06: "ERR06"; ERR07: "ERR07"; ERR08: "ERR08"; ERR09: "ERR09"; ERR10: "ERR10"; ERR11: "ERR11" }`
 
 | Field | Value |
 |-------|-------|
@@ -2781,6 +2893,7 @@ SQLSTATE classes (`00`–`99`), so PostgreSQL accepts it as a custom code.
 | ERR08 | "ERR08" |
 | ERR09 | "ERR09" |
 | ERR10 | "ERR10" |
+| ERR11 | "ERR11" |
 
 ### `decimalFromPG`
 
@@ -2946,6 +3059,22 @@ Parseable ISO/RFC3339 datetime.
 ### `isSnakeKey`
 
 **Type:** `(v: string) => boolean`
+
+### `JOB_TRIGGER_RUN_AS_VOCAB`
+
+`event_subject`/`schedule_spec` are mutually mandatory (at least one);
+`run_as` is closed-vocab (`originator`|`author`|`system`) and
+`run_as: "originator"` requires an event source to forward auth
+headers from; a one-shot `@at <ts>` must lie in the future — a past
+timestamp FIRES IMMEDIATELY at declare time (verified empirically:
+the declaration PubAcks, the scheduler dispatches at once, then the
+declaration self-purges — an unintended execution, not a dead one).
+`now` is injected so the predicate stays
+pure — the form passes the client clock, the write guard the server
+clock. On `partial` (update), fields not present in `entity` are
+treated from the merged record the caller passes.
+
+**Type:** `readonly ["originator", "author", "system"]`
 
 ### `Join`
 
@@ -3149,6 +3278,25 @@ present in `meta.actions` — ops whose route is not registered are emitted
 with `enabled: false` (explicitly unavailable) instead of being omitted.
 
 **Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk"]`
+
+### `SUPPORTED_LANGUAGES`
+
+Supported languages — THE canonical vocabulary for the whole platform.
+
+BCP-47 full tags (language + region) — en-GB and en-US are distinct
+first-class locales because they carry different date/number/address
+formatting, not just different dictionaries.
+
+Consumers:
+- `@primebrick/sdk`/`@primebrick/ui` re-export (BE routers, FE pickers)
+- `check-standards` lint (relative-path import, sibling checkout)
+- DB `CHECK (language IN (...))` constraints on `*.translations` —
+  the SQL literals must mirror this list; the lint enforces it.
+
+Adding a language = add the tag here + seed translations + bump the
+CHECK constraints — a deliberate release-scoped change, never data.
+
+**Type:** `readonly ["en-GB", "en-US", "it-IT", "fr-FR", "es-ES", "de-DE", "pt-PT"]`
 
 ### `TEN`
 
@@ -3395,11 +3543,21 @@ This prevents errors when the field contains non-UUID values like "system".
 Enhanced version that allows selective joins (e.g., only creator and updater).
 Useful when you only need specific audit fields to reduce query overhead.
 
+When `serviceEntity` is supplied (platform `service_registry` projection),
+every actor column also joins it on `code = split_part(actor, ':', 2)` —
+the `system:<code>` writer convention — so `<col>_name` resolves
+`COALESCE(user.display_name, service.name)` and two verbatim verdict
+projections feed the lazy-ref contract:
+`<col>_ref_entity` (`'user_profile' | 'service_registry' | NULL` — NULL
+for writers no join resolved, e.g. `migration-*`) and `<col>_ref_key`
+(the resolved key). The verdict is JOIN-MATCH driven, not string-shaped:
+whichever join found a row owns the ref.
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `EntityClass` | The entity class implementing IAuditableEntity |
 | userEntity | `EntityClass` | The user entity class (e.g. UserProfileEntity) |
-| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean }` | Configuration for which joins to include |
+| options | `{ includeCreator: boolean; includeUpdater: boolean; includeDeleter: boolean; includeCloner: boolean; serviceEntity: EntityClass }` | Configuration for which joins to include |
 
 ### `buildAuditTrailJoins(auditEntity, userEntity, baseTableRef): { joins: JoinExpr[]; projections: FieldProjector[] }`
 
@@ -3583,9 +3741,27 @@ Assigns the single strictest tier that applies, or `null` if no rule matches.
 | eMeta | `SchemaColumnMeta` |  |
 | dMeta | `SchemaColumnMeta` |  |
 
-### `CloneField(): PropertyDecorator`
+### `Clonable(Base): { prototype: ClonableEntity<any> } & TBase`
 
-Marks a field as clone tracking (cloned_from). Stores UUID of the source record.
+Adds the immutable clone-audit triple — `cloned_from` (self-ref to the
+ source record), `cloned_at` (clone instant), `cloned_by` (clone actor,
+ user_profile ref). All three are clone-write-path-owned: written once
+ at clone time, never user-editable.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| Base | `TBase` |  |
+
+### `CloneField(what): PropertyDecorator`
+
+Marks a field as clone tracking. `@CloneField()` defaults to
+ `CLONED_FROM` — the single source-record pointer (`isClone`, exactly
+ one per entity). `CLONED_AT`/`CLONED_BY` mark the immutable
+ clone-audit columns the write path populates at clone time.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| what | `CloneFieldType` |  |
 
 ### `cmp(a, b): -1 \| 0 \| 1`
 
@@ -3619,7 +3795,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -3737,6 +3913,28 @@ Marks a field as deletable (deleted_at, deleted_by).
 |-----------|------|-------------|
 | what | `DeletableFieldType` |  |
 
+### `deriveListWireSets(columns, entity): { searchable: ReadonlySet<string>; filterable: ReadonlySet<string> }`
+
+Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
+column types — the single implementation behind `list.meta` derivation,
+also exported for service-side paths that run their own query (outside
+`makeEntityService`) yet must answer to the same contract:
+
+ - `searchable`: `searchable`-flagged text-physical columns plus
+   `@Calculated` projections (they render to SQL and are ILIKE-safe) —
+   the `search_in` allowlist + default scope base (`uuid` and joined-name
+   keys are admitted on top by the caller).
+ - `filterable`: `filterable`-flagged columns restricted to WHERE-
+   resolvable keys (physical + calculated).
+
+Meta `searchable`/`filterable` express product intent, the entity
+decorators express physical reality — the two cannot diverge.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| columns | `MetaColumn[]` |  |
+| entity | `EntityClass` |  |
+
 ### `Dict(opts): ClassDecorator`
 
 Marks an entity as a dictionary/enum surface — typically set ONCE on a
@@ -3805,6 +4003,14 @@ if omitted, the table name equals the class name.
 |-----------|------|-------------|
 | tableName | `string` |  |
 | schema | `string` |  |
+
+### `entityApiName(ctor): string`
+
+`JobTriggerEntity` → `job_trigger`, `AiCerebellumEntity` → `ai_cerebellum`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
 
 ### `entityDateToApiIso(value): string`
 
@@ -4013,9 +4219,30 @@ returns `"schema"."table"`. Otherwise returns just `"table"` (relies on search_p
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 
+### `getRelationFacet(ctor): RelationFacet \| undefined`
+
+The entity's resolved `relation` facet — subclass-first walk of the
+meta chain (same precedence as `getDictFacet`). `undefined` when no
+ancestor carries `@Relation()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
 ### `getSchemaDomain(): SchemaDomain \| null`
 
 ### `getTableName(ctor): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
+
+### `hasAuditTrail(ctor): boolean`
+
+`true` when the entity class carries `@AuditTrail()` — i.e. it HAS an
+ audit-trail table. Distinct from column-level `@AuditableField`, which
+ only marks write-path-stamped columns. Named `hasAuditTrail` so it
+ never collides with the meta-level `isAuditableEntity` probe.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4048,6 +4275,16 @@ Runtime check: does this entity metadata have auditable columns?
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | meta | `EntityPersistenceMeta` |  |
+
+### `isClonableEntity(ctor): boolean`
+
+`true` when the entity class declares a `@CloneField` column — the
+ `Clonable` mixin's `cloned_from`. Entities without it must not expose
+ `/duplicate`: a clone with no tracking columns writes an untracked copy.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctor | `EntityClass` |  |
 
 ### `isColumnFilterable(col): boolean`
 
@@ -4194,6 +4431,14 @@ Runtime validator for SnakeCaseSingular — rejects strings with
 |-----------|------|-------------|
 | value | `string` |  |
 
+### `isSupportedLanguage(tag): tag is "en-GB" \| "en-US" \| "it-IT" \| "fr-FR" \| "es-ES" \| "de-DE" \| "pt-PT"`
+
+Type guard — is `tag` one of the platform-supported language tags?
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| tag | `string` |  |
+
 ### `isUUID(v): v is UUID`
 
 Type guard — validates RFC 4122 layout (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, hex).
@@ -4243,17 +4488,6 @@ compare `keyNamespaceOf(key)` against `translationKeyNamespace(schema)`.
 | v | `string` |  |
 
 ### `jobTriggerShapeIssues(entity, now): FieldIssue[]`
-
-`event_subject`/`schedule_spec` are mutually mandatory (at least one);
-`execution_context: "user"` requires an event source to forward auth
-headers from; a one-shot `@at <ts>` must lie in the future — a past
-timestamp FIRES IMMEDIATELY at declare time (verified empirically:
-the declaration PubAcks, the scheduler dispatches at once, then the
-declaration self-purges — an unintended execution, not a dead one).
-`now` is injected so the predicate stays
-pure — the form passes the client clock, the write guard the server
-clock. On `partial` (update), fields not present in `entity` are
-treated from the merged record the caller passes.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4336,6 +4570,12 @@ declares no such property.
 | map | `EntityAnnotationMap` |  |
 | className | `string` |  |
 | prop | `string` |  |
+
+### `lookupEntityService(apiName): RegisteredEntityService \| undefined`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| apiName | `string` |  |
 
 ### `lucideIconSpecifier(exportName): string`
 
@@ -4460,7 +4700,9 @@ are platform-stable.
 ### `orderedColumns(columns): MetaColumn[]`
 
 Columns in display order: sticky group → normal group → audited group,
-each sorted by `order`.
+each sorted by `order`. A column without `order` falls back to its own
+array index (the contract's last resort) — a raw `order - order`
+comparator returns NaN on undefined and corrupts the whole sort.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4650,12 +4892,48 @@ Declares a served-meta reference: the column's value is the uid (uuid)
 |-----------|------|-------------|
 | entity | `string` |  |
 
+### `registerEntityService(cfg): void`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `{ entity: EntityClass; display: string \| null }` |  |
+
 ### `registryStatus(pool, schema): Promise<PatchRegistryRow[]>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | pool | `Pool` |  |
 | schema | `string` |  |
+
+### `Relation(opts): ClassDecorator`
+
+`@Relation()` — declares a directed parent→child edge entity (e.g.
+`customer_link`): rows are typed arcs between two entity references,
+never standalone page entities. The served meta carries the `relation`
+facet (no `display_field`, no pinned column — the display is
+viewpoint-dependent: `{type.label} {child}` from the parent's page,
+`{type.inverse_label} {parent}` from the child's); `withColumnConstraints`
+injects `immutable: true` on the two end columns (repointing an edge is
+delete+create); `getEntityPersistenceMeta` derives the unordered-pair
+unique index `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` — the atomic
+rejection of both exact duplicates and direction-reversed duplicates
+(a reversed row is a circular reference, not "the same edge twice" —
+no check-insert race exists because the constraint lives in the index).
+`type_field` points at the directional vocabulary dict carrying the
+forward/inverse label pair; `hierarchical` opts into deep-cycle
+(3+ hops, same-type edges) detection on insert.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `RelationFacet` |  |
+
+### `renderDisplayTemplate(template, entity, alias): string`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| template | `string` |  |
+| entity | `EntityClass` |  |
+| alias | `string` |  |
 
 ### `rescale(d, newScale, mode): Decimal`
 
@@ -4676,6 +4954,19 @@ Intended for tests — call in afterAll to release the pool.
 ### `resetSchemaDomain(): void`
 
 Test hook — clears the configured domain.
+
+### `resolveDisplayTemplate(meta): string \| null`
+
+The materialized display template — `meta.display_name` when authored,
+`"${" + display_field + "}"` otherwise (the served default). ONE rule
+used by both the served-meta assembler (EntityMetaResponse.display_name)
+and the DAL's display-join projection (`<key>_name` columns evaluate the
+SAME template on the joined row), so titles, combos and ref cells can
+never diverge.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| meta | `Pick<EntityMeta, "display_field" \| "display_name">` |  |
 
 ### `resolveEntitySchema(meta, fallback): string`
 
@@ -4811,6 +5102,10 @@ Round to `scale` fractional digits (default `HALF_UP`).
 ### `sanitizeVisibleKeys(visibleKeys, columns): string[]`
 
 Drop unknown keys and fall back to defaults when nothing left.
+ `hideable === false` columns are re-injected unconditionally — a stored
+ set predating the pin (or written when the column could still be hidden)
+ can never violate the declaration. `hideable !== false` columns — e.g.
+ `uuid`, sticky-but-selectable — stay user-controlled.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

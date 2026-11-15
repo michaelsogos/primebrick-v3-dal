@@ -23,7 +23,11 @@ export interface IAuditableEntity {
   version: number;
 }
 
-/** Entity supports cloning (cloned_from stores UUID of source record). */
+/** Entity supports cloning — `cloned_from` points at the source record;
+ *  `cloned_at`/`cloned_by` are the immutable clone-audit pair the write
+ *  path stamps at clone time. */
 export interface IClonableEntity {
   cloned_from?: string;
+  cloned_at?: Date;
+  cloned_by?: string;
 }

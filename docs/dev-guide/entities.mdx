@@ -208,14 +208,25 @@ import { SynchronizableField, SynchronizableFieldType } from "@primebrick/dal-pg
 
 `SynchronizableFieldType` enum values: `LAST_SYNCED_AT` (`"LAST_SYNCED_AT"`).
 
-### `@CloneField()` — clone tracking
+### `@CloneField(type?)` — clone tracking & clone-audit
 
-Marks a column as the clone-tracking field. `Repository.clone()` stamps it with
-the source record's UUID so the clone knows its origin. See [Clone](./clone).
+Marks a column as part of the clone vocabulary. `Repository.clone()` stamps
+`CLONED_FROM` with the source record's UUID, `CLONED_AT` with the clone
+instant, and `CLONED_BY` with the actor. The default `Clonable` mixin
+composes all three — see [Clone](./clone).
 
 ```typescript
-@CloneField() cloned_from?: UUID | null;
+import { CloneField, CloneFieldType } from "@primebrick/dal-pg";
+
+@CloneField()                                        cloned_from?: UUID | null;
+@CloneField(CloneFieldType.CLONED_AT)                cloned_at?: Date | null;
+@CloneField(CloneFieldType.CLONED_BY) @Ref("user_profile") cloned_by?: string | null;
 ```
+
+`CloneFieldType` enum values: `CLONED_FROM` (the single source-pointer
+column — self-ref to the owning entity), `CLONED_AT`, `CLONED_BY` (audit
+actor — joins `audit.actors` in served meta). All three surface as
+`audited` columns by construction.
 
 ### `@AuditTrail()` — entity HAS an audit trail table
 
@@ -350,6 +361,63 @@ parent (telemetry, logs) don't declare this.
 export class AiMessageEntity { ... }
 ```
 
+### `@Relation(facet)` — directed parent→child edge (class decorator)
+
+Declares the entity a **directed relation edge** (e.g. `customer_link`), not a
+main entity and not a junction table: the edge's identity is the composite
+`(parent, type, child)` and its display is viewpoint-dependent — so the served
+meta carries NO `display_field`, NO `display_name`, and NO pinned column
+(authored ones throw at `withColumnConstraints` construction). The `relation`
+facet is injected into served meta through `DomainService.relationFacet`.
+
+```typescript
+@Entity("customer_links", "crm")
+@Relation({
+  parent_field: "parent_customer_uuid", // @Ref column — edge source
+  child_field:  "child_customer_uuid",  // @Ref column — edge target
+  type_field:   "type_uuid",            // optional @Ref → directional dict
+})
+export class CustomerLinkEntity extends Deletable(Auditable(EntityBase)) { ... }
+```
+
+Construction effects — all derived, never authored:
+
+- **Unordered-pair unique index** — `UNIQUE(LEAST(parent,child),
+  GREATEST(parent,child), type?)` is derived into persistence meta and emitted
+  by the schema patcher automatically. It rejects BOTH the exact duplicate and
+  the direction-reversed duplicate atomically (a reversed row is a circular
+  reference in the hierarchy — no check-insert race exists because the
+  guarantee lives in the index). A reversed direction with a DIFFERENT type is
+  a distinct claim and stays legal. The `add`/`update`/`addMany` conflict
+  CTEs classify the collision: same-direction → `ERR04`/`ERR05`, reversed →
+  **`ERR11`** (circular reference) with the stored row's ends in `detail.keys`.
+- **Immutable ends** — the two end columns gain `immutable: true` in served
+  meta (repointing an edge is delete+create); update-path enforcement is
+  `checkEntityFields(partial)` in `@primebrick/core`. The `type_field` column
+  stays mutable — the relationship may evolve on the same edge.
+- **Facet validation** — `parent_field`/`child_field`/`type_field` must resolve
+  to served columns carrying `@Ref`, and parent ≠ child (both checked at
+  `getEntityPersistenceMeta`).
+
+The type vocabulary is a `DictEntityBase` declaring the directional pair —
+`@Dict({ directional: { forward_label_field, inverse_label_field } })`: the
+forward label reads parent-side ("the child IS a ‹label›"), the inverse label
+child-side ("the parent IS a ‹label›"); a NULL inverse label means the type is
+self-inverse by construction (e.g. partner).
+
+```typescript
+@Entity("customer_link_types", "crm")
+@Dict({ directional: { forward_label_field: "label_key", inverse_label_field: "inverse_label_key" } })
+export class CustomerLinkTypeEntity extends DictEntityBase {
+  @Column({ length: 100, nullable: false }) label_key!: string;
+  @Column({ length: 100, nullable: true }) inverse_label_key?: string;
+}
+```
+
+`hierarchical?: boolean` on the facet opts the table into deep-cycle (3+ hops,
+same-type edges) detection on insert — declared on the contract; the
+insert-path check is layered on top of the pair index, not a replacement.
+
 ## Entity interfaces
 
 The library ships four marker interfaces that document an entity's capabilities.
@@ -370,7 +438,7 @@ import type {
 | `IExposableEntity` | `uuid: string` | Entity has a public UUID safe to expose outside the system |
 | `IDeletableEntity` | `deleted_at?: Date; deleted_by?: string` | Entity supports soft delete |
 | `IAuditableEntity` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Entity has audit stamps + optimistic-lock version |
-| `IClonableEntity` | `cloned_from?: string` | Entity supports cloning |
+| `IClonableEntity` | `cloned_from?: string`, `cloned_at?: Date`, `cloned_by?: string` | Entity supports cloning |
 
 `IAuditableEntity` and `IDeletableEntity` are **independent** capabilities —
 an entity can be audited but hard-deleted (`api_keys`), deletable but not
@@ -395,8 +463,14 @@ import {
 |-------------|---------------|----------|
 | `Auditable(EntityBase)` | `created_at`, `created_by`, `updated_at`, `updated_by`, `version` | Every audited entity |
 | `Deletable(EntityBase)` | `deleted_at`, `deleted_by` | Soft-delete entities |
+| `Clonable(EntityBase)` | `cloned_from`, `cloned_at`, `cloned_by` | Cloneable entities |
 | `Deletable(Auditable(EntityBase))` | all seven | The common case |
 | `EntityBase` alone | none | Plain tables (logs, telemetry) |
+
+`Clonable` is orthogonal — compose it outside the audit/delete pair:
+`Clonable(Deletable(Auditable(EntityBase)))`. Its three columns are
+immutable clone stamps (written by `Repository.clone()`, never
+user-editable) and surface as `audited` in served meta.
 
 Each mixin is a real class in the prototype chain — the persistence layer
 merges decorated columns from every ancestor, so the subclass only declares
@@ -412,15 +486,15 @@ columns, soft delete, and clone tracking:
 import "reflect-metadata";
 import {
   Entity, Column, Key, Unique,
-  CloneField, AuditTrail,
-  EntityBase, Auditable, Deletable,
+  AuditTrail,
+  EntityBase, Auditable, Clonable, Deletable,
 } from "@primebrick/dal-pg";
 import type { IClonableEntity } from "@primebrick/dal-pg";
 
 @Entity("customers")
 @AuditTrail()
 export class CustomerEntity
-  extends Deletable(Auditable(EntityBase))
+  extends Clonable(Deletable(Auditable(EntityBase)))
   implements IClonableEntity {
   @Key() id!: bigint;
   @Unique() uuid!: UUID;
@@ -429,7 +503,7 @@ export class CustomerEntity
   @Column({ nullable: false }) email!: string;
   @Column({ nullable: false, defaultSql: "false" }) is_active!: boolean;
 
-  @CloneField() cloned_from?: UUID | null;
+  // cloned_from / cloned_at / cloned_by — inherited from Clonable
 }
 ```
 

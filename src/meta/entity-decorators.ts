@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import type { DictFacet } from "@primebrick/core";
+import type { DictFacet, RelationFacet } from "@primebrick/core";
 
 import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
@@ -40,6 +40,16 @@ export enum DeletableFieldType {
 
 export enum SynchronizableFieldType {
   LAST_SYNCED_AT = "LAST_SYNCED_AT",
+}
+
+export enum CloneFieldType {
+  /** Source-record pointer (`cloned_from` — uuid of the record this one
+   *  was cloned from; self-ref to the owning entity). */
+  CLONED_FROM = "CLONED_FROM",
+  /** Clone instant (`cloned_at` — timestamptz written at clone time). */
+  CLONED_AT = "CLONED_AT",
+  /** Clone actor (`cloned_by` — user_profile ref written at clone time). */
+  CLONED_BY = "CLONED_BY",
 }
 
 export type IndexMethod = "btree" | "hash" | "gin" | "gist" | "spgist" | "brin" | "hnsw";
@@ -132,6 +142,7 @@ type ColumnRegistration = {
   synchronizableType?: SynchronizableFieldType;
   /** Clone field metadata */
   isClone?: boolean;
+  cloneType?: CloneFieldType;
   /** `@Ref("entity_name")` — the column's value identifies a record of that
    *  entity (served-meta ref contract: `type:"ref"` + `ref.entity`). Meta-
    *  only — no DDL FK is emitted; the target may live in another schema's
@@ -226,6 +237,11 @@ type ClassEntityMeta = {
    *  shared base (e.g. DictEntityBase), inherited via collectMetaChain;
    *  redeclaring on the concrete class replaces the facet wholesale. */
   dict?: DictFacet;
+  /** `@Relation()` — the entity is a directed parent→child edge table: the
+   *  served meta carries the `relation` facet (no display_field, no pinned
+   *  column, viewpoint display) and the persistence meta derives the
+   *  unordered-pair+type unique index atomically. */
+  relation?: RelationFacet;
 };
 
 /** Options for `@PartitionField()` — the RANGE partition key declaration. */
@@ -603,13 +619,18 @@ export function SynchronizableField(what: SynchronizableFieldType): PropertyDeco
   };
 }
 
-/** Marks a field as clone tracking (cloned_from). Stores UUID of the source record. */
-export function CloneField(): PropertyDecorator {
+/** Marks a field as clone tracking. `@CloneField()` defaults to
+ *  `CLONED_FROM` — the single source-record pointer (`isClone`, exactly
+ *  one per entity). `CLONED_AT`/`CLONED_BY` mark the immutable
+ *  clone-audit columns the write path populates at clone time. */
+export function CloneField(what?: CloneFieldType): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
-    col.isClone = true;
+    const type = what ?? CloneFieldType.CLONED_FROM;
+    col.cloneType = type;
     col.nullable = true;
+    if (type === CloneFieldType.CLONED_FROM) col.isClone = true;
 
   };
 }
@@ -758,8 +779,73 @@ export function getDictFacet(ctor: EntityClass): DictFacet | undefined {
   return undefined;
 }
 
+/**
+ * `@Relation()` — declares a directed parent→child edge entity (e.g.
+ * `customer_link`): rows are typed arcs between two entity references,
+ * never standalone page entities. The served meta carries the `relation`
+ * facet (no `display_field`, no pinned column — the display is
+ * viewpoint-dependent: `{type.label} {child}` from the parent's page,
+ * `{type.inverse_label} {parent}` from the child's); `withColumnConstraints`
+ * injects `immutable: true` on the two end columns (repointing an edge is
+ * delete+create); `getEntityPersistenceMeta` derives the unordered-pair
+ * unique index `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` — the atomic
+ * rejection of both exact duplicates and direction-reversed duplicates
+ * (a reversed row is a circular reference, not "the same edge twice" —
+ * no check-insert race exists because the constraint lives in the index).
+ * `type_field` points at the directional vocabulary dict carrying the
+ * forward/inverse label pair; `hierarchical` opts into deep-cycle
+ * (3+ hops, same-type edges) detection on insert.
+ */
+export function Relation(opts: RelationFacet): ClassDecorator {
+  return function <T extends Function>(target: T): T {
+    const m = ensureMeta(target);
+    m.relation = opts;
+    return target;
+  };
+}
+
+/**
+ * The entity's resolved `relation` facet — subclass-first walk of the
+ * meta chain (same precedence as `getDictFacet`). `undefined` when no
+ * ancestor carries `@Relation()`.
+ */
+export function getRelationFacet(ctor: EntityClass): RelationFacet | undefined {
+  for (
+    let p = ctor as Function;
+    p && p !== Function.prototype && p !== Object;
+    p = Object.getPrototypeOf(p)
+  ) {
+    const r = META.get(p)?.relation;
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
 export function isEntityClass(value: unknown): value is EntityClass {
   return typeof value === "function" && META.get(value as Function)?.tableName !== undefined;
+}
+
+/**
+ * Capability probes — the entity class is the only source of truth for
+ * what a service can do. The SDK cannot inspect decorators, so services
+ * expose these through the `EntityServiceLike` facet contract (same
+ * pattern as `DomainService.dictFacet`) and consumers never restate them.
+ */
+
+/** `true` when the entity class carries `@AuditTrail()` — i.e. it HAS an
+ *  audit-trail table. Distinct from column-level `@AuditableField`, which
+ *  only marks write-path-stamped columns. Named `hasAuditTrail` so it
+ *  never collides with the meta-level `isAuditableEntity` probe. */
+export function hasAuditTrail(ctor: EntityClass): boolean {
+  return getEntityPersistenceMeta(ctor).isAuditable === true;
+}
+
+/** `true` when the entity class declares a `@CloneField` column — the
+ *  `Clonable` mixin's `cloned_from`. Entities without it must not expose
+ *  `/duplicate`: a clone with no tracking columns writes an untracked copy. */
+export function isClonableEntity(ctor: EntityClass): boolean {
+  const meta = getEntityPersistenceMeta(ctor);
+  return Object.values(meta.columns).some((c) => c.isClone === true);
 }
 
 export function getTableName(ctor: EntityClass): string {
@@ -888,6 +974,7 @@ export type EntityPersistenceMeta = {
       isSynchronizable?: boolean;
       synchronizableType?: SynchronizableFieldType;
       isClone?: boolean;
+      cloneType?: CloneFieldType;
       /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
       refEntity?: string;
       castInJoin?: string;
@@ -925,6 +1012,13 @@ export type EntityPersistenceMeta = {
     using: IndexMethod;
     opclass?: string;
     where?: string;
+    /** Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the
+     *  plain columns — produced by the `@Relation` pair-unique derivation
+     *  (`LEAST/GREATEST` unordered-pair keys); never authored by hand. */
+    expressions?: string[];
+    /** Derived unique indexes (the `@Relation` pair constraint) — plain
+     *  `@Index()` entries never carry it. */
+    isUnique?: boolean;
   }[];
   /** Resolved foreign keys — from `@ForeignKey()` columns. */
   foreignKeys?: {
@@ -1048,6 +1142,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isSynchronizable !== undefined) entry.isSynchronizable = reg.isSynchronizable;
     if (reg.synchronizableType !== undefined) entry.synchronizableType = reg.synchronizableType;
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
+    if (reg.cloneType !== undefined) entry.cloneType = reg.cloneType;
     if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
@@ -1180,7 +1275,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0 });
     indexGroups.set(name, g);
   }
-  const indexes = indexGroups.size
+  let indexes = indexGroups.size
     ? [...indexGroups.entries()].map(([name, g]) => ({
         name,
         columns: g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName)).map((c) => c.sqlName),
@@ -1189,6 +1284,43 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         ...(g.where !== undefined ? { where: g.where } : {}),
       }))
     : undefined;
+
+  // ── @Relation derived pair-unique index ─────────────────────────────
+  // The unordered-pair constraint is DERIVED from the facet — never
+  // authored: `UNIQUE(LEAST(p,c), GREATEST(p,c), type?)` rejects both the
+  // exact duplicate and the direction-reversed duplicate atomically in
+  // ONE index (a reversed insert is a circular reference, not a second
+  // edge — and no check-insert race exists because the guarantee lives
+  // in the index itself, not in application code). Facet fields must
+  // resolve to columns carrying `@Ref` — relation ends and the type
+  // vocabulary are entity references by definition.
+  const relation = inherited((m) => m.relation);
+  if (relation !== undefined) {
+    const refSqlFor = (propKey: string, role: string): string => {
+      const reg = colMap.get(propKey);
+      if (reg === undefined || reg.refEntity === undefined) {
+        throw new TypeError(
+          `${entityClassName}: @Relation ${role} "${propKey}" must be a column carrying @Ref — relation ends and the type vocabulary are entity references by definition`,
+        );
+      }
+      return reg.sqlName;
+    };
+    const pSql = refSqlFor(relation.parent_field, "parent_field");
+    const cSql = refSqlFor(relation.child_field, "child_field");
+    if (pSql === cSql) {
+      throw new TypeError(
+        `${entityClassName}: @Relation parent_field and child_field resolve to the same column "${pSql}" — an edge needs two distinct ends`,
+      );
+    }
+    const pairIndex: NonNullable<EntityPersistenceMeta["indexes"]>[number] = {
+      name: `${tableName}_pair_uq`,
+      expressions: [`LEAST(${pSql}, ${cSql})`, `GREATEST(${pSql}, ${cSql})`],
+      columns: relation.type_field !== undefined ? [refSqlFor(relation.type_field, "type_field")] : [],
+      using: "btree",
+      isUnique: true,
+    };
+    (indexes ?? (indexes = [])).push(pairIndex);
+  }
 
   // ── @ForeignKey resolution ────────────────────────────────────────────
   const foreignKeys: NonNullable<EntityPersistenceMeta["foreignKeys"]> = [];

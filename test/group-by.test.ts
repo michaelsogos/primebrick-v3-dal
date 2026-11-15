@@ -110,7 +110,7 @@ describe("buildSelectQuery — GROUP BY / HAVING", () => {
     expect(q.text).toContain("GROUP BY");
   });
 
-  it("auto-groups auditable-join display columns when joins are present", () => {
+  it("auto-groups join display projections by their output alias", () => {
     const q = buildSelectQuery({
       entity: SimpleTestEntity,
       groupBy: [field(SimpleTestEntity, "id")],
@@ -120,11 +120,12 @@ describe("buildSelectQuery — GROUP BY / HAVING", () => {
           right: field(SimpleTestEntity, "uuid"),
           type: "LEFT",
           alias: "creator",
+          display: { as: "created_by_name", sql: '"creator".display_name' },
         },
       ],
     });
     const m = q.text.match(/GROUP BY (.+?)($| ORDER BY| LIMIT| HAVING)/);
-    expect(m![1]).toContain('"creator".display_name');
+    expect(m![1]).toContain('"created_by_name"');
   });
 
   it("groupBy accepts parameterized expressions — ? markers bind params", () => {

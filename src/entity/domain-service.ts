@@ -28,7 +28,15 @@
 
 import { getDal } from "../dal/dal.js";
 import type { Dal } from "../dal/dal.js";
-import { getDictFacet } from "../meta/entity-decorators.js";
+import {
+  getDictFacet,
+  getEntityPersistenceMeta,
+  getRelationFacet,
+  hasAuditTrail,
+  isClonableEntity,
+} from "../meta/entity-decorators.js";
+import { isAuditableEntity } from "../repository/repository.js";
+import { registerEntityService } from "./entity-registry.js";
 import type { Repository } from "../repository/repository.js";
 import type {
   BulkItem,
@@ -61,6 +69,37 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
    *  entity-router's assembleMeta injects it into the served meta. */
   get dictFacet() {
     return getDictFacet(this.cfg.entity);
+  }
+
+  /** The entity's `relation` facet when the class carries `@Relation` —
+   *  the entity-router's assembleMeta injects it into the served meta. */
+  get relationFacet() {
+    return getRelationFacet(this.cfg.entity);
+  }
+
+  /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail
+   *  table. The router derives `collaboration.enabled` from this; never
+   *  restated in the decl. */
+  get auditable() {
+    return hasAuditTrail(this.cfg.entity);
+  }
+
+  /** `Clonable` mixin on the entity class — clone-tracking columns exist,
+   *  so `/duplicate` may register. Entities without it never expose the
+   *  route: a clone with no tracking columns writes an untracked copy. */
+  get clonable() {
+    return isClonableEntity(this.cfg.entity);
+  }
+
+  /** Ref-display registration sink — the route layer (which is DAL-free
+   *  and can't reach the registry directly) feeds the entity's
+   *  materialized display template, derived from the SAME authored
+   *  `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+   *  wiring — module-load time, so the registry is complete before any
+   *  `svc` builds and before the first request. Plain
+   *  `EntityServiceLike` facades simply don't carry it — duck-typed. */
+  registerRefDisplay(display: string | null): void {
+    registerEntityService({ entity: this.cfg.entity, display });
   }
 
   /**
@@ -109,8 +148,15 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
   }
-  auditActors(): Promise<{ value: string; label: string }[]> {
-    return this.svc.auditActors();
+  /** Vocabulary feed for `options_source:"audit.actors"` — present ONLY
+   *  when the entity stamps audit columns (`Auditable` mixin). The
+   *  entity-router registers `/audit-actors` on this capability's
+   *  presence, so presence must be provable WITHOUT touching `this.svc`
+   *  (the DAL resolves lazily — dereferencing it at route-registration
+   *  time crashes the boot). The call itself still resolves lazily. */
+  get auditActors() {
+    if (!isAuditableEntity(getEntityPersistenceMeta(this.cfg.entity))) return undefined;
+    return () => this.svc.auditActors!();
   }
   stream(query: EntityListQuery): AsyncGenerator<TEntity> {
     return this.svc.stream(query);

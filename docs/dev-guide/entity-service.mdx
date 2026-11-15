@@ -142,6 +142,21 @@ projection (`public.user_profiles`), with `COALESCE(creator.display_name,
 t.<actor col>)` so raw values like `"system"` stay readable. It is a platform
 invariant, not a config knob — there is no `userEntity` option.
 
+`@Ref` columns get the same treatment through `refDisplayJoinsFor()`: every
+ref whose target entity is registered (same schema or a platform-shared
+table) emits a `LEFT JOIN` projecting `{key}_name` off the target's own
+materialized display template — `trigger_uuid` → `trigger_uuid_name` shows
+the trigger's name, not the raw uuid. The join is skipped silently for
+unregistered, cross-domain, or display-less targets — the cell falls back
+to the raw value by construction, never to a wrong join. Actor and clone
+columns stay on their dedicated joins and never enter this path.
+
+The `*_name` surface is part of the wire contract end-to-end: `sort_key` on
+the base column orders by the joined display alias (the surface the FE
+shows), and `search_in` auto-admits every name-join key on top of the
+authored `searchableKeys` — resolving `COALESCE(display_sql, col::text)`
+so a single needle matches the rendered name AND the raw uuid together.
+
 ## What it deliberately does not do
 
 - **No env reads** — no `debugCode`-style toggles; env is bootstrap-only.

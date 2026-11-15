@@ -107,3 +107,113 @@ describe("EntityService — audit actor search/sort via user_profile join", () =
     expect(res.rows.length).toBe(3);
   });
 });
+
+/**
+ * Self-ref display join — `cloned_from` is a `Clonable`-mixin self-ref:
+ * the `clone_src` LEFT JOIN evaluates the entity's OWN display template
+ * (`cfg.display`, the same `display_name` the FE uses for titles) and
+ * projects `cloned_from_name`. Search/sort on `cloned_from` resolve the
+ * projected name, COALESCE-falling back to the raw uuid on orphan refs.
+ */
+describe("EntityService — cloned_from self-join display projection", () => {
+  let dal: Dal;
+
+  beforeAll(async () => {
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      statementTimeoutMs: 30000,
+      applicationName: "dal-test-clonedfrom",
+    });
+    await setupTestSchema();
+  });
+
+  afterAll(async () => {
+    await dal.close();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+  });
+
+  const svc = () =>
+    dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      display: "${name} (${email})",
+      list: {
+        searchableKeys: ["name", "cloned_from"],
+        filterableKeys: new Set(["name", "version"]),
+      },
+    });
+
+  async function seedClones(): Promise<{ srcUuid: string }> {
+    const pool = dal.getPool();
+    const srcUuid = crypto.randomUUID();
+    const cloneUuid = crypto.randomUUID();
+    const orphanUuid = crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO dal_test_simple (uuid, name, email, created_by, updated_by, cloned_from) VALUES
+         ($1, 'source-row', 'src@x.dev', 't', 't', NULL),
+         ($2, 'the-clone', 'clone@x.dev', 't', 't', $1),
+         ($3, 'orphan-clone', 'orph@x.dev', 't', 't', $4)`,
+      [srcUuid, cloneUuid, orphanUuid, crypto.randomUUID()],
+    );
+    return { srcUuid };
+  }
+
+  it("cloned_from_name projects the evaluated display template", async () => {
+    await seedClones();
+    const res = await svc().list({ sort_key: "name", sort_dir: "asc" });
+    const clone = res.rows.find((r) => r.name === "the-clone") as Record<string, unknown>;
+    expect(clone.cloned_from_name).toBe("source-row (src@x.dev)");
+    const src = res.rows.find((r) => r.name === "source-row") as Record<string, unknown>;
+    expect(src.cloned_from_name).toBeNull(); // NULL cloned_from → NULL name
+  });
+
+  it("orphan cloned_from falls back to the raw uuid", async () => {
+    await seedClones();
+    const res = await svc().list({ sort_key: "name", sort_dir: "asc" });
+    const orphan = res.rows.find((r) => r.name === "orphan-clone") as Record<string, unknown>;
+    expect(orphan.cloned_from_name).toBe(orphan.cloned_from);
+  });
+
+  it("search on cloned_from resolves the projected name", async () => {
+    await seedClones();
+    const res = await svc().list({ search: "source-row", search_in: ["cloned_from"] });
+    expect(res.rows.map((r) => r.name)).toEqual(["the-clone"]);
+  });
+
+  it("sort_key=cloned_from orders by the projected name", async () => {
+    await seedClones();
+    const res = await svc().list({ sort_key: "cloned_from", sort_dir: "asc" });
+    // ASC puts NULLs LAST in PG; the orphan's raw-uuid fallback sorts
+    // before the "source-row (...)" string (hex chars < 's').
+    expect(res.rows.map((r) => r.name)).toEqual(["orphan-clone", "the-clone", "source-row"]);
+  });
+
+  it("an unknown ${key} in the display template fails at construction", () => {
+    expect(() =>
+      dal.entityService<SimpleTestEntity>({
+        entity: SimpleTestEntity as never,
+        actor: () => "test",
+        display: "${name} (${nonexistent_col})",
+        list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+      }),
+    ).toThrow(/not a column/);
+  });
+
+  it("a clonable service without display skips the self-join (raw uid renders)", async () => {
+    await seedClones();
+    const bare = dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+    });
+    const res = await bare.list({ sort_key: "name", sort_dir: "asc" });
+    const clone = res.rows.find((r) => r.name === "the-clone") as Record<string, unknown>;
+    expect(clone.cloned_from_name).toBeUndefined();
+    expect(clone.cloned_from).toBeTruthy();
+  });
+});

@@ -73,6 +73,15 @@ export const DalErrorCodes = {
    * the write atomically). HTTP 412.
    */
   ERR10: "ERR10",
+  /**
+   * Circular reference on a relation edge — the `@Relation` unordered-pair
+   * index rejected a write whose (parent, child) ends collide with an
+   * existing row in the REVERSED orientation: in a hierarchy read that
+   * edge would close a 2-cycle. Raised by the add()/update()
+   * conflict-reporting CTE via `pg_raise`; the error `detail` carries the
+   * conflicting row's uuid and its stored end columns. HTTP 409.
+   */
+  ERR11: "ERR11",
 } as const;
 
 export type DalErrorCode = (typeof DalErrorCodes)[keyof typeof DalErrorCodes];

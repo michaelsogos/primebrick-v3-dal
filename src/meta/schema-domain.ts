@@ -40,8 +40,10 @@ export type SchemaDomain = {
    * cross-schema contracts. The built-in `PLATFORM_SHARED_TABLES` set is
    * always unioned in: `public`/`custom` are cross-app platform domains,
    * not module domains — `user_profiles` (platform identity, auditable
-   * display-name joins) and `translations` (every module schema carries
-   * one; the BE i18n gateway manages them all) are platform infrastructure.
+   * display-name joins), `service_registry` (module identity — schedule
+   * armer / service display joins) and `translations` (every module
+   * schema carries one; the BE i18n gateway manages them all) are
+   * platform infrastructure.
    */
   sharedTables: ReadonlySet<string>;
 };
@@ -55,10 +57,11 @@ const TABLE_IDENT = /^[a-z_][a-z0-9_]*$/;
  * Platform-owned tables always exempt from the domain check — hardcoded
  * because they are platform invariants, not configuration: `public`/`custom`
  * are cross-app domains, and every service may legally reach these tables
- * (`user_profiles` for auditable display-name joins, `translations` for the
- * governed i18n contract).
+ * (`user_profiles` for auditable display-name joins, `service_registry`
+ * for module/service identity joins — e.g. a schedule resolving its
+ * service armer — and `translations` for the governed i18n contract).
  */
-const PLATFORM_SHARED_TABLES = new Set(["user_profiles", "translations"]);
+const PLATFORM_SHARED_TABLES = new Set(["user_profiles", "translations", "service_registry"]);
 
 /** Called once by the Dal constructor. Re-calls replace the domain (tests). */
 export function configureSchemaDomain(schemas: string[], sharedTables: string[] = []): SchemaDomain {
