@@ -388,11 +388,11 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                 `declared via @Calculated(expr, { pgType, nullable }) on the entity class`,
             );
           }
-          return {
+          return withAuditOrder({
             ...col,
             nullable: calc.nullable ?? false,
             ...(calc.pgType !== undefined ? { pg_type: calc.pgType } : {}),
-          };
+          });
         }
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: meta column "${col.key}" has no matching column on the entity class — ` +
