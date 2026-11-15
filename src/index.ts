@@ -179,6 +179,7 @@ export {
   OptimisticLockError,
   DuplicateRecordError,
   DeletedRecordConflictError,
+  PageOutOfRangeError,
   BulkTimeoutError,
 } from "./errors/errors.js";
 

@@ -2,7 +2,7 @@ import "dotenv/config";
 import "reflect-metadata";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal, ValidationError } from "../src/index.js";
+import { Dal, PageOutOfRangeError, ValidationError } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { RefSourceEntity } from "./entities/ref-source-entity.js";
@@ -323,5 +323,63 @@ describe("EntityService — auditActors capability", () => {
       list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
     });
     expect(s.auditActors).toBeUndefined();
+  });
+});
+
+describe("EntityService — page out of range", () => {
+  let dal: Dal;
+
+  beforeAll(async () => {
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      statementTimeoutMs: 30000,
+      applicationName: "dal-test-page-oor",
+    });
+    await setupTestSchema();
+  });
+
+  afterAll(async () => {
+    await dal.close();
+  });
+
+  const svc = () =>
+    dal.entityService<SimpleTestEntity>({
+      entity: SimpleTestEntity as never,
+      actor: () => "test",
+      list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+    });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+    await dal.add(SimpleTestEntity, { name: "Mario" }, { actor: "test" });
+    await dal.add(SimpleTestEntity, { name: "Luigi" }, { actor: "test" });
+  });
+
+  it("page beyond last on a non-empty filter → PageOutOfRangeError", async () => {
+    // 2 rows, page_size default 25 → last_page 1: page 2+ is a violation,
+    // not data to fabricate.
+    const err = await svc()
+      .list({ page: 99 })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(PageOutOfRangeError);
+    expect((err as PageOutOfRangeError).detail).toEqual({
+      page: 99,
+      last_page: 1,
+      total: 2,
+    });
+  });
+
+  it("empty result set is legit on any page → no error, total 0", async () => {
+    const r = await svc().list({ search: "zzz_no_match", page: 7 });
+    expect(r.rows.length).toBe(0);
+    expect(r.total).toBe(0n);
+  });
+
+  it("in-range empty tail page still returns rows + real total", async () => {
+    const r = await svc().list({ page: 2, page_size: 1 });
+    expect(r.rows.length).toBe(1);
+    expect(r.total).toBe(2n);
   });
 });

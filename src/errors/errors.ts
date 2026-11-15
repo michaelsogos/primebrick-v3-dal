@@ -137,6 +137,25 @@ export class DeletedRecordConflictError extends DalError {
 }
 
 /**
+ * Out-of-range page on a paginated list — the requested page exceeds the
+ * last available page while matching rows DO exist. An empty page-1 result
+ * is a legitimate empty set, never this error; `page > last_page` on a
+ * non-empty filter is a request violation (probing or stale client state),
+ * not data to fabricate — the wire answers an error, not a lying total.
+ *
+ * Code: `PAGE_OUT_OF_RANGE`. TS-originated. HTTP 400.
+ */
+export class PageOutOfRangeError extends DalError {
+  readonly code = "PAGE_OUT_OF_RANGE";
+  /** `{page, last_page, total}` — lets the caller clamp-and-retry. */
+  readonly detail?: unknown;
+  constructor(message: string, detail?: unknown) {
+    super(message);
+    this.detail = detail;
+  }
+}
+
+/**
  * Thrown when a bulk write exceeds its wall-clock budget
  * (`DalConfig.bulkTimeoutMs` or `BulkOptions.timeoutMs`). The surrounding
  * transaction is rolled back — no partial writes survive.

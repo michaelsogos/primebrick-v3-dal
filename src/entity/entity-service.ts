@@ -74,7 +74,7 @@ import {
   type ListFilterCondition,
 } from "../query/list-filters.js";
 import type { AuditPort } from "../types/types.js";
-import { NotFoundError, ValidationError } from "../errors/errors.js";
+import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 import {
   extJsonStringify,
@@ -765,23 +765,47 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       // Joined-name sort orders on the projected `*_name` display column
       // (the sorted surface the FE shows), not the raw uuid.
       const sortNameJoin = nameJoinsFor(shape.joins).get(sort_key);
+      const findOptions = {
+        filters: buildListFilters(q),
+        sorting: [
+          sortNameJoin
+            ? Sort.byAlias(sortNameJoin.nameAlias, sort_dir)
+            : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
+        ],
+        deletedRecords: coerceDeletedRecords(q.deleted_records),
+        joins: shape.joins,
+        groupBy: shape.groupBy,
+      } as never;
       const result = await repo.findByPage<TEntity, TEntity>(
         cfg.entity,
         page,
         page_size,
         shape.fields as never,
-        {
-          filters: buildListFilters(q),
-          sorting: [
-            sortNameJoin
-              ? Sort.byAlias(sortNameJoin.nameAlias, sort_dir)
-              : Sort.by(field(cfg.entity, sort_key as never), sort_dir),
-          ],
-          deletedRecords: coerceDeletedRecords(q.deleted_records),
-          joins: shape.joins,
-          groupBy: shape.groupBy,
-        } as never,
+        findOptions,
       );
+
+      if (result.entities.length === 0 && page > 1) {
+        // Empty non-first page: legitimate empty filter result OR an
+        // out-of-range request — `COUNT(*) OVER()` cannot distinguish
+        // (no row survives to carry the window count). One page-1 probe
+        // resolves the real total; this anomaly path is the ONLY place
+        // a second query ever runs — in-range traffic pays nothing.
+        const probe = await repo.findByPage<TEntity, TEntity>(
+          cfg.entity,
+          1,
+          1,
+          shape.fields as never,
+          findOptions,
+        );
+        if (probe.total_records > 0n) {
+          const total = Number(probe.total_records);
+          const last_page = Math.ceil(total / page_size);
+          throw new PageOutOfRangeError(
+            `Invalid page ${page} — ${total} record(s) fit ${last_page} page(s)`,
+            { page, last_page, total },
+          );
+        }
+      }
 
       return {
         rows: result.entities.map((r) => toDto(r)),

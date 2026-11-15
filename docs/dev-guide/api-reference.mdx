@@ -825,6 +825,28 @@ Code: `ERR01`. PG-originated. HTTP 409.
 |-----------|------|-------------|
 | message | `string` |  |
 
+### `PageOutOfRangeError`
+
+Out-of-range page on a paginated list — the requested page exceeds the
+last available page while matching rows DO exist. An empty page-1 result
+is a legitimate empty set, never this error; `page > last_page` on a
+non-empty filter is a request violation (probing or stale client state),
+not data to fabricate — the wire answers an error, not a lying total.
+
+Code: `PAGE_OUT_OF_RANGE`. TS-originated. HTTP 400.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"PAGE_OUT_OF_RANGE"` |  |
+| detail | `unknown` | `{page, last_page, total}` — lets the caller clamp-and-retry. |
+
+#### `PageOutOfRangeError(message, detail)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| message | `string` |  |
+| detail | `unknown` |  |
+
 ### `RecordVanishedError`
 
 Thrown when an auditable-entity write matches zero rows AND a disambiguation
