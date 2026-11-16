@@ -55,6 +55,7 @@ import {
 } from "../meta/entity-decorators.js";
 import {
   runPartitionMaintenance,
+  needsPartitionMaintenance,
   type PartitionMaintenanceReport,
 } from "./partition-maintenance.js";
 import type {
@@ -734,8 +735,10 @@ export class Dal {
    * then runs `partman.run_maintenance_proc()`. Called by the service's
    * `jobs.due.system.<svc>.partition-maintenance` consumer.
    *
-   * @param entities the service's entity registry (only `@PartitionField`
-   *   entities participate; everything else is ignored)
+   * @param entities the service's entity registry — every maintained
+   *   surface participates (`@Partition` parents, synthesized
+   *   `{table}_audit` parents for `@AuditTrail` entities, `@Retention`
+   *   row-sweeps on plain tables); everything else is ignored
    */
   async partitionMaintenance(
     entities: readonly EntityClass[],
@@ -743,6 +746,23 @@ export class Dal {
   ): Promise<PartitionMaintenanceReport> {
     return this.withClient((client) => runPartitionMaintenance(client, entities), options);
   }
+}
+
+/**
+ * Partition-maintenance job factory — the ONE wiring a service passes to
+ * `createMicroservice({ partitionMaintenance })`. `needed` is the metadata
+ * gate (`needsPartitionMaintenance`: any `@Partition` / `@AuditTrail` /
+ * `@Retention` surface); `run` resolves the DAL singleton lazily at fire
+ * time, so the option can be built before `initDal()` runs.
+ */
+export function makePartitionMaintenanceJob(entities: readonly EntityClass[]): {
+  needed: boolean;
+  run: () => Promise<PartitionMaintenanceReport>;
+} {
+  return {
+    needed: needsPartitionMaintenance(entities),
+    run: () => getDal().partitionMaintenance(entities),
+  };
 }
 
 /**
