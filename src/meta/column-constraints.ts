@@ -46,6 +46,7 @@
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
 import { numericKindOf } from "@primebrick/core";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
+import { TEXTLIKE_PG_TYPES } from "../entity/entity-service.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -493,8 +494,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    the served meta states the real contract, not a misleading ON. */
       const physCol = persistence.columns[col.key];
       if (physCol && col.kind === undefined) {
+        const physPgType = physCol.pgType ?? physCol.inferredPgType;
         const restated = QUERY_FLAGS.filter(
-          (f) => col[f] !== undefined && col[f] === defaultQueryFlag(f, col.key, col.type),
+          (f) => col[f] !== undefined && col[f] === defaultQueryFlag(f, col.key, col.type, physPgType),
         );
         if (restated.length > 0) {
           throw new Error(
@@ -504,7 +506,17 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         }
         const flagDefaults: Record<string, boolean> = {};
         for (const f of QUERY_FLAGS)
-          if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type)) flagDefaults[f] = false;
+          if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type, physPgType)) flagDefaults[f] = false;
+        // An authored `searchable:true` that escapes restatement survives
+        // only because the derived default is FALSE — it declares scope
+        // the wire allowlist can never admit. Intent contradicting
+        // physics is authored drift, not a tunable: refuse the meta.
+        if (col.searchable === true) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors searchable:true on a non-ILIKE-safe column (pg type "${physPgType}") — ` +
+              `the wire search_in allowlist derives from the same physical types and would reject it; drop the flag`,
+          );
+        }
         return withAuditOrder(injectDerived({ ...col, ...flagDefaults }));
       }
       return withAuditOrder(injectDerived(col));
@@ -589,7 +601,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // never sorted, never text-searched (a numeric LIKE is noise); the
       // same applies to every date/datetime column — a timestamp matched
       // as text is noise, range filters are the query contract.
-      searchable: defaultQueryFlag("searchable", key, colType) ? undefined : false,
+      searchable: defaultQueryFlag("searchable", key, colType, phys.inferredPgType) ? undefined : false,
       sortable: defaultQueryFlag("sortable", key, colType) ? undefined : false,
       // Audit actor columns feed the governed multi-select: the
       // distinct vocab of THIS table's actors, label-resolved through
@@ -812,17 +824,23 @@ function isAuditActorColumn(phys: {
  *  at runtime, but their authored type is the contract). An authored flag
  *  equal to this value is a restatement (rejected); a different value is a
  *  real override (allowed). `filterable` is ON for every column; `sortable`
- *  is OFF only on `version`; `searchable` is OFF on `version` and every
- *  date/datetime column — a timestamp matched as text is noise, range
- *  filters are the query contract. */
+ *  is OFF only on `version`; `searchable` is OFF on `version`, every
+ *  date/datetime column, and every column whose PHYSICAL pg type is not
+ *  ILIKE-safe (`TEXTLIKE_PG_TYPES` — the same set the wire `search_in`
+ *  allowlist derives from). Serving `searchable` on a non-textlike
+ *  column would advertise scope the backend then rejects — the derived
+ *  default resolves intent against physics so the two cannot diverge. */
 function defaultQueryFlag(
   flag: (typeof QUERY_FLAGS)[number],
   key: string,
   metaType: MetaColumn["type"],
+  physPgType?: string,
 ): boolean {
   if (flag === "filterable") return true;
   if (flag === "sortable") return key !== "version";
-  return key !== "version" && metaType !== "date" && metaType !== "datetime";
+  if (key === "version" || metaType === "date" || metaType === "datetime") return false;
+  if (physPgType === undefined) return true;
+  return TEXTLIKE_PG_TYPES.has(physPgType.toLowerCase().replace(/\(.*\)/, ""));
 }
 
 /** Served-meta ref target for a physical column: `@Ref` wins; a

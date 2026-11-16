@@ -368,8 +368,10 @@ function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
 }
 
 /** Physical PG types safe for `ILIKE` — `uuid` is searched via the
- *  `CAST(col AS text)` the query-builder already applies. */
-const TEXTLIKE_PG_TYPES = new Set([
+ *  `CAST(col AS text)` the query-builder already applies. Shared with
+ *  `withColumnConstraints`: the served `searchable` flag resolves against
+ *  this same set, so meta intent and the wire allowlist cannot diverge. */
+export const TEXTLIKE_PG_TYPES = new Set([
   "character varying", "varchar", "character", "char",
   "text", "citext", "name", "uuid",
 ]);

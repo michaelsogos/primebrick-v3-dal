@@ -11,6 +11,7 @@ class CcRuleEntity {
   @Column({ length: 200, nullable: false }) name!: string;
   @Column({ nullable: false }) event_subject!: string;
   @Column({ nullable: true }) filter?: unknown;
+  @Column({ pgType: "jsonb", nullable: true }) payload_map?: unknown;
   @Column({ length: 10, nullable: false, defaultSql: "'user'" }) execution_context!: string;
   @Column({ nullable: false }) enabled!: boolean;
 }
@@ -24,6 +25,7 @@ const baseMeta = (): EntityMeta => ({
     { key: "name", label_key: "x.name", type: "text", order: 10 },
     { key: "event_subject", label_key: "x.event_subject", type: "text", order: 20 },
     { key: "filter", label_key: "x.filter", type: "text", order: 30 },
+    { key: "payload_map", label_key: "x.payload_map", type: "text", order: 35 },
     { key: "execution_context", label_key: "x.lane", type: "badge", order: 40 },
     { key: "enabled", label_key: "x.enabled", type: "boolean", order: 50 },
   ],
@@ -581,6 +583,38 @@ describe("uom + unsigned constraints", () => {
 			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "x" } },
 		} as never;
 		expect(() => withColumnConstraints(propMeta, CcRuleEntity)).toThrow(/names a hidden column/);
+	});
+
+	// ── searchable — the served flag resolves against the PHYSICAL pg
+	//    type (the same TEXTLIKE set the wire search_in allowlist derives
+	//    from) — intent and physics can never diverge ──────────────────
+	it("an undeclared searchable flag on a jsonb column emits searchable:false", () => {
+		// `payload_map` persists as jsonb — ILIKE-incapable, so the served
+		// flag is forced off and the column never enters search_in.
+		const out = withColumnConstraints(baseMeta(), CcRuleEntity);
+		const mapCol = out.columns.find((c) => c.key === "payload_map");
+		expect(mapCol?.searchable).toBe(false);
+		// …while the textlike sibling keeps the searchable default.
+		expect(out.columns.find((c) => c.key === "event_subject")?.searchable).not.toBe(false);
+	});
+
+	it("authored searchable:false on a jsonb column is restatement drift and throws", () => {
+		const meta = baseMeta();
+		meta.columns[3] = { ...meta.columns[3]!, searchable: false } as never; // payload_map — jsonb
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/the derived default/);
+	});
+
+	it("authored searchable:true on a jsonb column is a construction error", () => {
+		const meta = baseMeta();
+		meta.columns[3] = { ...meta.columns[3]!, searchable: true } as never; // payload_map — jsonb
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/non-ILIKE-safe/);
+	});
+
+	it("authored searchable:false on a textlike column remains a legal narrowing", () => {
+		const meta = baseMeta();
+		meta.columns[1] = { ...meta.columns[1]!, searchable: false } as never; // event_subject — varchar
+		const out = withColumnConstraints(meta, CcRuleEntity);
+		expect(out.columns.find((c) => c.key === "event_subject")?.searchable).toBe(false);
 	});
 
 	// ── ref.value_field — non-uid stored values can't detail-link ──────
