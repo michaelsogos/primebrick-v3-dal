@@ -758,10 +758,21 @@ export class Dal {
 export function makePartitionMaintenanceJob(entities: readonly EntityClass[]): {
   needed: boolean;
   run: () => Promise<PartitionMaintenanceReport>;
+  i18nNs: () => string;
 } {
   return {
     needed: needsPartitionMaintenance(entities),
     run: () => getDal().partitionMaintenance(entities),
+    // Resolved lazily at mount time (initDal may not have run yet when the
+    // option is built at module scope). The callable's label keys ride the
+    // OWNING schema's translations table: `public` translates as `app`
+    // (the translationKeyNs rule the migration linter enforces), every
+    // other schema owns itself — coincides with the service code for all
+    // US services, diverges for the BE (public → app).
+    i18nNs: () => {
+      const schema = getDal().config.schemas[0];
+      return schema === "public" ? "app" : schema;
+    },
   };
 }
 

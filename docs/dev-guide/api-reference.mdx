@@ -20,7 +20,7 @@ Maps to any audit table (customers_audit, organizations_audit, user_profiles_aud
 via the `tableName` override option on finders/writers.
 
 All audit tables share the same column structure:
-  id          bigint identity PK
+  uuid        uuid    (row PK — uuidv7() DEFAULT, DDL PK is (uuid, changed_at))
   entity_id   bigint (the audited entity's legacy surrogate ID — nullable;
                 present only on pre-migration `*_audit` tables; dropped as
                 entities migrate to uuid PKs)
@@ -31,11 +31,15 @@ All audit tables share the same column structure:
   version     integer
   delta       jsonb   (field-level old/new diff)
 
+The surrogate bigint `id` was eradicated — audit rows carry the same
+uuid-PK doctrine as every other table (the composite DDL PK includes the
+RANGE partition column `changed_at`, per the partitioned-PK rule).
+
 This entity has NO
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | `bigint` |  |
+| uuid | `string` |  |
 | entity_id | `bigint \| null` |  |
 | entity_uuid | `string` |  |
 | action | `string` |  |
@@ -351,8 +355,10 @@ then runs `partman.run_maintenance_proc()`. Called by the service's
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| entities | `readonly EntityClass[]` | the service's entity registry (only `@PartitionField`
-  entities participate; everything else is ignored) |
+| entities | `readonly EntityClass[]` | the service's entity registry — every maintained
+  surface participates (`@Partition` parents, synthesized
+  `{table}_audit` parents for `@AuditTrail` entities, `@Retention`
+  row-sweeps on plain tables); everything else is ignored |
 | options | `TimeoutOverrideOptions` |  |
 
 ### `DalError`
@@ -1314,14 +1320,14 @@ Declarative aggregate rollup projected into list rows.
 
 Audit port — consumers inject their own audit writer.
 The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
-Returns the inserted audit row id (used as `audit_log_id` in collaboration
+Returns the inserted audit row key (used as `audit_log_id` in collaboration
 markers); ports that do not persist a row may return `0n`.
 
 ### `AuditRow`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| id | `bigint` |  |
+| uuid | `string` |  |
 | entity_uuid | `string` |  |
 | action | `string` |  |
 | changed_at | `string` |  |
@@ -1678,6 +1684,7 @@ One declared key of an `x_map_keys` declaration (e.g. a template's
 | Field | Type | Description |
 |-------|------|-------------|
 | parents | `PartitionParentReport[]` |  |
+| sweeps | `RetentionSweepReport[]` | `@Retention` sweeps on non-partitioned tables. |
 | maintenance_ran | `boolean` | Whether `partman.run_maintenance_proc()` ran. |
 
 ### `PartitionParentReport`
@@ -1833,6 +1840,15 @@ index — construction-derived, never authored).
 | child_field | `string` |  |
 | type_field | `string` |  |
 | hierarchical | `boolean` |  |
+
+### `RetentionSweepReport`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| table | `string` | `"schema"."table"` swept. |
+| column | `string` |  |
+| retention | `string` |  |
+| rows_deleted | `number` |  |
 
 ### `RowCustomAction`
 
@@ -2563,7 +2579,13 @@ Options for `@PartitionChildOf()` — declares membership in a partitioned
 
 ### `PartitionFieldOptions`
 
-Options for `@PartitionField()` — the RANGE partition key declaration.
+**Type:** `PartitionOptions`
+
+### `PartitionOptions`
+
+Options for `@Partition()` — the RANGE partition key declaration.
+ Partitioning is SLICING only — retention is the orthogonal
+ `@Retention()` declaration on the same column (or a sweep column).
 
 ### `PatchManifest`
 
@@ -3134,6 +3156,10 @@ PostgreSQL `NUMERIC_MIN_SIG_DIGITS` (16). See `pgDivScale`.
 
 **Type:** `Decimal`
 
+### `PartitionField`
+
+**Type:** `(opts: PartitionOptions) => PropertyDecorator`
+
 ### `PATCH_REGISTRY_TABLE`
 
 Per-service-schema patch registry (v2).
@@ -3520,9 +3546,16 @@ Marks a field as auditable (created_at, created_by, updated_at, updated_by, vers
 |-----------|------|-------------|
 | what | `AuditableFieldType` |  |
 
-### `AuditTrail(): ClassDecorator`
+### `AuditTrail(options): ClassDecorator`
 
 Marks an entity as having an audit trail table.
+ `options.retention` overrides the audit-table retention window —
+ default `"12 months"` (audit is a bounded operational cost, not an
+ archive); `partman.part_config` remains the runtime source of truth.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `{ retention: string }` |  |
 
 ### `AuditTrailEntity(options): ClassDecorator`
 
@@ -3812,7 +3845,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -4622,6 +4655,18 @@ identically — validation of existence is the remote build's job.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+### `makePartitionMaintenanceJob(entities): { needed: boolean; run: () => Promise<PartitionMaintenanceReport> }`
+
+Partition-maintenance job factory — the ONE wiring a service passes to
+`createMicroservice({ partitionMaintenance })`. `needed` is the metadata
+gate (`needsPartitionMaintenance`: any `@Partition` / `@AuditTrail` /
+`@Retention` surface); `run` resolves the DAL singleton lazily at fire
+time, so the option can be built before `initDal()` runs.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `readonly EntityClass[]` |  |
+
 ### `makeTableAuditPort(repo): AuditPort`
 
 `makeTableAuditPort` — writes audit log rows to `{tableName}_audit` via the
@@ -4671,6 +4716,18 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 |-----------|------|-------------|
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
+
+### `needsPartitionMaintenance(entities): boolean`
+
+Boot-time gate for the `partition_maintenance` system job — `true` when
+the registry contains ANY retention-bearing surface: a `@Partition`
+parent, an `@AuditTrail()` entity (its `{table}_audit` is a maintained
+parent), or a `@Retention` sweep. `false` = nothing to maintain → the
+SDK mounts no callable and materializes no trigger.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `readonly EntityClass[]` |  |
 
 ### `neg(d): Decimal`
 
@@ -4779,6 +4836,19 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 |-----------|------|-------------|
 | raw | `string` |  |
 
+### `Partition(opts): PropertyDecorator`
+
+Marks a column as the RANGE partition key of the table (pg_partman,
+monthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and
+date/timestamptz-typed; every unique group and the primary key emitted in
+DDL must include it (PostgreSQL requirement) — `getEntityPersistenceMeta`
+validates this and throws otherwise, so a partitioned entity can never
+produce an invalid table definition.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `PartitionOptions` |  |
+
 ### `PartitionChildOf(opts): ClassDecorator`
 
 Declares this entity a logical child of a `@PartitionField`-partitioned
@@ -4792,19 +4862,6 @@ partition-maintenance purge. Entities that merely REFERENCE a parent
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | opts | `PartitionChildOfOptions` |  |
-
-### `PartitionField(opts): PropertyDecorator`
-
-Marks a column as the RANGE partition key of the table (pg_partman,
-monthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and
-date/timestamptz-typed; every unique group and the primary key emitted in
-DDL must include it (PostgreSQL requirement) — `getEntityPersistenceMeta`
-validates this and throws otherwise, so a partitioned entity can never
-produce an invalid table definition.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| opts | `PartitionFieldOptions` |  |
 
 ### `patchNameFromFilename(filename): string`
 
@@ -5100,6 +5157,22 @@ single function so the plane stays deterministic.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | specifier | `string` |  |
+
+### `Retention(duration): PropertyDecorator`
+
+Declares how long rows live — the EXPIRY policy, orthogonal to
+`@Partition` (slicing). Property decorator on the expiry column:
+- on a `@Partition`-ed entity it MUST sit on the partition column —
+  retention drops aged partitions (meta validation throws otherwise);
+- on a non-partitioned entity it drives a row-level sweep
+  (`DELETE … WHERE col < now() - duration`) in the same maintenance run.
+`@AuditTrail` entities carry their own audit retention (`12 months`
+default, `AuditTrail({retention})` override) — `@Retention` targets the
+DOMAIN table, never the audit table.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| duration | `string` |  |
 
 ### `retryFailedPatches(pool, schema, actor): Promise<number>`
 

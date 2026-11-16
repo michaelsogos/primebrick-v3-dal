@@ -136,3 +136,26 @@ describe("F2 — domain @Partition + @Retention separation", () => {
     expect(sql).not.toContain(`partman.create_parent('public.sa_sweep'`);
   });
 });
+
+import { needsPartitionMaintenance } from "../src/index.js";
+
+describe("needsPartitionMaintenance — the SDK boot-time gate", () => {
+  it("@AuditTrail entity → true (its _audit table is a maintained parent)", () => {
+    expect(needsPartitionMaintenance([SaAuditDefaultEntity as never])).toBe(true);
+  });
+  it("@Partition entity → true", () => {
+    expect(needsPartitionMaintenance([SaEventsEntity as never])).toBe(true);
+  });
+  it("@Retention row-sweep only → true", () => {
+    expect(needsPartitionMaintenance([SaSweepEntity as never])).toBe(true);
+  });
+  it("plain entity → false — nothing is mounted or declared", () => {
+    @Entity("sa_plain", "public")
+    class SaPlainEntity {
+      @Key()
+      uuid!: UUID;
+    }
+    expect(needsPartitionMaintenance([SaPlainEntity as never])).toBe(false);
+    expect(needsPartitionMaintenance([])).toBe(false);
+  });
+});
