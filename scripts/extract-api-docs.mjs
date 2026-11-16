@@ -21,16 +21,27 @@ console.log('=== TypeDoc API extraction ===');
 mkdirSync(outputDir, { recursive: true });
 
 /**
- * TSDoc text values capture the SOURCE files' line endings — on Windows
- * checkouts they arrive as \r\n, on CI as \n, which makes the committed
- * extraction permanently "stale" on the other platform. Normalize every
- * string value to \n so the artifact is byte-identical cross-platform.
+ * Two environment leaks make the committed extraction permanently "stale"
+ * on the other platform unless normalized here:
+ *  - TSDoc text values capture the SOURCE files' line endings (\r\n on
+ *    Windows checkouts, \n on CI) — normalized to \n.
+ *  - `fileName` sources that point inside node_modules embed the local
+ *    install layout (e.g. "primebrick-workspace/node_modules/..." on dev
+ *    vs "node_modules/..." on CI) — normalized to a "node_modules/…"
+ *    relative form.
  */
-const normalizeEol = (value) => {
-  if (typeof value === 'string') return value.replace(/\r\n?/g, '\n');
-  if (Array.isArray(value)) return value.map(normalizeEol);
+const normalizeValue = (key, value) => {
+  if (typeof value === 'string') {
+    const text = value.replace(/\r\n?/g, '\n');
+    if (key === 'fileName') {
+      const i = text.indexOf('node_modules/');
+      return i > 0 ? text.slice(i) : text;
+    }
+    return text;
+  }
+  if (Array.isArray(value)) return value.map((v) => normalizeValue('', v));
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, normalizeEol(v)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, normalizeValue(k, v)]));
   }
   return value;
 };
@@ -43,7 +54,7 @@ try {
   });
   const outputFile = join(outputDir, 'api.json');
   if (existsSync(outputFile)) {
-    const doc = normalizeEol(JSON.parse(readFileSync(outputFile, 'utf8')));
+    const doc = normalizeValue('', JSON.parse(readFileSync(outputFile, 'utf8')));
     writeFileSync(outputFile, JSON.stringify(doc, null, '\t') + '\n', 'utf8');
     console.log(`\nWrote API reference to docs/dev-guide/_extracted/api.json`);
   } else {
