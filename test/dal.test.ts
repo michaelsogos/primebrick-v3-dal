@@ -3,12 +3,12 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import pg from "pg";
 
 import {
-  Dal,
   getDal,
   resetDal,
   NotFoundError,
   type DalConfig,
 } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   setupTestSchema,

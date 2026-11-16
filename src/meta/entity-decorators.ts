@@ -94,9 +94,12 @@ type ColumnRegistration = {
   indexOpts?: IndexOptions;
   /** `@ForeignKey()` — REFERENCES declaration (lazy target thunk for circular deps) */
   foreignKey?: { target: () => EntityClass; opts: ForeignKeyOptions };
-  /** `@PartitionField()` — this column is the RANGE partition key of the table */
+  /** `@Partition()` — this column is the RANGE partition key of the table */
   isPartition?: boolean;
-  partitionOpts?: PartitionFieldOptions;
+  partitionOpts?: PartitionOptions;
+  /** `@Retention(duration)` — this column is the expiry axis */
+  isRetention?: boolean;
+  retentionOpts?: { duration: string };
   /** Composite unique index name — columns sharing the same name form a composite unique index. */
   uniqueIndexName?: string;
   /** Order priority within a composite unique index (0-based). Lower = first in index. */
@@ -225,6 +228,8 @@ type ClassEntityMeta = {
   notColumnKeys: Set<PropertyKey>;
   /** `@AuditTrail()` — entity has audit trail table */
   isAuditable?: boolean;
+  /** `@AuditTrail({retention})` — audit-table retention override (default `"12 months"`) */
+  auditRetention?: string;
   /** `@AuditTrailEntity()` — entity IS an audit trail table (read-only audit log) */
   isAuditTrailEntity?: boolean;
   /** Column name used for the `changed_by` field in audit trail entities */
@@ -244,17 +249,20 @@ type ClassEntityMeta = {
   relation?: RelationFacet;
 };
 
-/** Options for `@PartitionField()` — the RANGE partition key declaration. */
-export type PartitionFieldOptions = {
+/** Options for `@Partition()` — the RANGE partition key declaration.
+ *  Partitioning is SLICING only — retention is the orthogonal
+ *  `@Retention()` declaration on the same column (or a sweep column). */
+export type PartitionOptions = {
   /** pg_partman interval, e.g. "1 month" (default), "1 day", "1 week". */
   interval?: string;
-  /** pg_partman retention, e.g. "6 months". Undefined = no auto-retention. */
-  retention?: string;
   /** partman retention_keep_table — false = DROP (default), true = detach. */
   keepTable?: boolean;
   /** partman premake (future partitions kept ahead). Default: partman's. */
   premake?: number;
 };
+
+/** @deprecated Use `PartitionOptions` — `@PartitionField` was renamed. */
+export type PartitionFieldOptions = PartitionOptions;
 
 /** Options for `@PartitionChildOf()` — declares membership in a partitioned
  *  parent's atomic delete/retention unit. */
@@ -648,11 +656,15 @@ export function Ref(entity: string): PropertyDecorator {
   };
 }
 
-/** Marks an entity as having an audit trail table. */
-export function AuditTrail(): ClassDecorator {
+/** Marks an entity as having an audit trail table.
+ *  `options.retention` overrides the audit-table retention window —
+ *  default `"12 months"` (audit is a bounded operational cost, not an
+ *  archive); `partman.part_config` remains the runtime source of truth. */
+export function AuditTrail(options?: { retention?: string }): ClassDecorator {
   return function <T extends Function>(target: T): T {
     const m = ensureMeta(target);
     m.isAuditable = true;
+    m.auditRetention = options?.retention;
     return target;
   };
 }
@@ -679,7 +691,7 @@ export function AuditTrailEntity(options?: { changedByColumn?: string }): ClassD
  * validates this and throws otherwise, so a partitioned entity can never
  * produce an invalid table definition.
  */
-export function PartitionField(opts?: PartitionFieldOptions): PropertyDecorator {
+export function Partition(opts?: PartitionOptions): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
@@ -690,6 +702,32 @@ export function PartitionField(opts?: PartitionFieldOptions): PropertyDecorator 
     // partitioning semantics win.
     col.nullable = false;
 
+  };
+}
+
+/**
+ * @deprecated Use `@Partition` — the name carried a `retention` option that
+ * conflated slicing with expiry. Retention now lives on `@Retention`.
+ */
+export const PartitionField = Partition;
+
+/**
+ * Declares how long rows live — the EXPIRY policy, orthogonal to
+ * `@Partition` (slicing). Property decorator on the expiry column:
+ * - on a `@Partition`-ed entity it MUST sit on the partition column —
+ *   retention drops aged partitions (meta validation throws otherwise);
+ * - on a non-partitioned entity it drives a row-level sweep
+ *   (`DELETE … WHERE col < now() - duration`) in the same maintenance run.
+ * `@AuditTrail` entities carry their own audit retention (`12 months`
+ * default, `AuditTrail({retention})` override) — `@Retention` targets the
+ * DOMAIN table, never the audit table.
+ */
+export function Retention(duration: string): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    const col = touchColumn(ctor, propertyKey);
+    col.isRetention = true;
+    col.retentionOpts = { duration };
   };
 }
 
@@ -941,6 +979,8 @@ export type EntityPersistenceMeta = {
   tableName: string;
   /** `@AuditTrail()` — entity has audit trail table */
   isAuditable?: boolean;
+  /** `@AuditTrail({retention})` — audit-table retention override (default `"12 months"`) */
+  auditRetention?: string;
   /** `@AuditTrailEntity()` — entity IS an audit trail table (read-only audit log) */
   isAuditTrailEntity?: boolean;
   /** Column name used for the `changed_by` field in audit trail entities */
@@ -978,9 +1018,12 @@ export type EntityPersistenceMeta = {
       /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
       refEntity?: string;
       castInJoin?: string;
-      /** `@PartitionField()` — RANGE partition key marker + options. */
+      /** `@Partition()` — RANGE partition key marker + options. */
       isPartition?: boolean;
-      partitionOpts?: PartitionFieldOptions;
+      partitionOpts?: PartitionOptions;
+      /** `@Retention(duration)` — expiry column + duration. */
+      isRetention?: boolean;
+      retentionOpts?: { duration: string };
     }
   >;
   /** `@Calculated` SQL projections — keyed by **result alias** (`sqlName`).
@@ -990,13 +1033,20 @@ export type EntityPersistenceMeta = {
     string,
     { propertyKey: string; sqlName: string; expr: string; pgType?: string; nullable?: boolean }
   >;
-  /** Resolved partition declaration — present when a `@PartitionField` exists. */
+  /** Resolved partition declaration — present when a `@Partition` exists.
+   *  Slicing only — expiry lives on `retention`. */
   partition?: {
     column: string;
     interval: string;
-    retention?: string;
     keepTable: boolean;
     premake?: number;
+  };
+  /** Resolved retention declaration — present when `@Retention` exists.
+   *  On partitioned tables `column` === `partition.column` (validated);
+   *  on plain tables it marks the row-sweep expiry column. */
+  retention?: {
+    column: string;
+    duration: string;
   };
   /** Resolved child-of declaration — present when `@PartitionChildOf` exists. */
   partitionChildOf?: {
@@ -1147,6 +1197,8 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;
+    if (reg.isRetention !== undefined) entry.isRetention = reg.isRetention;
+    if (reg.retentionOpts !== undefined) entry.retentionOpts = reg.retentionOpts;
     columns[reg.sqlName] = entry;
   }
 
@@ -1211,10 +1263,33 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     partition = {
       column: pc.sqlName,
       interval: pc.partitionOpts?.interval ?? "1 month",
-      retention: pc.partitionOpts?.retention,
       keepTable: pc.partitionOpts?.keepTable ?? false,
       premake: pc.partitionOpts?.premake,
     };
+  }
+
+  // ── @Retention resolution + validation ──────────────────────────────
+  const retentionCols = Object.values(columns).filter((c) => c.isRetention);
+  if (retentionCols.length > 1) {
+    throw new TypeError(
+      `${entityClassName}: multiple @Retention columns (${retentionCols.map((c) => c.sqlName).join(", ")}) — exactly one is allowed`,
+    );
+  }
+  let retention: EntityPersistenceMeta["retention"];
+  if (retentionCols.length === 1) {
+    const rc = retentionCols[0]!;
+    const t = (rc.pgType ?? "").toLowerCase();
+    if (t !== "" && !/^(date|timestamp|timestamptz)/.test(t)) {
+      throw new TypeError(
+        `${entityClassName}.${rc.propertyKey}: @Retention column must be date/timestamp/timestamptz (expiry is a time axis), got "${rc.pgType}"`,
+      );
+    }
+    if (partition && partition.column !== rc.sqlName) {
+      throw new TypeError(
+        `${entityClassName}: @Retention must sit on the @Partition column "${partition.column}" — retention drops aged partitions, got "${rc.sqlName}"`,
+      );
+    }
+    retention = { column: rc.sqlName, duration: rc.retentionOpts!.duration };
   }
 
   // ── @PartitionChildOf resolution ──────────────────────────────────────
@@ -1366,6 +1441,8 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     isAuditTrailEntity: inherited((m) => m.isAuditTrailEntity),
     auditTrailChangedByColumn: inherited((m) => m.auditTrailChangedByColumn),
     partition,
+    retention,
+    auditRetention: inherited((m) => m.auditRetention),
     partitionChildOf,
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,

@@ -14,7 +14,7 @@ import {
  * via the `tableName` override option on finders/writers.
  *
  * All audit tables share the same column structure:
- *   id          bigint identity PK
+ *   uuid        uuid    (row PK — uuidv7() DEFAULT, DDL PK is (uuid, changed_at))
  *   entity_id   bigint (the audited entity's legacy surrogate ID — nullable;
  *                 present only on pre-migration `*_audit` tables; dropped as
  *                 entities migrate to uuid PKs)
@@ -25,20 +25,24 @@ import {
  *   version     integer
  *   delta       jsonb   (field-level old/new diff)
  *
+ * The surrogate bigint `id` was eradicated — audit rows carry the same
+ * uuid-PK doctrine as every other table (the composite DDL PK includes the
+ * RANGE partition column `changed_at`, per the partitioned-PK rule).
+ *
  * This entity has NO @AuditableField decorators → add() does not stamp audit fields.
  * This entity has NO @AuditTrail() → add() does not write audit-of-audit.
- * The `id` column is identity PK → add() drops it, DB auto-generates.
+ * The `uuid` column has a DB DEFAULT → add() omits it, DB generates.
  *
  * Usage:
- *   repo.add(AuditLogEntity, { entity_id, entity_uuid, action, ... }, { tableName: "customers_audit" })
+ *   repo.add(AuditLogEntity, { entity_uuid, action, ... }, { tableName: "customers_audit" })
  *   repo.findByPage(AuditLogEntity, projections, { tableName: "organizations_audit", filters, ... })
  */
 @Entity("audit_log")
 @AuditTrailEntity({ changedByColumn: "changed_by" })
 export class AuditLogEntity {
-  @Key()
-  @Column({ pgType: "bigint" })
-  id!: bigint;
+  @Key({ generated: "manual", defaultSql: "uuidv7()" })
+  @Column({ pgType: "uuid" })
+  uuid!: string;
 
   @Column({ pgType: "bigint", nullable: true })
   entity_id?: bigint | null;

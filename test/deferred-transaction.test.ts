@@ -9,7 +9,8 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal, DeferredFieldRef, Project, field, ValidationError } from "../src/index.js";
+import { DeferredFieldRef, Project, field, ValidationError } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { setupTestSchema, truncateTestTables, getTestPool, closeTestPool } from "./helpers/setup.js";
 

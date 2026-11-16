@@ -45,7 +45,9 @@ export {
   Ref,
   AuditTrail,
   AuditTrailEntity,
+  Partition,
   PartitionField,
+  Retention,
   PartitionChildOf,
   Dict,
   getDictFacet,
@@ -75,6 +77,7 @@ export {
   type KeyOptions,
   type UniqueOptions,
   type PartitionFieldOptions,
+  type PartitionOptions,
   type PartitionChildOfOptions,
   type IndexOptions,
   type IndexMethod,
@@ -253,11 +256,15 @@ export { DictEntityBase } from "./entities/dict-entity-base.js";
 // Translation entity base — standard i18n translations table entity
 export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 
-// Dal gateway — high-level pool-owning singleton with best-practice defaults
+// Dal gateway — high-level pool-owning singleton with best-practice defaults.
+// `Dal` is exported TYPE-ONLY: consumers may annotate (`private _dal: Dal`)
+// but `new Dal(...)` is unimportable — the singleton is built by initDal/getDal
+// inside the consumer's `db/dal.ts` seam, never ad-hoc.
 export {
-  Dal,
+  type Dal,
   getDal,
   resetDal,
+  makePartitionMaintenanceJob,
   type DalConfig,
   type TimeoutOverrideOptions,
 } from "./dal/dal.js";
@@ -265,8 +272,10 @@ export {
 // Partition maintenance — metadata-driven pg_partman retention executor
 export {
   runPartitionMaintenance,
+  needsPartitionMaintenance,
   type PartitionMaintenanceReport,
   type PartitionParentReport,
+  type RetentionSweepReport,
 } from "./dal/partition-maintenance.js";
 
 // Generic entity CRUD service — the shared makeEntityService used by every
@@ -281,6 +290,8 @@ export {
   type EntityListResult,
   type EntityAction,
   type BulkItem,
+  type BulkUpdateItem,
+  type WriteHookContext,
   type DuplicateResult,
   type AggregateDecl,
 } from "./entity/entity-service.js";
@@ -294,6 +305,7 @@ export {
   type AuditPageResult,
   type AuditRow,
 } from "./entity/audit-query.js";
+export { enrichAuditDeltaRefs } from "./entity/audit-delta-refs.js";
 
 // ── Guarded column types ─────────────────────────────────────────────────────
 // Entity-annotation → storage type contract. `UUID`/`ISODate`/`ISOTime` are

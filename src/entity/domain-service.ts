@@ -40,6 +40,7 @@ import { registerEntityService } from "./entity-registry.js";
 import type { Repository } from "../repository/repository.js";
 import type {
   BulkItem,
+  BulkUpdateItem,
   DuplicateResult,
   EntityListQuery,
   EntityListResult,
@@ -144,6 +145,12 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   }
   bulkRestore(items: BulkItem[]): Promise<unknown> {
     return this.svc.bulkRestore(items);
+  }
+  bulkUpdate(items: BulkUpdateItem[]): Promise<unknown> {
+    return this.svc.bulkUpdate(items);
+  }
+  bulkPurge(items: BulkItem[]): Promise<unknown> {
+    return this.svc.bulkPurge(items);
   }
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);

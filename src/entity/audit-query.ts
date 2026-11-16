@@ -29,7 +29,7 @@ export interface AuditPageOptions {
 }
 
 export interface AuditRow {
-  id: bigint;
+  uuid: string;
   entity_uuid: string;
   action: string;
   changed_at: string;
@@ -77,7 +77,7 @@ export async function findAuditPage(
     opts.page,
     opts.limit,
     [
-      Project.field(field(AuditLogEntity, "id")),
+      Project.field(field(AuditLogEntity, "uuid")),
       Project.field(field(AuditLogEntity, "entity_uuid")),
       Project.field(field(AuditLogEntity, "action")),
       Project.field(field(AuditLogEntity, "changed_at")),
@@ -100,7 +100,7 @@ export async function findAuditPage(
 
   return {
     data: rows.map((row) => ({
-      id: row.id as bigint,
+      uuid: row.uuid as string,
       entity_uuid: row.entity_uuid as string,
       action: row.action as string,
       changed_at:

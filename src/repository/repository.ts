@@ -228,6 +228,18 @@ export function isAuditableEntity(meta: ReturnType<typeof getEntityPersistenceMe
   return meta.isAuditable === true || Object.values(meta.columns).some((c) => c.isAuditable);
 }
 
+/** Runtime mirror of the `AuditableWriteOptions` contract: a write on an
+ *  auditable entity with no resolvable actor throws — an `as any` bypass of
+ *  the type overloads must not silently skip actor stamping (audit columns
+ *  and trail rows would carry a NULL author). */
+function assertWriteActor(meta: ReturnType<typeof getEntityPersistenceMeta>, actor: unknown): void {
+  if (isAuditableEntity(meta) && actor === undefined) {
+    throw new ValidationError(
+      `Write on auditable entity ${meta.entityClassName} requires options.actor — audit columns cannot be stamped without it`,
+    );
+  }
+}
+
 /**
  * Build the RETURNING clause for a single-row write, honoring TResult.
  *
@@ -708,6 +720,7 @@ export class Repository {
     const pk = findPkColumn(meta);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
 
     const rec = row as Record<string, unknown>;
     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
@@ -1765,6 +1778,7 @@ WHERE agg.n > 0`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
 
     // Optimistic concurrency: extract version from payload for auditable entities
     const versionCol = findVersionColumn(meta);
@@ -2020,6 +2034,7 @@ SELECT * FROM upd`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
 
@@ -2162,6 +2177,7 @@ SELECT * FROM w`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
 
@@ -2302,6 +2318,7 @@ SELECT * FROM w`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
 
     // Optimistic concurrency: extract version from match payload for auditable entities
     const versionCol = findVersionColumn(meta);
@@ -2548,6 +2565,7 @@ SELECT * FROM w`;
     const pk = findPkColumn(meta);
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
 
     const first = rows[0] as Record<string, unknown>;
     let keys = Object.keys(first).filter((k) => first[k] !== undefined);
@@ -2936,6 +2954,7 @@ WHERE agg.n > 0`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
 
@@ -3145,6 +3164,7 @@ WHERE agg.n > 0`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
     const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
 
     const versionGuard = auditable
@@ -3290,6 +3310,7 @@ WHERE agg.n > 0`;
     );
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot restore`);
 
@@ -3477,6 +3498,7 @@ WHERE agg.n > 0`;
     const matchProps = new Set(matchCols.map((c) => c.propertyKey));
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
+    assertWriteActor(meta, actor);
 
     // Per-row optimistic concurrency: every row must carry the caller-observed
     // `version` on auditable entities (strict — same contract as update()).

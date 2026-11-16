@@ -32,7 +32,10 @@ const service = dal.entityService<CustomerEntity>({
 ```
 
 `dal.entityService(cfg)` injects the gateway's own (schema-domain-guarded)
-`Repository` and defaults `auditPort` to `makeTableAuditPort(repo)`.
+`Repository` and defaults `auditPort` to `makeTableAuditPort(repo)` when the
+entity declares `@AuditTrail` — entities with auditable columns but no
+trail table get no port (writing `{table}_audit` would target a table that
+does not exist).
 The free `makeEntityService(cfg)` function is the internal machinery the
 method delegates to — it requires `cfg.repo` explicitly and throws
 `ValidationError` without it; call it directly only from tests or when
@@ -76,7 +79,11 @@ Three design guarantees make it the only legal shape:
 Collaborator services may still be constructor-injected for tests; the DAL
 never is. Per-entity `*Dal`/`*Repo` wrapper classes are banned — custom
 queries are methods on the owning service, using the `this.dal.*` proxies
-(`find`, `add`, `update`, `findByPage`, `transaction`, …).
+(`find`, `findAll`, `findByPage`, `transaction`, `entityService`, …).
+`this.dal.<write>` is lint-banned (`dal-member-write`): entity writes go
+through `this.svc` for the own entity or the owning `DomainService` for
+foreign ones, so hooks, actor resolution, audit and marker publish cannot
+be skipped.
 
 ## The EntityService contract
 
@@ -91,6 +98,7 @@ The returned object covers the full `EntityAction` surface:
 | `delete` / `restore` / `purge` | delete / restore / purge | matched by `{uuid, version}`; the row is returned |
 | `duplicate(uuids)` | duplicate | per-item clone → `{uuids, errors}` (partial success) |
 | `bulkDelete` / `bulkRestore` | bulkDelete / bulkRestore | `{uuid, version}`[] via `deleteMany`/`restoreMany` |
+| `bulkUpdate` / `bulkPurge` | — | `BulkUpdateItem[]` (`{uuid, version, …fields}`) via `updateMany`; `{uuid, version}[]` via `hardDeleteMany` — atomic TEMP-TABLE ops, service-level only (no wire action) |
 | `audit(uuid, page, limit)` | audit | paged `{table}_audit` rows with `changed_by_name` |
 | `stream(q)` | export | async generator over the list shape (`stream: true`) |
 
@@ -123,8 +131,12 @@ envelope does exactly this when the write body carries
 of the contract.
 `afterWrite` hooks fire **only outside a tx** — inside one, commit is
 the caller's job, so notifications can't precede the durable write.
-`beforeCreate`/`beforeUpdate` may rewrite the body before it reaches the
-repository.
+`beforeCreate(body, ctx)`/`beforeUpdate(uuid, body, ctx)` receive a
+`WriteHookContext` carrying `{actor}` — the identity the service resolved
+for THIS write (ambient `actor()` or the session it established), the same
+one stamped on audit columns and trail rows. Hooks judge that actor —
+never a second `getSession()` lookup that could diverge from what gets
+persisted — and may rewrite the body before it reaches the repository.
 
 ## Audit wiring
 
@@ -134,6 +146,12 @@ delta engine is in [audit trail](./audit-trail.mdx)). It deliberately
 omits the BE's Redis/NATS `entity-changed` markers — those are gateway
 collaboration infra, not persistence concern; a service that needs them
 wraps the port itself.
+
+`auditPort` accepts the port object **or a factory `(repo) => port`** —
+the factory form resolves against the *active* repository per operation,
+so a write inside `dal.transaction` audits on the tx repository instead of
+escaping to the gateway repo (the BE's `EntityAuditPort` binding uses the
+factory for exactly this).
 
 Auditable entities get the display-name joins (`created_by_name`,
 `updated_by_name`, `deleted_by_name`) **automatically** — `joinsFor()` emits

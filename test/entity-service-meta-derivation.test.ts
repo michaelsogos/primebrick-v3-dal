@@ -2,7 +2,8 @@ import "dotenv/config";
 import "reflect-metadata";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal, PageOutOfRangeError, ValidationError } from "../src/index.js";
+import { PageOutOfRangeError, ValidationError } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import type { EntityMeta } from "@primebrick/core";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { RefSourceEntity } from "./entities/ref-source-entity.js";

@@ -94,9 +94,10 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS dal_test_simple_email_idx ON dal_test_simple (email)`);
 
   // Audit table for dal_test_simple (for AuditLogEntity + tableName override tests)
+  // Shape: uuid PK (uuidv7 default) + legacy entity_id (parent keeps surrogate id).
   await db.query(`
     CREATE TABLE IF NOT EXISTS dal_test_simple_audit (
-      id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid        uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
       entity_id   bigint NOT NULL,
       entity_uuid uuid NOT NULL,
       action      text NOT NULL,
@@ -106,6 +107,12 @@ export async function setupTestSchema(): Promise<void> {
       delta       jsonb
     );
   `);
+  // Post-id-eradication shape on pre-existing dev databases.
+  try {
+    await db.query(`ALTER TABLE dal_test_simple_audit ADD COLUMN IF NOT EXISTS uuid uuid NOT NULL DEFAULT uuidv7()`);
+  } catch {
+    // Column already exists, ignore
+  }
 
   // Test users table (for buildAuditTrailJoins tests)
   await db.query(`

@@ -65,6 +65,7 @@ import {
   CloneFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
+  hasAuditTrail,
   isClonableEntity,
   type EntityClass,
 } from "../meta/entity-decorators.js";
@@ -76,6 +77,7 @@ import {
 import type { AuditPort } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
+import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
 import {
   extJsonStringify,
   isColumnFilterable,
@@ -123,7 +125,24 @@ export interface EntityListResult<TEntity> {
 
 export interface BulkItem {
   uuid: string;
-  version: number;
+  /** Required on auditable entities (repo-enforced optimistic lock);
+   *  absent on non-auditable ones (no version column exists). */
+  version?: number;
+}
+
+export interface BulkUpdateItem {
+  uuid: string;
+  /** Required on auditable entities (repo-enforced optimistic lock);
+   *  absent on non-auditable ones. */
+  version?: number;
+  [field: string]: unknown;
+}
+
+/** Identity the service resolved for THIS write — passed to `beforeCreate`/
+ *  `beforeUpdate` so the hook judges the same actor that gets stamped on
+ *  audit columns and trail rows, never a second ambient lookup. */
+export interface WriteHookContext {
+  actor: string;
 }
 
 export interface DuplicateResult {
@@ -162,9 +181,13 @@ export interface EntityServiceConfig<TEntity> {
    *  `repo` is a hard error, not a fallback. */
   repo?: Repository;
   /** Audit port — defaults to `makeTableAuditPort(repo)` (the standard
-   *  `{table}_audit` writer). Override only for ports with extra side
-   *  effects (e.g. the BE entity-changed marker publisher). */
-  auditPort?: AuditPort;
+   *  `{table}_audit` writer). May be a PORT (bound to one repo) or a
+   *  FACTORY `(repo) => port` resolved per write on the ACTIVE repo —
+   *  the factory form is what keeps audit rows inside the caller's
+   *  transaction when the op runs `svc.create(body, tx)` (a port bound
+   *  at construction would write the audit row on the gateway pool —
+   *  outside the tx — and survive a rollback). */
+  auditPort?: AuditPort | ((repo: Repository) => AuditPort);
   /** Actor supplier for audit stamping (e.g. SDK `requireActor`). */
   actor?: () => string;
   /** Audit trail table override — default `${tableName}_audit`. */
@@ -200,10 +223,12 @@ export interface EntityServiceConfig<TEntity> {
     afterWrite?: (op: EntityAction, entity: TEntity) => void | Promise<void>;
     beforeCreate?: (
       body: Record<string, unknown>,
+      ctx: WriteHookContext,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>;
     beforeUpdate?: (
       uuid: string,
       body: Record<string, unknown>,
+      ctx: WriteHookContext,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   };
 }
@@ -215,15 +240,24 @@ export interface EntityService<TEntity> {
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
-    body: Record<string, unknown> & { version: number },
+    /** `version` is required in the body on auditable entities
+     *  (repo-enforced optimistic lock) and absent on non-auditable ones
+     *  (no version column — passing it would target a missing column). */
+    body: Record<string, unknown> & { version?: number },
     tx?: Repository,
   ): Promise<TEntity>;
-  delete(uuid: string, version: number): Promise<TEntity>;
-  restore(uuid: string, version: number): Promise<TEntity>;
-  purge(uuid: string, version: number): Promise<TEntity>;
+  delete(uuid: string, version?: number): Promise<TEntity>;
+  restore(uuid: string, version?: number): Promise<TEntity>;
+  purge(uuid: string, version?: number): Promise<TEntity>;
   duplicate(uuids: string[]): Promise<DuplicateResult>;
   bulkDelete(items: BulkItem[]): Promise<unknown>;
   bulkRestore(items: BulkItem[]): Promise<unknown>;
+  /** Internal bulk ops — NOT wire actions (no route registers on them):
+   *  atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+   *  (config batch writes, retention purges). The per-entity bulk gating
+   *  lives in the entity's declared actions and is untouched by these. */
+  bulkUpdate(items: BulkUpdateItem[]): Promise<unknown>;
+  bulkPurge(items: BulkItem[]): Promise<unknown>;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
@@ -273,12 +307,12 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
         },
         {
           tableName: `${params.tableName}_audit`,
-          // RETURNING must reference only columns guaranteed on BOTH audit
-          // shapes (post-migration tables dropped `entity_id`) — project id.
-          returning: [Project.field(field(AuditLogEntity, "id"))],
+          // RETURNING projects the audit row's own uuid PK (the surrogate
+          // `id` was eradicated — `entity_id` may be absent post-migration).
+          returning: [Project.field(field(AuditLogEntity, "uuid"))],
         },
       );
-      return inserted.id;
+      return inserted.uuid;
     },
   };
 }
@@ -403,7 +437,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   // Self-register under the derived api name — domain `@Ref` joins
   // resolve their target's class + display template from this map.
   registerEntityService(cfg);
-  const auditPort = cfg.auditPort ?? makeTableAuditPort(repo);
+  // Bind the audit port ONLY for `@AuditTrail` entities — the trail table
+  // exists iff the decorator declares it. Entities with auditable columns
+  // but no trail get `audit: undefined` so writes never attempt an INSERT
+  // into a nonexistent `{table}_audit` (swallowed fire-and-forget error
+  // on every write before this gate). Resolution is PER-WRITE on the
+  // active repo so a factory port lands inside the caller's tx.
+  const resolveAuditPort = (active: Repository): AuditPort | undefined => {
+    if (!hasAuditTrail(cfg.entity)) return undefined;
+    if (typeof cfg.auditPort === "function") return cfg.auditPort(active);
+    return cfg.auditPort ?? makeTableAuditPort(active);
+  };
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
 
@@ -843,7 +887,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     },
 
     async create(body, tx) {
-      const prepared = (await cfg.hooks?.beforeCreate?.(body)) ?? body;
+      const resolvedActor = actor();
+      const prepared = (await cfg.hooks?.beforeCreate?.(body, { actor: resolvedActor })) ?? body;
       const row = await (repoFor(tx) as any).add(
         cfg.entity,
         {
@@ -851,8 +896,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           uuid: (prepared as { uuid?: string }).uuid ?? newUuidV7(),
         },
         {
-          actor: actor(),
-          audit: auditPort,
+          actor: resolvedActor,
+          audit: resolveAuditPort(repoFor(tx)),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -862,13 +907,14 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     },
 
     async update(uuid, body, tx) {
-      const prepared = (await cfg.hooks?.beforeUpdate?.(uuid, body)) ?? body;
+      const resolvedActor = actor();
+      const prepared = (await cfg.hooks?.beforeUpdate?.(uuid, body, { actor: resolvedActor })) ?? body;
       const row = await (repoFor(tx) as any).update(
         cfg.entity,
         { ...(prepared as Record<string, unknown>), uuid },
         {
-          actor: actor(),
-          audit: auditPort,
+          actor: resolvedActor,
+          audit: resolveAuditPort(repoFor(tx)),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -880,7 +926,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async delete(uuid, version) {
       const row = await (repo as any).delete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -892,7 +938,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async restore(uuid, version) {
       const row = await (repo as any).restore(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -904,7 +950,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async purge(uuid, version) {
       const row = await (repo as any).hardDelete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -928,7 +974,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         try {
           const cloned = (await (repo as any).clone(cfg.entity, uuid, {
             actor: actor(),
-            audit: auditPort,
+            audit: resolveAuditPort(repo),
           })) as TEntity;
           results.push((cloned as unknown as { uuid: string }).uuid);
         } catch (e) {
@@ -943,7 +989,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkDelete(items) {
       return (repo as any).deleteMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },
@@ -951,7 +997,23 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkRestore(items) {
       return (repo as any).restoreMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
+        matchBy: "uuid" as never,
+      });
+    },
+
+    async bulkUpdate(items) {
+      return (repo as any).updateMany(cfg.entity, items as never, {
+        actor: actor(),
+        audit: resolveAuditPort(repo),
+        matchBy: "uuid" as never,
+      });
+    },
+
+    async bulkPurge(items) {
+      return (repo as any).hardDeleteMany(cfg.entity, items as never, {
+        actor: actor(),
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },
@@ -963,11 +1025,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         page: coercePositiveInt(page, "page", 1),
         limit: coercePageSize(limit, "limit", 25),
       });
+      const enrichedDeltas = await enrichAuditDeltaRefs(
+        repo,
+        cfg.entity,
+        r.data.map((row) => row.delta),
+      );
       return {
         ...r,
-        data: r.data.map((row) => ({
+        data: r.data.map((row, i) => ({
           ...row,
           changed_by_name: row.changed_by_display_name ?? null,
+          delta: enrichedDeltas[i] ?? row.delta,
         })),
       };
     },

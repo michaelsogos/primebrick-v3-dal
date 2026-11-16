@@ -239,11 +239,11 @@ export type UpsertOptions = {
 /**
  * Audit port — consumers inject their own audit writer.
  * The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
- * Returns the inserted audit row id (used as `audit_log_id` in collaboration
+ * Returns the inserted audit row key (used as `audit_log_id` in collaboration
  * markers); ports that do not persist a row may return `0n`.
  */
 export interface AuditPort {
-  writeAudit(params: AuditParams): Promise<bigint>;
+  writeAudit(params: AuditParams): Promise<bigint | string>;
 }
 
 /** Parameters passed to `AuditPort.writeAudit`. */

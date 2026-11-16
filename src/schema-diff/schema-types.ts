@@ -70,14 +70,23 @@ export type SchemaTableMeta = {
   entityClassName?: string;
   /** Entity: @AuditTrail() decorator present */
   isAuditable?: boolean;
-  /** Entity: resolved @PartitionField declaration (pg_partman RANGE parent) */
+  /** Entity: resolved @Partition declaration (pg_partman RANGE parent) —
+   *  slicing only; expiry lives on `retention`. */
   partition?: {
     column: string;
     interval: string;
-    retention?: string;
     keepTable: boolean;
     premake?: number;
   };
+  /** Entity: resolved @Retention declaration (expiry policy — partition
+   *  drop on partitioned tables, row sweep on plain tables). */
+  retention?: {
+    column: string;
+    duration: string;
+  };
+  /** `@AuditTrail({retention})` — audit-table retention override
+   *  (default `"12 months"` applied at emission). */
+  auditRetention?: string;
   /** Entity: resolved @PartitionChildOf declaration */
   partitionChildOf?: {
     parentTable: string;

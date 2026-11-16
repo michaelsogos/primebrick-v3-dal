@@ -20,7 +20,7 @@ Maps to any audit table (customers_audit, organizations_audit, user_profiles_aud
 via the `tableName` override option on finders/writers.
 
 All audit tables share the same column structure:
-  id          bigint identity PK
+  uuid        uuid    (row PK — uuidv7() DEFAULT, DDL PK is (uuid, changed_at))
   entity_id   bigint (the audited entity's legacy surrogate ID — nullable;
                 present only on pre-migration `*_audit` tables; dropped as
                 entities migrate to uuid PKs)
@@ -31,11 +31,15 @@ All audit tables share the same column structure:
   version     integer
   delta       jsonb   (field-level old/new diff)
 
+The surrogate bigint `id` was eradicated — audit rows carry the same
+uuid-PK doctrine as every other table (the composite DDL PK includes the
+RANGE partition column `changed_at`, per the partitioned-PK rule).
+
 This entity has NO
 
 | Property | Type | Description |
 |----------|------|-------------|
-| id | `bigint` |  |
+| uuid | `string` |  |
 | entity_id | `bigint \| null` |  |
 | entity_uuid | `string` |  |
 | action | `string` |  |
@@ -108,252 +112,6 @@ The SDK's IConfigEntity interface mirrors the field names for port-level use.
 | version | `number` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
-
-### `Dal`
-
-| Property | Type | Description |
-|----------|------|-------------|
-| config | `Required<Pick<DalConfig, "max" \| "connectionString" \| "schemas" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
-
-#### `Dal(config)`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| config | `DalConfig` |  |
-
-#### `Dal.getPool(): Pool`
-
-The underlying pg.Pool. Exposed for snapshot/migration tooling that needs raw access.
-
-#### `Dal.close(timeoutMs): Promise<void>`
-
-Graceful shutdown — drains the pool with a timeout deadline.
-
-- Re-entrant: concurrent calls return immediately (the first call wins).
-- Timeout: if pool.end() doesn't complete within timeoutMs, the promise
-  resolves anyway (the pool is left to be reaped by the OS/TCP stack).
-- Error containment: if pool.end() throws, the error is logged and swallowed.
-- Does NOT install process.on() handlers — that is a consumer-side concern.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| timeoutMs | `number` | Maximum time to wait for pool.end() to complete. Default: 10000. |
-
-#### `Dal.findById(entity, id, options): Promise<TResult \| null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| id | `string \| bigint` |  |
-| options | `FindByIdOptions` |  |
-
-#### `Dal.findByUUID(entity, uuid, options): Promise<TResult \| null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| uuid | `string` |  |
-| options | `FindByUUIDOptions` |  |
-
-#### `Dal.find(entity, fields, options): Promise<TResult \| null>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| fields | `FieldProjector[] \| null` |  |
-| options | `FindOptions` |  |
-
-#### `Dal.findAll(entity, fields, options): Promise<AsyncIterable<TResult, any, any> \| TResult[]>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| fields | `FieldProjector[] \| null` |  |
-| options | `FindOptions` |  |
-
-#### `Dal.findByPage(entity, page, recordsPerPage, fields, options): Promise<PaginatedEntity<TResult>>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| page | `number` |  |
-| recordsPerPage | `number` |  |
-| fields | `FieldProjector[] \| null` |  |
-| options | `FindOptions` |  |
-
-#### `Dal.count(entity): Promise<bigint>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-
-#### `Dal.vectorSearch(entity, vectorField, queryVector, options): Promise<TResult & { similarity: number; distance: number }[]>`
-
-pgvector nearest-neighbour search — see `Repository.vectorSearch`.
-`ORDER BY <vectorField> <op> $n::vector LIMIT <topK>` with the query
-vector bound as a parameter (HNSW/ivfflat-safe). `similarity` score for
-cosine (`<=>`), raw `distance` for other operators.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| vectorField | `FieldRef<TEntity, keyof TEntity & string>` |  |
-| queryVector | `string \| number[]` |  |
-| options | `VectorSearchOptions<TEntity>` |  |
-
-#### `Dal.add(entity, row, options): Promise<TResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| row | `Partial<Record<keyof TEntity & string, unknown>>` |  |
-| options | `AuditableWriteOptions<TEntity>` |  |
-
-#### `Dal.update(entity, updates, options): Promise<TResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<keyof TEntity & string, unknown>>` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
-
-#### `Dal.delete(entity, match, options): Promise<TResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
-
-#### `Dal.restore(entity, match, options): Promise<TResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
-
-#### `Dal.hardDelete(entity, match, options): Promise<TResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| match | `Partial<Record<keyof TEntity & string, unknown>>` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
-
-#### `Dal.addMany(entity, rows, options): Promise<BulkResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| rows | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & BulkOptions` |  |
-
-#### `Dal.hardDeleteMany(entity, matches, options): Promise<BulkResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
-
-#### `Dal.restoreMany(entity, matches, options): Promise<BulkResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
-
-#### `Dal.updateMany(entity, updates, options): Promise<BulkResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| updates | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity> & BulkOptions` |  |
-
-#### `Dal.deleteMany(entity, matches, options): Promise<BulkResult>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass & () => TEntity` |  |
-| matches | `Partial<Record<keyof TEntity & string, unknown>>[]` |  |
-| options | `WriteOptions<Record<string, unknown>> & { actor: string } & MatchByOptions<TEntity>` |  |
-
-#### `Dal.entityService(cfg): EntityService<TEntity>`
-
-The public path to the generic entity-service worker. The gateway
-injects its own (schema-domain-guarded, pool-scoped) Repository — the
-consumer never sees it. `cfg.repo` exists only as a decorator seam
-(e.g. BE `withCache`): leave it unset for the standard wiring.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| cfg | `EntityServiceConfig<TEntity>` |  |
-
-#### `Dal.tableAuditPort(): AuditPort`
-
-The standard `{table}_audit` writer port, bound to the gateway
-Repository. Use for adapters that need an AuditPort without exposing
-the Repository itself.
-
-#### `Dal.serverVersion(): Promise<{ server_version: string; version: string }>`
-
-Server version + connectivity probe in one call. A successful response
-already proves the connection is alive — there is deliberately no
-separate `ping()` (a dedicated `SELECT 1` would be a redundant round-trip).
-Throws on connectivity/timeout failure.
-
-#### `Dal.transaction(fn, options): Promise<TResult>`
-
-Atomic multi-statement work — `BEGIN`/`COMMIT`/`ROLLBACK` around a
-tx-scoped Repository. Use for cascades, multi-write units, and any
-sequence that must commit or fail as one. Post-commit side effects
-(cache invalidation, events) belong AFTER this resolves, never inside.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| fn | `(txRepo: Repository) => Promise<TResult>` |  |
-| options | `TimeoutOverrideOptions` |  |
-
-#### `Dal.beginTransaction(options): DeferredTransaction`
-
-Deferred fluent transaction — buffer repository ops (`tx.add`, `tx.update`,
-`tx.find`, …) without executing, then `tx.commit()` compiles and runs them
-as ONE data-modifying CTE statement. Atomicity is PostgreSQL's
-single-statement guarantee — no BEGIN/COMMIT/ROLLBACK and no rollback
-path exist in this mode. Inter-op values flow via `Deferred.ref()`;
-conditional TS logic on mid-flow results stays in `transaction(fn)`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| options | `TimeoutOverrideOptions` |  |
-
-#### `Dal.truncate(entity, options): Promise<void>`
-
-Physical table reset — delegates to `Repository.truncate` (entity-resolved,
-schema-domain guarded). For auditable tables prefer soft-delete; TRUNCATE
-is for caches, KB stores, and test teardown.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entity | `EntityClass` |  |
-| options | `{ restartIdentity: boolean; cascade: boolean }` |  |
-
-#### `Dal.partitionMaintenance(entities, options): Promise<PartitionMaintenanceReport>`
-
-pg_partman retention executor — metadata-driven, identical for every
-service. Purges `@PartitionChildOf` children of expired parents (before
-the partition drop), removes expired strays from the default partition,
-then runs `partman.run_maintenance_proc()`. Called by the service's
-`jobs.due.system.<svc>.partition-maintenance` consumer.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| entities | `readonly EntityClass[]` | the service's entity registry (only `@PartitionField`
-  entities participate; everything else is ignored) |
-| options | `TimeoutOverrideOptions` |  |
 
 ### `DalError`
 
@@ -696,6 +454,23 @@ is available here.
 | items | `BulkItem[]` |  |
 
 #### `DomainService.bulkRestore(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `DomainService.bulkUpdate(items): Promise<unknown>`
+
+Internal bulk ops — NOT wire actions (no route registers on them):
+ atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+ (config batch writes, retention purges). The per-entity bulk gating
+ lives in the entity's declared actions and is untouched by these.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkUpdateItem[]` |  |
+
+#### `DomainService.bulkPurge(items): Promise<unknown>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1314,14 +1089,14 @@ Declarative aggregate rollup projected into list rows.
 
 Audit port — consumers inject their own audit writer.
 The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
-Returns the inserted audit row id (used as `audit_log_id` in collaboration
+Returns the inserted audit row key (used as `audit_log_id` in collaboration
 markers); ports that do not persist a row may return `0n`.
 
 ### `AuditRow`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| id | `bigint` |  |
+| uuid | `string` |  |
 | entity_uuid | `string` |  |
 | action | `string` |  |
 | changed_at | `string` |  |
@@ -1355,7 +1130,16 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+ absent on non-auditable ones (no version column exists). |
+
+### `BulkUpdateItem`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| uuid | `string` |  |
+| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+ absent on non-auditable ones. |
 
 ### `CheckEntityFieldsOptions`
 
@@ -1372,6 +1156,12 @@ Collaboration fragment injected by `assembleMeta` at serve time.
 |-------|------|-------------|
 | enabled | `boolean` |  |
 | expose_editing_value | `boolean` |  |
+
+### `Dal`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| config | `Required<Pick<DalConfig, "max" \| "connectionString" \| "schemas" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
 
 ### `DalConfig`
 
@@ -1468,7 +1258,9 @@ most recent change without scanning the audit log.
 | entity_type | `string` |  |
 | entity_uuid | `string` |  |
 | version | `number` | The new `version` after the save. |
-| audit_log_id | `number` | The `audit_log_id` of the change (for the GET audit/:auditLogId diff endpoint). |
+| audit_log_id | `string \| number` | The audit row key of the change — bigint for legacy surrogate-id
+ audit tables, uuid string for post-eradication `*_audit` rows
+ (PK `(uuid, changed_at)`). |
 | changed_by | `string` | user_uuid of the writer. |
 | changed_by_session | `string` | Tab session of the writer — stamped from `AuditParams.sessionId`, which
 the FE sends as `X-Client-Session` on writes. A save is "self" (silently
@@ -1567,9 +1359,13 @@ The contract every entity service must satisfy — enforced on the router.
  `makeEntityService` (tests, decorators such as BE `withCache`) must
  pass one explicitly. Consumer configs MUST NOT set it — a missing
  `repo` is a hard error, not a fallback. |
-| auditPort | `AuditPort` | Audit port — defaults to `makeTableAuditPort(repo)` (the standard
- `{table}_audit` writer). Override only for ports with extra side
- effects (e.g. the BE entity-changed marker publisher). |
+| auditPort | `AuditPort \| (repo: Repository) => AuditPort` | Audit port — defaults to `makeTableAuditPort(repo)` (the standard
+ `{table}_audit` writer). May be a PORT (bound to one repo) or a
+ FACTORY `(repo) => port` resolved per write on the ACTIVE repo —
+ the factory form is what keeps audit rows inside the caller's
+ transaction when the op runs `svc.create(body, tx)` (a port bound
+ at construction would write the audit row on the gateway pool —
+ outside the tx — and survive a rollback). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
 | display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
@@ -1578,7 +1374,7 @@ The contract every entity service must satisfy — enforced on the router.
  string the FE uses for this entity's titles. Absent → self-join
  skipped, the ref cell renders the raw uid (COALESCE fallback). |
 | list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
-| hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
+| hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
 
@@ -1678,6 +1474,7 @@ One declared key of an `x_map_keys` declaration (e.g. a template's
 | Field | Type | Description |
 |-------|------|-------------|
 | parents | `PartitionParentReport[]` |  |
+| sweeps | `RetentionSweepReport[]` | `@Retention` sweeps on non-partitioned tables. |
 | maintenance_ran | `boolean` | Whether `partman.run_maintenance_proc()` ran. |
 
 ### `PartitionParentReport`
@@ -1834,6 +1631,15 @@ index — construction-derived, never authored).
 | type_field | `string` |  |
 | hierarchical | `boolean` |  |
 
+### `RetentionSweepReport`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| table | `string` | `"schema"."table"` swept. |
+| column | `string` |  |
+| retention | `string` |  |
+| rows_deleted | `number` |  |
+
 ### `RowCustomAction`
 
 UI configuration for a non-standard row CTA (route-backed bare op).
@@ -1892,6 +1698,16 @@ Per-operation timeout override for dedicated-client work
 | timeoutMs | `number` | Override statement_timeout (ms). Transaction-scoped for `transaction`
  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
  session-default restore for `partitionMaintenance`. |
+
+### `WriteHookContext`
+
+Identity the service resolved for THIS write — passed to `beforeCreate`/
+ `beforeUpdate` so the hook judges the same actor that gets stamped on
+ audit columns and trail rows, never a second ambient lookup.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| actor | `string` |  |
 
 ## Types & Enums
 
@@ -2563,7 +2379,13 @@ Options for `@PartitionChildOf()` — declares membership in a partitioned
 
 ### `PartitionFieldOptions`
 
-Options for `@PartitionField()` — the RANGE partition key declaration.
+**Type:** `PartitionOptions`
+
+### `PartitionOptions`
+
+Options for `@Partition()` — the RANGE partition key declaration.
+ Partitioning is SLICING only — retention is the orthogonal
+ `@Retention()` declaration on the same column (or a sweep column).
 
 ### `PatchManifest`
 
@@ -2698,6 +2520,13 @@ declaring the vendor specifiers/versions it was compiled against.
 ### `RoundingMode`
 
 **Type:** `"UP" \| "DOWN" \| "CEILING" \| "FLOOR" \| "HALF_UP" \| "HALF_DOWN" \| "HALF_EVEN"`
+
+### `ScheduleSpecError`
+
+`schedule_spec` rejection reasons — `"below_min_interval"` gets its own
+ issue key so the form can say WHY, not just THAT it failed.
+
+**Type:** `"invalid" \| "below_min_interval"`
 
 ### `SchemaColumnMeta`
 
@@ -3100,6 +2929,16 @@ treated from the merged record the caller passes.
 
 **Type:** `"MANIFEST.json"`
 
+### `MIN_SCHEDULE_INTERVAL_MS`
+
+The floor every recurring spec must respect: one minute. The 5-field
+cron grammar is already minute-floored by design (`* * * * *` is its
+tightest expression), so `@every` — the only grammar able to go
+sub-minute — must not undercut it: a job firing every few seconds is a
+design error and would hammer the host. `@at` is a one-shot and exempt.
+
+**Type:** `60000`
+
 ### `NO_SPACE_RE`
 
 `no_space` — any non-whitespace token (UA prefixes, client names).
@@ -3116,6 +2955,10 @@ PostgreSQL `NUMERIC_MIN_SIG_DIGITS` (16). See `pgDivScale`.
 ### `ONE`
 
 **Type:** `Decimal`
+
+### `PartitionField`
+
+**Type:** `(opts: PartitionOptions) => PropertyDecorator`
 
 ### `PATCH_REGISTRY_TABLE`
 
@@ -3503,9 +3346,16 @@ Marks a field as auditable (created_at, created_by, updated_at, updated_by, vers
 |-----------|------|-------------|
 | what | `AuditableFieldType` |  |
 
-### `AuditTrail(): ClassDecorator`
+### `AuditTrail(options): ClassDecorator`
 
 Marks an entity as having an audit trail table.
+ `options.retention` overrides the audit-table retention window —
+ default `"12 months"` (audit is a bounded operational cost, not an
+ archive); `partman.part_config` remains the runtime source of truth.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `{ retention: string }` |  |
 
 ### `AuditTrailEntity(options): ClassDecorator`
 
@@ -3795,7 +3645,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionFieldOptions }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -3993,6 +3843,20 @@ Effective storage type in PostgreSQL (explicit `pgType` wins over inference).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | h | `ColumnPgPersistenceHints` |  |
+
+### `enrichAuditDeltaRefs(repo, entity, deltas): Promise<Record<string, unknown>[]>`
+
+Enrich every delta row's ref-valued changes with `old_display_name` /
+`new_display_name`, batched per audit page. `entity` is the audited
+row's entity class — its column meta carries the `@Ref` targets.
+Returns the same rows (deltas replaced in place via spread copy —
+caller owns the mapping).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| repo | `DeltaQueryable` |  |
+| entity | `EntityClass` |  |
+| deltas | `Record<string, unknown>[]` |  |
 
 ### `Entity(tableName, schema): (ctor: T) => T`
 
@@ -4463,10 +4327,6 @@ Type guard — RFC 4122 layout AND version 7 + RFC variant.
 
 ### `isValidScheduleSpec(raw): boolean`
 
-`schedule_spec` grammar: `@every <n>[smhd]`, `@at <RFC3339>` or a
- 5-field cron — the NATS `Nats-Schedule` header contract. Pure; the UI
- interpreter (`parseScheduleSpec`/`nextScheduleRuns`) keeps croner.
-
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | raw | `unknown` |  |
@@ -4595,6 +4455,18 @@ identically — validation of existence is the remote build's job.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+### `makePartitionMaintenanceJob(entities): { needed: boolean; run: () => Promise<PartitionMaintenanceReport>; i18nNs: () => string }`
+
+Partition-maintenance job factory — the ONE wiring a service passes to
+`createMicroservice({ partitionMaintenance })`. `needed` is the metadata
+gate (`needsPartitionMaintenance`: any `@Partition` / `@AuditTrail` /
+`@Retention` surface); `run` resolves the DAL singleton lazily at fire
+time, so the option can be built before `initDal()` runs.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `readonly EntityClass[]` |  |
+
 ### `makeTableAuditPort(repo): AuditPort`
 
 `makeTableAuditPort` — writes audit log rows to `{tableName}_audit` via the
@@ -4644,6 +4516,18 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 |-----------|------|-------------|
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
+
+### `needsPartitionMaintenance(entities): boolean`
+
+Boot-time gate for the `partition_maintenance` system job — `true` when
+the registry contains ANY retention-bearing surface: a `@Partition`
+parent, an `@AuditTrail()` entity (its `{table}_audit` is a maintained
+parent), or a `@Retention` sweep. `false` = nothing to maintain → the
+SDK mounts no callable and materializes no trigger.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entities | `readonly EntityClass[]` |  |
 
 ### `neg(d): Decimal`
 
@@ -4752,6 +4636,19 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 |-----------|------|-------------|
 | raw | `string` |  |
 
+### `Partition(opts): PropertyDecorator`
+
+Marks a column as the RANGE partition key of the table (pg_partman,
+monthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and
+date/timestamptz-typed; every unique group and the primary key emitted in
+DDL must include it (PostgreSQL requirement) — `getEntityPersistenceMeta`
+validates this and throws otherwise, so a partitioned entity can never
+produce an invalid table definition.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| opts | `PartitionOptions` |  |
+
 ### `PartitionChildOf(opts): ClassDecorator`
 
 Declares this entity a logical child of a `@PartitionField`-partitioned
@@ -4765,19 +4662,6 @@ partition-maintenance purge. Entities that merely REFERENCE a parent
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | opts | `PartitionChildOfOptions` |  |
-
-### `PartitionField(opts): PropertyDecorator`
-
-Marks a column as the RANGE partition key of the table (pg_partman,
-monthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and
-date/timestamptz-typed; every unique group and the primary key emitted in
-DDL must include it (PostgreSQL requirement) — `getEntityPersistenceMeta`
-validates this and throws otherwise, so a partitioned entity can never
-produce an invalid table definition.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| opts | `PartitionFieldOptions` |  |
 
 ### `patchNameFromFilename(filename): string`
 
@@ -4826,13 +4710,35 @@ Conformance of a `payload_map` document against the callable's emitted
 | map | `Record<string, unknown> \| PayloadMap \| null \| undefined` |  |
 | callableSchema | `Record<string, unknown>` |  |
 | sourceSchema | `Record<string, unknown>` |  |
-| mapKeySchemas | `Record<string, Record<string, Record<string, unknown>>>` | Resolved `x_map_keys` declarations per field — `{field: {key:
- schema}}` — the catalog-row contract (e.g. a template's
- `variables`). Optional: the wire gate can't resolve catalog rows
- synchronously and skips this layer; the design-time checker passes
- the resolved set so a `const` typed against a declared key schema
- (`"hhhhh"` on `amount:"number"`) fails `invalid_type` instead of
- passing on the record's empty `additionalProperties`. |
+| mapKeySchemas | `Record<string, Record<string, MapKeySchemaOrDecl>>` | Resolved `x_map_keys` declarations per field — `{field: {key:
+ schema | MapKeyDecl}}` — the catalog-row contract (e.g. a
+ template's `variables`). Optional: callers that can't resolve
+ catalog rows skip this layer. A bare schema only type-checks the
+ mapped value; a `MapKeyDecl` carrying `required` also demands the
+ key be PRESENT in the `kind:"map"` entries / `const` object — the
+ same gate the editor applies on save. |
+
+### `payloadPassthroughConformance(callableSchema, sourceSchema): FieldIssue[]`
+
+Passthrough coverage — an EMPTY `payload_map` forwards the event payload
+verbatim (`applyPayloadMap` returns it unchanged; a schedule-only fire
+dispatches `{}`). Each callable `required` prop is deliverable iff it is
+`x_inject`/`x_semantic`-satisfied at fire time, or the source event's
+declared schema guarantees it (required AND `pathCompatible`).
+
+`sourceSchema === undefined` → schema-less emit: supply is not
+                               DEMONSTRABLE — same rejection as a
+                               proven-uncovered emit. An explicit map
+                               (unchecked path entries) stays the
+                               escape hatch for dynamic sources.
+`sourceSchema === null`      → no source event (schedule-only): the
+                               passthrough payload is `{}` — every
+                               uncovered required is undeliverable.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| callableSchema | `Record<string, unknown>` |  |
+| sourceSchema | `Record<string, unknown> \| null \| undefined` |  |
 
 ### `pgDivScale(a, b): number`
 
@@ -5052,6 +4958,22 @@ single function so the plane stays deterministic.
 |-----------|------|-------------|
 | specifier | `string` |  |
 
+### `Retention(duration): PropertyDecorator`
+
+Declares how long rows live — the EXPIRY policy, orthogonal to
+`@Partition` (slicing). Property decorator on the expiry column:
+- on a `@Partition`-ed entity it MUST sit on the partition column —
+  retention drops aged partitions (meta validation throws otherwise);
+- on a non-partitioned entity it drives a row-level sweep
+  (`DELETE … WHERE col < now() - duration`) in the same maintenance run.
+`@AuditTrail` entities carry their own audit retention (`12 months`
+default, `AuditTrail({retention})` override) — `@Retention` targets the
+DOMAIN table, never the audit table.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| duration | `string` |  |
+
 ### `retryFailedPatches(pool, schema, actor): Promise<number>`
 
 failed → pending: next runMigrations retries them (and past them, in order).
@@ -5111,6 +5033,25 @@ Drop unknown keys and fall back to defaults when nothing left.
 |-----------|------|-------------|
 | visibleKeys | `string[]` |  |
 | columns | `MetaColumn[]` |  |
+
+### `scheduleEveryMs(spec): number \| undefined`
+
+`@every` interval in ms, or undefined when `spec` is not an `@every` spec.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `string` |  |
+
+### `scheduleSpecError(raw): ScheduleSpecError \| null`
+
+`schedule_spec` grammar: `@every <n>[smhd]` (≥ MIN_SCHEDULE_INTERVAL_MS),
+`@at <RFC3339>` or a 5-field cron — the NATS `Nats-Schedule` header
+contract. Pure; the UI interpreter (`parseScheduleSpec`/`nextScheduleRuns`)
+keeps croner.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `unknown` |  |
 
 ### `schemaHonestyIssue(field, prop): string \| null`
 
