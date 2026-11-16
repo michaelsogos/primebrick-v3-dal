@@ -294,6 +294,7 @@ export {
   type AuditPageResult,
   type AuditRow,
 } from "./entity/audit-query.js";
+export { enrichAuditDeltaRefs } from "./entity/audit-delta-refs.js";
 
 // ── Guarded column types ─────────────────────────────────────────────────────
 // Entity-annotation → storage type contract. `UUID`/`ISODate`/`ISOTime` are

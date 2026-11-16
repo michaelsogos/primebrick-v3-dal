@@ -2699,6 +2699,13 @@ declaring the vendor specifiers/versions it was compiled against.
 
 **Type:** `"UP" \| "DOWN" \| "CEILING" \| "FLOOR" \| "HALF_UP" \| "HALF_DOWN" \| "HALF_EVEN"`
 
+### `ScheduleSpecError`
+
+`schedule_spec` rejection reasons — `"below_min_interval"` gets its own
+ issue key so the form can say WHY, not just THAT it failed.
+
+**Type:** `"invalid" \| "below_min_interval"`
+
 ### `SchemaColumnMeta`
 
 Shared shapes for entity vs database schema snapshots (used by compare + heuristics).
@@ -3099,6 +3106,16 @@ treated from the merged record the caller passes.
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
+
+### `MIN_SCHEDULE_INTERVAL_MS`
+
+The floor every recurring spec must respect: one minute. The 5-field
+cron grammar is already minute-floored by design (`* * * * *` is its
+tightest expression), so `@every` — the only grammar able to go
+sub-minute — must not undercut it: a job firing every few seconds is a
+design error and would hammer the host. `@at` is a one-shot and exempt.
+
+**Type:** `60000`
 
 ### `NO_SPACE_RE`
 
@@ -3994,6 +4011,20 @@ Effective storage type in PostgreSQL (explicit `pgType` wins over inference).
 |-----------|------|-------------|
 | h | `ColumnPgPersistenceHints` |  |
 
+### `enrichAuditDeltaRefs(repo, entity, deltas): Promise<Record<string, unknown>[]>`
+
+Enrich every delta row's ref-valued changes with `old_display_name` /
+`new_display_name`, batched per audit page. `entity` is the audited
+row's entity class — its column meta carries the `@Ref` targets.
+Returns the same rows (deltas replaced in place via spread copy —
+caller owns the mapping).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| repo | `DeltaQueryable` |  |
+| entity | `EntityClass` |  |
+| deltas | `Record<string, unknown>[]` |  |
+
 ### `Entity(tableName, schema): (ctor: T) => T`
 
 Maps the class to a DB table. Optional argument overrides the table name;
@@ -4463,10 +4494,6 @@ Type guard — RFC 4122 layout AND version 7 + RFC variant.
 
 ### `isValidScheduleSpec(raw): boolean`
 
-`schedule_spec` grammar: `@every <n>[smhd]`, `@at <RFC3339>` or a
- 5-field cron — the NATS `Nats-Schedule` header contract. Pure; the UI
- interpreter (`parseScheduleSpec`/`nextScheduleRuns`) keeps croner.
-
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | raw | `unknown` |  |
@@ -4826,13 +4853,35 @@ Conformance of a `payload_map` document against the callable's emitted
 | map | `Record<string, unknown> \| PayloadMap \| null \| undefined` |  |
 | callableSchema | `Record<string, unknown>` |  |
 | sourceSchema | `Record<string, unknown>` |  |
-| mapKeySchemas | `Record<string, Record<string, Record<string, unknown>>>` | Resolved `x_map_keys` declarations per field — `{field: {key:
- schema}}` — the catalog-row contract (e.g. a template's
- `variables`). Optional: the wire gate can't resolve catalog rows
- synchronously and skips this layer; the design-time checker passes
- the resolved set so a `const` typed against a declared key schema
- (`"hhhhh"` on `amount:"number"`) fails `invalid_type` instead of
- passing on the record's empty `additionalProperties`. |
+| mapKeySchemas | `Record<string, Record<string, MapKeySchemaOrDecl>>` | Resolved `x_map_keys` declarations per field — `{field: {key:
+ schema | MapKeyDecl}}` — the catalog-row contract (e.g. a
+ template's `variables`). Optional: callers that can't resolve
+ catalog rows skip this layer. A bare schema only type-checks the
+ mapped value; a `MapKeyDecl` carrying `required` also demands the
+ key be PRESENT in the `kind:"map"` entries / `const` object — the
+ same gate the editor applies on save. |
+
+### `payloadPassthroughConformance(callableSchema, sourceSchema): FieldIssue[]`
+
+Passthrough coverage — an EMPTY `payload_map` forwards the event payload
+verbatim (`applyPayloadMap` returns it unchanged; a schedule-only fire
+dispatches `{}`). Each callable `required` prop is deliverable iff it is
+`x_inject`/`x_semantic`-satisfied at fire time, or the source event's
+declared schema guarantees it (required AND `pathCompatible`).
+
+`sourceSchema === undefined` → schema-less emit: supply is not
+                               DEMONSTRABLE — same rejection as a
+                               proven-uncovered emit. An explicit map
+                               (unchecked path entries) stays the
+                               escape hatch for dynamic sources.
+`sourceSchema === null`      → no source event (schedule-only): the
+                               passthrough payload is `{}` — every
+                               uncovered required is undeliverable.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| callableSchema | `Record<string, unknown>` |  |
+| sourceSchema | `Record<string, unknown> \| null \| undefined` |  |
 
 ### `pgDivScale(a, b): number`
 
@@ -5111,6 +5160,25 @@ Drop unknown keys and fall back to defaults when nothing left.
 |-----------|------|-------------|
 | visibleKeys | `string[]` |  |
 | columns | `MetaColumn[]` |  |
+
+### `scheduleEveryMs(spec): number \| undefined`
+
+`@every` interval in ms, or undefined when `spec` is not an `@every` spec.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `string` |  |
+
+### `scheduleSpecError(raw): ScheduleSpecError \| null`
+
+`schedule_spec` grammar: `@every <n>[smhd]` (≥ MIN_SCHEDULE_INTERVAL_MS),
+`@at <RFC3339>` or a 5-field cron — the NATS `Nats-Schedule` header
+contract. Pure; the UI interpreter (`parseScheduleSpec`/`nextScheduleRuns`)
+keeps croner.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `unknown` |  |
 
 ### `schemaHonestyIssue(field, prop): string \| null`
 

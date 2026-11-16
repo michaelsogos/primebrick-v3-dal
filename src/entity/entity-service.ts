@@ -76,6 +76,7 @@ import {
 import type { AuditPort } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
+import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
 import {
   extJsonStringify,
   isColumnFilterable,
@@ -963,11 +964,17 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         page: coercePositiveInt(page, "page", 1),
         limit: coercePageSize(limit, "limit", 25),
       });
+      const enrichedDeltas = await enrichAuditDeltaRefs(
+        repo,
+        cfg.entity,
+        r.data.map((row) => row.delta),
+      );
       return {
         ...r,
-        data: r.data.map((row) => ({
+        data: r.data.map((row, i) => ({
           ...row,
           changed_by_name: row.changed_by_display_name ?? null,
+          delta: enrichedDeltas[i] ?? row.delta,
         })),
       };
     },
