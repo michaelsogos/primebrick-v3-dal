@@ -117598,7 +117598,7 @@
 		}
 	],
 	"packageName": "@primebrick/dal-pg",
-	"packageVersion": "3.6.1",
+	"packageVersion": "3.6.2",
 	"symbolIdMap": {
 		"0": {
 			"packageName": "@primebrick/dal-pg",
