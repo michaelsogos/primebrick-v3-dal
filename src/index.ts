@@ -287,6 +287,8 @@ export {
   type EntityListResult,
   type EntityAction,
   type BulkItem,
+  type BulkUpdateItem,
+  type WriteHookContext,
   type DuplicateResult,
   type AggregateDecl,
 } from "./entity/entity-service.js";

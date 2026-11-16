@@ -1380,6 +1380,13 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | uuid | `string` |  |
 | version | `number` |  |
 
+### `BulkUpdateItem`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
 ### `CheckEntityFieldsOptions`
 
 | Field | Type | Description |
@@ -1931,6 +1938,16 @@ Per-operation timeout override for dedicated-client work
 | timeoutMs | `number` | Override statement_timeout (ms). Transaction-scoped for `transaction`
  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
  session-default restore for `partitionMaintenance`. |
+
+### `WriteHookContext`
+
+Identity the service resolved for THIS write — passed to `beforeCreate`/
+ `beforeUpdate` so the hook judges the same actor that gets stamped on
+ audit columns and trail rows, never a second ambient lookup.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| actor | `string` |  |
 
 ## Types & Enums
 
