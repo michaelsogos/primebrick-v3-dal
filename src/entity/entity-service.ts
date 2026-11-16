@@ -177,9 +177,13 @@ export interface EntityServiceConfig<TEntity> {
    *  `repo` is a hard error, not a fallback. */
   repo?: Repository;
   /** Audit port — defaults to `makeTableAuditPort(repo)` (the standard
-   *  `{table}_audit` writer). Override only for ports with extra side
-   *  effects (e.g. the BE entity-changed marker publisher). */
-  auditPort?: AuditPort;
+   *  `{table}_audit` writer). May be a PORT (bound to one repo) or a
+   *  FACTORY `(repo) => port` resolved per write on the ACTIVE repo —
+   *  the factory form is what keeps audit rows inside the caller's
+   *  transaction when the op runs `svc.create(body, tx)` (a port bound
+   *  at construction would write the audit row on the gateway pool —
+   *  outside the tx — and survive a rollback). */
+  auditPort?: AuditPort | ((repo: Repository) => AuditPort);
   /** Actor supplier for audit stamping (e.g. SDK `requireActor`). */
   actor?: () => string;
   /** Audit trail table override — default `${tableName}_audit`. */
@@ -430,10 +434,13 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   // exists iff the decorator declares it. Entities with auditable columns
   // but no trail get `audit: undefined` so writes never attempt an INSERT
   // into a nonexistent `{table}_audit` (swallowed fire-and-forget error
-  // on every write before this gate).
-  const auditPort = hasAuditTrail(cfg.entity)
-    ? (cfg.auditPort ?? makeTableAuditPort(repo))
-    : undefined;
+  // on every write before this gate). Resolution is PER-WRITE on the
+  // active repo so a factory port lands inside the caller's tx.
+  const resolveAuditPort = (active: Repository): AuditPort | undefined => {
+    if (!hasAuditTrail(cfg.entity)) return undefined;
+    if (typeof cfg.auditPort === "function") return cfg.auditPort(active);
+    return cfg.auditPort ?? makeTableAuditPort(active);
+  };
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
 
@@ -883,7 +890,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         },
         {
           actor: resolvedActor,
-          audit: auditPort,
+          audit: resolveAuditPort(repoFor(tx)),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -900,7 +907,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         { ...(prepared as Record<string, unknown>), uuid },
         {
           actor: resolvedActor,
-          audit: auditPort,
+          audit: resolveAuditPort(repoFor(tx)),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -912,7 +919,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async delete(uuid, version) {
       const row = await (repo as any).delete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -924,7 +931,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async restore(uuid, version) {
       const row = await (repo as any).restore(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -936,7 +943,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async purge(uuid, version) {
       const row = await (repo as any).hardDelete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -960,7 +967,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         try {
           const cloned = (await (repo as any).clone(cfg.entity, uuid, {
             actor: actor(),
-            audit: auditPort,
+            audit: resolveAuditPort(repo),
           })) as TEntity;
           results.push((cloned as unknown as { uuid: string }).uuid);
         } catch (e) {
@@ -975,7 +982,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkDelete(items) {
       return (repo as any).deleteMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },
@@ -983,7 +990,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkRestore(items) {
       return (repo as any).restoreMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },
@@ -991,7 +998,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkUpdate(items) {
       return (repo as any).updateMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },
@@ -999,7 +1006,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     async bulkPurge(items) {
       return (repo as any).hardDeleteMany(cfg.entity, items as never, {
         actor: actor(),
-        audit: auditPort,
+        audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
     },

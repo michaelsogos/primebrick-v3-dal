@@ -707,6 +707,23 @@ is available here.
 |-----------|------|-------------|
 | items | `BulkItem[]` |  |
 
+#### `DomainService.bulkUpdate(items): Promise<unknown>`
+
+Internal bulk ops — NOT wire actions (no route registers on them):
+ atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+ (config batch writes, retention purges). The per-entity bulk gating
+ lives in the entity's declared actions and is untouched by these.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkUpdateItem[]` |  |
+
+#### `DomainService.bulkPurge(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
 #### `DomainService.audit(uuid, page, limit): Promise<unknown>`
 
 | Parameter | Type | Description |
@@ -1575,9 +1592,13 @@ The contract every entity service must satisfy — enforced on the router.
  `makeEntityService` (tests, decorators such as BE `withCache`) must
  pass one explicitly. Consumer configs MUST NOT set it — a missing
  `repo` is a hard error, not a fallback. |
-| auditPort | `AuditPort` | Audit port — defaults to `makeTableAuditPort(repo)` (the standard
- `{table}_audit` writer). Override only for ports with extra side
- effects (e.g. the BE entity-changed marker publisher). |
+| auditPort | `AuditPort \| (repo: Repository) => AuditPort` | Audit port — defaults to `makeTableAuditPort(repo)` (the standard
+ `{table}_audit` writer). May be a PORT (bound to one repo) or a
+ FACTORY `(repo) => port` resolved per write on the ACTIVE repo —
+ the factory form is what keeps audit rows inside the caller's
+ transaction when the op runs `svc.create(body, tx)` (a port bound
+ at construction would write the audit row on the gateway pool —
+ outside the tx — and survive a rollback). |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
 | display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
@@ -1586,7 +1607,7 @@ The contract every entity service must satisfy — enforced on the router.
  string the FE uses for this entity's titles. Absent → self-join
  skipped, the ref cell renders the raw uid (COALESCE fallback). |
 | list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
-| hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
+| hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
 
