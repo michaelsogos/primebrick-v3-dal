@@ -125,12 +125,16 @@ export interface EntityListResult<TEntity> {
 
 export interface BulkItem {
   uuid: string;
-  version: number;
+  /** Required on auditable entities (repo-enforced optimistic lock);
+   *  absent on non-auditable ones (no version column exists). */
+  version?: number;
 }
 
 export interface BulkUpdateItem {
   uuid: string;
-  version: number;
+  /** Required on auditable entities (repo-enforced optimistic lock);
+   *  absent on non-auditable ones. */
+  version?: number;
   [field: string]: unknown;
 }
 
@@ -236,12 +240,15 @@ export interface EntityService<TEntity> {
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
-    body: Record<string, unknown> & { version: number },
+    /** `version` is required in the body on auditable entities
+     *  (repo-enforced optimistic lock) and absent on non-auditable ones
+     *  (no version column — passing it would target a missing column). */
+    body: Record<string, unknown> & { version?: number },
     tx?: Repository,
   ): Promise<TEntity>;
-  delete(uuid: string, version: number): Promise<TEntity>;
-  restore(uuid: string, version: number): Promise<TEntity>;
-  purge(uuid: string, version: number): Promise<TEntity>;
+  delete(uuid: string, version?: number): Promise<TEntity>;
+  restore(uuid: string, version?: number): Promise<TEntity>;
+  purge(uuid: string, version?: number): Promise<TEntity>;
   duplicate(uuids: string[]): Promise<DuplicateResult>;
   bulkDelete(items: BulkItem[]): Promise<unknown>;
   bulkRestore(items: BulkItem[]): Promise<unknown>;

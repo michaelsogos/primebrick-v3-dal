@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Dal, ValidationError } from "../src/index.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { TestUserNoTrailEntity } from "./entities/test-user-no-trail.entity.js";
+import { ManualUniqueEntity } from "./entities/manual-unique-entity.js";
 import { getTestPool, setupTestSchema, truncateTestTables } from "./helpers/setup.js";
 
 /**
@@ -50,6 +51,13 @@ describe("svc write governance — actor guard, trail gate, bulk ops, hook ctx",
         version     integer NOT NULL DEFAULT 1,
         delta       jsonb
       );
+      CREATE TABLE IF NOT EXISTS dal_test_manual (
+        id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        uuid  uuid NOT NULL DEFAULT uuidv7(),
+        name  text,
+        email text
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS dal_test_manual_uuid_idx ON dal_test_manual (uuid);
     `);
   });
 
@@ -182,5 +190,36 @@ describe("svc write governance — actor guard, trail gate, bulk ops, hook ctx",
     await svc.update(row.uuid, { version: row.version, name: "ctx-row-2" });
     expect(seen).toEqual(["create:session-user", "update:session-user"]);
     expect(row.created_by).toBe("session-user");
+  });
+
+  // ── tx seam — actor guard fires inside transactions ───────────────────
+
+  it("A1: actor guard fires inside dal.transaction (tx writes stay governed)", async () => {
+    const row = await dal.add(SimpleTestEntity, { name: "tx-seed" }, { actor: "t" });
+    await expect(
+      dal.transaction(async (tx) =>
+        tx.update(
+          SimpleTestEntity,
+          { uuid: row.uuid, version: row.version, name: "tx-bypass" },
+          { matchBy: "uuid" },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  // ── G4 — non-auditable entity: version is absent, not required ────────
+
+  it("G4: svc.create/update on a non-auditable entity works without version", async () => {
+    await getTestPool().query(`TRUNCATE TABLE dal_test_manual RESTART IDENTITY CASCADE`);
+    const svc = dal.entityService<ManualUniqueEntity>({
+      entity: ManualUniqueEntity as never,
+      actor: () => "t",
+      list: { searchableKeys: ["name"], filterableKeys: new Set(["name"]) },
+    });
+    const row = await svc.create({ name: "n1", email: "e1" });
+    // No version column exists on dal_test_manual — the relaxed signature
+    // accepts the body without it and the repo does not enforce the lock.
+    const updated = await svc.update(row.uuid, { name: "n2" });
+    expect(updated.name).toBe("n2");
   });
 });

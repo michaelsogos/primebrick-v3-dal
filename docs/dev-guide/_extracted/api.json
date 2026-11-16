@@ -51827,9 +51827,9 @@
 																			"sources": [
 																				{
 																					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-																					"line": 260,
+																					"line": 267,
 																					"character": 28,
-																					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+																					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 																				}
 																			],
 																			"type": {
@@ -51846,9 +51846,9 @@
 																			"sources": [
 																				{
 																					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-																					"line": 260,
+																					"line": 267,
 																					"character": 43,
-																					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+																					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 																				}
 																			],
 																			"type": {
@@ -52863,13 +52863,23 @@
 					"name": "version",
 					"variant": "declaration",
 					"kind": 1024,
-					"flags": {},
+					"flags": {
+						"isOptional": true
+					},
+					"comment": {
+						"summary": [
+							{
+								"kind": "text",
+								"text": "Required on auditable entities (repo-enforced optimistic lock);\n absent on non-auditable ones (no version column exists)."
+							}
+						]
+					},
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 128,
+							"line": 130,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L128"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L130"
 						}
 					],
 					"type": {
@@ -52912,9 +52922,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 132,
+							"line": 134,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L132"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L134"
 						}
 					],
 					"type": {
@@ -52927,13 +52937,23 @@
 					"name": "version",
 					"variant": "declaration",
 					"kind": 1024,
-					"flags": {},
+					"flags": {
+						"isOptional": true
+					},
+					"comment": {
+						"summary": [
+							{
+								"kind": "text",
+								"text": "Required on auditable entities (repo-enforced optimistic lock);\n absent on non-auditable ones."
+							}
+						]
+					},
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 133,
+							"line": 137,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L133"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L137"
 						}
 					],
 					"type": {
@@ -52954,9 +52974,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 131,
+					"line": 133,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L131"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L133"
 				}
 			],
 			"indexSignatures": [
@@ -52969,9 +52989,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 134,
+							"line": 138,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L134"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L138"
 						}
 					],
 					"parameters": [
@@ -53034,9 +53054,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 141,
+							"line": 145,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L141"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L145"
 						}
 					],
 					"type": {
@@ -53056,9 +53076,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 140,
+					"line": 144,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L140"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L144"
 				}
 			]
 		},
@@ -53078,9 +53098,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 145,
+							"line": 149,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L145"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L149"
 						}
 					],
 					"type": {
@@ -53100,9 +53120,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 146,
+							"line": 150,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L146"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L150"
 						}
 					],
 					"type": {
@@ -53125,9 +53145,9 @@
 										"sources": [
 											{
 												"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-												"line": 146,
+												"line": 150,
 												"character": 18,
-												"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L146"
+												"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L150"
 											}
 										],
 										"type": {
@@ -53144,9 +53164,9 @@
 										"sources": [
 											{
 												"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-												"line": 146,
+												"line": 150,
 												"character": 32,
-												"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L146"
+												"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L150"
 											}
 										],
 										"type": {
@@ -53181,9 +53201,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 144,
+					"line": 148,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L144"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L148"
 				}
 			]
 		},
@@ -53219,9 +53239,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 152,
+							"line": 156,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L152"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L156"
 						}
 					],
 					"type": {
@@ -53246,9 +53266,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 154,
+							"line": 158,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L154"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L158"
 						}
 					],
 					"type": {
@@ -53283,9 +53303,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 156,
+							"line": 160,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L156"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L160"
 						}
 					],
 					"type": {
@@ -53310,9 +53330,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 158,
+							"line": 162,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L158"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L162"
 						}
 					],
 					"type": {
@@ -53333,9 +53353,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 159,
+											"line": 163,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L159"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L163"
 										}
 									],
 									"type": {
@@ -53354,9 +53374,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 160,
+											"line": 164,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L160"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L164"
 										}
 									],
 									"type": {
@@ -53381,9 +53401,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 162,
+											"line": 166,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L162"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L166"
 										}
 									],
 									"type": {
@@ -53408,9 +53428,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 164,
+											"line": 168,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L164"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L168"
 										}
 									],
 									"type": {
@@ -53445,9 +53465,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 166,
+											"line": 170,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L166"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L170"
 										}
 									],
 									"type": {
@@ -53486,9 +53506,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 150,
+					"line": 154,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L150"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L154"
 				}
 			]
 		},
@@ -53516,9 +53536,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 172,
+							"line": 176,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L172"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L176"
 						}
 					],
 					"type": {
@@ -53541,9 +53561,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 172,
+											"line": 176,
 											"character": 24,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L172"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L176"
 										}
 									],
 									"signatures": [
@@ -53556,9 +53576,9 @@
 											"sources": [
 												{
 													"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-													"line": 172,
+													"line": 176,
 													"character": 26,
-													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L172"
+													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L176"
 												}
 											],
 											"type": {
@@ -53623,9 +53643,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 178,
+							"line": 182,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L178"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L182"
 						}
 					],
 					"type": {
@@ -53686,9 +53706,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 186,
+							"line": 190,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L186"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L190"
 						}
 					],
 					"type": {
@@ -53770,9 +53790,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 188,
+							"line": 192,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L188"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L192"
 						}
 					],
 					"type": {
@@ -53826,9 +53846,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 190,
+							"line": 194,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L190"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L194"
 						}
 					],
 					"type": {
@@ -53879,9 +53899,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 196,
+							"line": 200,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L196"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L200"
 						}
 					],
 					"type": {
@@ -53907,9 +53927,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 197,
+							"line": 201,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L197"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L201"
 						}
 					],
 					"type": {
@@ -53980,9 +54000,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 205,
+											"line": 209,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L205"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L209"
 										}
 									],
 									"type": {
@@ -54003,9 +54023,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 206,
+											"line": 210,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L206"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L210"
 										}
 									],
 									"type": {
@@ -54031,9 +54051,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 207,
+											"line": 211,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L207"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L211"
 										}
 									],
 									"type": {
@@ -54096,9 +54116,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 213,
+											"line": 217,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L213"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L217"
 										}
 									],
 									"type": {
@@ -54129,9 +54149,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 214,
+											"line": 218,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L214"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L218"
 										}
 									],
 									"type": {
@@ -54152,9 +54172,9 @@
 													"sources": [
 														{
 															"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-															"line": 214,
+															"line": 218,
 															"character": 20,
-															"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L214"
+															"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L218"
 														}
 													],
 													"type": {
@@ -54171,9 +54191,9 @@
 													"sources": [
 														{
 															"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-															"line": 214,
+															"line": 218,
 															"character": 33,
-															"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L214"
+															"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L218"
 														}
 													],
 													"type": {
@@ -54214,9 +54234,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 215,
+											"line": 219,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L215"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L219"
 										}
 									],
 									"type": {
@@ -54274,9 +54294,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 216,
+											"line": 220,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L216"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L220"
 										}
 									],
 									"type": {
@@ -54318,9 +54338,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 218,
+							"line": 222,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L218"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L222"
 						}
 					],
 					"type": {
@@ -54343,9 +54363,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 219,
+											"line": 223,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L219"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L223"
 										}
 									],
 									"type": {
@@ -54434,9 +54454,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 220,
+											"line": 224,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L220"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L224"
 										}
 									],
 									"type": {
@@ -54569,9 +54589,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 224,
+											"line": 228,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L224"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L228"
 										}
 									],
 									"type": {
@@ -54737,9 +54757,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 170,
+					"line": 174,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L170"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L174"
 				}
 			],
 			"typeParameters": [
@@ -54776,9 +54796,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 234,
+							"line": 238,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L234"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L238"
 						}
 					],
 					"signatures": [
@@ -54791,9 +54811,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 234,
+									"line": 238,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L234"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L238"
 								}
 							],
 							"parameters": [
@@ -54851,9 +54871,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 235,
+							"line": 239,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L235"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L239"
 						}
 					],
 					"signatures": [
@@ -54866,9 +54886,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 235,
+									"line": 239,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L235"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L239"
 								}
 							],
 							"parameters": [
@@ -54916,9 +54936,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 236,
+							"line": 240,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L236"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L240"
 						}
 					],
 					"signatures": [
@@ -54931,9 +54951,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 236,
+									"line": 240,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L236"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L240"
 								}
 							],
 							"parameters": [
@@ -55012,9 +55032,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 237,
+							"line": 241,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L237"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L241"
 						}
 					],
 					"signatures": [
@@ -55027,9 +55047,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 237,
+									"line": 241,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L237"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L241"
 								}
 							],
 							"parameters": [
@@ -55050,6 +55070,18 @@
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
+									"comment": {
+										"summary": [
+											{
+												"kind": "code",
+												"text": "`version`"
+											},
+											{
+												"kind": "text",
+												"text": " is required in the body on auditable entities\n (repo-enforced optimistic lock) and absent on non-auditable ones\n (no version column — passing it would target a missing column)."
+											}
+										]
+									},
 									"type": {
 										"type": "intersection",
 										"types": [
@@ -55087,13 +55119,15 @@
 															"name": "version",
 															"variant": "declaration",
 															"kind": 1024,
-															"flags": {},
+															"flags": {
+																"isOptional": true
+															},
 															"sources": [
 																{
 																	"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-																	"line": 239,
+																	"line": 246,
 																	"character": 38,
-																	"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L239"
+																	"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L246"
 																}
 															],
 															"type": {
@@ -55163,9 +55197,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 242,
+							"line": 249,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L242"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L249"
 						}
 					],
 					"signatures": [
@@ -55178,9 +55212,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 242,
+									"line": 249,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L242"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L249"
 								}
 							],
 							"parameters": [
@@ -55200,7 +55234,9 @@
 									"name": "version",
 									"variant": "param",
 									"kind": 32768,
-									"flags": {},
+									"flags": {
+										"isOptional": true
+									},
 									"type": {
 										"type": "intrinsic",
 										"name": "number"
@@ -55239,9 +55275,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 243,
+							"line": 250,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L243"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L250"
 						}
 					],
 					"signatures": [
@@ -55254,9 +55290,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 243,
+									"line": 250,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L243"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L250"
 								}
 							],
 							"parameters": [
@@ -55276,7 +55312,9 @@
 									"name": "version",
 									"variant": "param",
 									"kind": 32768,
-									"flags": {},
+									"flags": {
+										"isOptional": true
+									},
 									"type": {
 										"type": "intrinsic",
 										"name": "number"
@@ -55315,9 +55353,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 244,
+							"line": 251,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L244"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L251"
 						}
 					],
 					"signatures": [
@@ -55330,9 +55368,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 244,
+									"line": 251,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L244"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L251"
 								}
 							],
 							"parameters": [
@@ -55352,7 +55390,9 @@
 									"name": "version",
 									"variant": "param",
 									"kind": 32768,
-									"flags": {},
+									"flags": {
+										"isOptional": true
+									},
 									"type": {
 										"type": "intrinsic",
 										"name": "number"
@@ -55391,9 +55431,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 245,
+							"line": 252,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L245"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L252"
 						}
 					],
 					"signatures": [
@@ -55406,9 +55446,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 245,
+									"line": 252,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L245"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L252"
 								}
 							],
 							"parameters": [
@@ -55457,9 +55497,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 246,
+							"line": 253,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L246"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L253"
 						}
 					],
 					"signatures": [
@@ -55472,9 +55512,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 246,
+									"line": 253,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L246"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L253"
 								}
 							],
 							"parameters": [
@@ -55523,9 +55563,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 247,
+							"line": 254,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L247"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L254"
 						}
 					],
 					"signatures": [
@@ -55538,9 +55578,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 247,
+									"line": 254,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L247"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L254"
 								}
 							],
 							"parameters": [
@@ -55589,9 +55629,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 252,
+							"line": 259,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L252"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L259"
 						}
 					],
 					"signatures": [
@@ -55628,9 +55668,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 252,
+									"line": 259,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L252"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L259"
 								}
 							],
 							"parameters": [
@@ -55679,9 +55719,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 253,
+							"line": 260,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L253"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
 						}
 					],
 					"signatures": [
@@ -55694,9 +55734,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 253,
+									"line": 260,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L253"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
 								}
 							],
 							"parameters": [
@@ -55745,9 +55785,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 254,
+							"line": 261,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L254"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L261"
 						}
 					],
 					"signatures": [
@@ -55760,9 +55800,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 254,
+									"line": 261,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L254"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L261"
 								}
 							],
 							"parameters": [
@@ -55830,9 +55870,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 260,
+							"line": 267,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 						}
 					],
 					"signatures": [
@@ -55881,9 +55921,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 260,
+									"line": 267,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 								}
 							],
 							"type": {
@@ -55914,9 +55954,9 @@
 														"sources": [
 															{
 																"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-																"line": 260,
+																"line": 267,
 																"character": 28,
-																"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+																"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 															}
 														],
 														"type": {
@@ -55933,9 +55973,9 @@
 														"sources": [
 															{
 																"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-																"line": 260,
+																"line": 267,
 																"character": 43,
-																"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L260"
+																"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L267"
 															}
 														],
 														"type": {
@@ -55972,9 +56012,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 261,
+							"line": 268,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L261"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L268"
 						}
 					],
 					"signatures": [
@@ -55987,9 +56027,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-									"line": 261,
+									"line": 268,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L261"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L268"
 								}
 							],
 							"parameters": [
@@ -56073,9 +56113,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 264,
+							"line": 271,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L264"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L271"
 						}
 					],
 					"type": {
@@ -56140,9 +56180,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 269,
+							"line": 276,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L269"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L276"
 						}
 					],
 					"type": {
@@ -56181,9 +56221,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 272,
+							"line": 279,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L272"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L279"
 						}
 					],
 					"type": {
@@ -56225,9 +56265,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 233,
+					"line": 237,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L233"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L237"
 				}
 			],
 			"typeParameters": [
@@ -56256,9 +56296,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 284,
+					"line": 291,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L284"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L291"
 				}
 			],
 			"signatures": [
@@ -56299,9 +56339,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 284,
+							"line": 291,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L284"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L291"
 						}
 					],
 					"parameters": [
@@ -56337,9 +56377,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 386,
+					"line": 393,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L386"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L393"
 				}
 			],
 			"signatures": [
@@ -56456,9 +56496,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 386,
+							"line": 393,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L386"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L393"
 						}
 					],
 					"parameters": [
@@ -56510,9 +56550,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 389,
+											"line": 396,
 											"character": 5,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L389"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L396"
 										}
 									],
 									"type": {
@@ -56541,9 +56581,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-											"line": 389,
+											"line": 396,
 											"character": 38,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L389"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L396"
 										}
 									],
 									"type": {
@@ -56587,9 +56627,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-					"line": 420,
+					"line": 427,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L420"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L427"
 				}
 			],
 			"signatures": [
@@ -56602,9 +56642,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/entity/entity-service.ts",
-							"line": 420,
+							"line": 427,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L420"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/entity/entity-service.ts#L427"
 						}
 					],
 					"typeParameters": [

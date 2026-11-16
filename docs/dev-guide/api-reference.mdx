@@ -1378,14 +1378,16 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+ absent on non-auditable ones (no version column exists). |
 
 ### `BulkUpdateItem`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+ absent on non-auditable ones. |
 
 ### `CheckEntityFieldsOptions`
 
