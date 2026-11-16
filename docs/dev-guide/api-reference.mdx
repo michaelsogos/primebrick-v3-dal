@@ -1474,7 +1474,9 @@ most recent change without scanning the audit log.
 | entity_type | `string` |  |
 | entity_uuid | `string` |  |
 | version | `number` | The new `version` after the save. |
-| audit_log_id | `number` | The `audit_log_id` of the change (for the GET audit/:auditLogId diff endpoint). |
+| audit_log_id | `string \| number` | The audit row key of the change — bigint for legacy surrogate-id
+ audit tables, uuid string for post-eradication `*_audit` rows
+ (PK `(uuid, changed_at)`). |
 | changed_by | `string` | user_uuid of the writer. |
 | changed_by_session | `string` | Tab session of the writer — stamped from `AuditParams.sessionId`, which
 the FE sends as `X-Client-Session` on writes. A save is "self" (silently
@@ -4655,7 +4657,7 @@ identically — validation of existence is the remote build's job.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
-### `makePartitionMaintenanceJob(entities): { needed: boolean; run: () => Promise<PartitionMaintenanceReport> }`
+### `makePartitionMaintenanceJob(entities): { needed: boolean; run: () => Promise<PartitionMaintenanceReport>; i18nNs: () => string }`
 
 Partition-maintenance job factory — the ONE wiring a service passes to
 `createMicroservice({ partitionMaintenance })`. `needed` is the metadata
