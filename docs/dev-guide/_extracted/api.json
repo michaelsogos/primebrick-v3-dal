@@ -29955,7 +29955,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "AuditLogEntity — generic audit trail entity.\r\n\r\nMaps to any audit table (customers_audit, organizations_audit, user_profiles_audit, etc.)\r\nvia the "
+						"text": "AuditLogEntity — generic audit trail entity.\n\nMaps to any audit table (customers_audit, organizations_audit, user_profiles_audit, etc.)\nvia the "
 					},
 					{
 						"kind": "code",
@@ -29963,7 +29963,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " override option on finders/writers.\r\n\r\nAll audit tables share the same column structure:\r\n  uuid        uuid    (row PK — uuidv7() DEFAULT, DDL PK is (uuid, changed_at))\r\n  entity_id   bigint (the audited entity's legacy surrogate ID — nullable;\r\n                present only on pre-migration "
+						"text": " override option on finders/writers.\n\nAll audit tables share the same column structure:\n  uuid        uuid    (row PK — uuidv7() DEFAULT, DDL PK is (uuid, changed_at))\n  entity_id   bigint (the audited entity's legacy surrogate ID — nullable;\n                present only on pre-migration "
 					},
 					{
 						"kind": "code",
@@ -29971,7 +29971,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " tables; dropped as\r\n                entities migrate to uuid PKs)\r\n  entity_uuid uuid    (the audited entity's UUID)\r\n  action      text    (INSERT, UPDATE, SOFT_DELETE, HARD_DELETE, RESTORE)\r\n  changed_at  timestamptz\r\n  changed_by  text    (actor UUID or \"system\")\r\n  version     integer\r\n  delta       jsonb   (field-level old/new diff)\r\n\r\nThe surrogate bigint "
+						"text": " tables; dropped as\n                entities migrate to uuid PKs)\n  entity_uuid uuid    (the audited entity's UUID)\n  action      text    (INSERT, UPDATE, SOFT_DELETE, HARD_DELETE, RESTORE)\n  changed_at  timestamptz\n  changed_by  text    (actor UUID or \"system\")\n  version     integer\n  delta       jsonb   (field-level old/new diff)\n\nThe surrogate bigint "
 					},
 					{
 						"kind": "code",
@@ -29979,7 +29979,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " was eradicated — audit rows carry the same\r\nuuid-PK doctrine as every other table (the composite DDL PK includes the\r\nRANGE partition column "
+						"text": " was eradicated — audit rows carry the same\nuuid-PK doctrine as every other table (the composite DDL PK includes the\nRANGE partition column "
 					},
 					{
 						"kind": "code",
@@ -29987,7 +29987,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", per the partitioned-PK rule).\r\n\r\nThis entity has NO"
+						"text": ", per the partitioned-PK rule).\n\nThis entity has NO"
 					}
 				],
 				"blockTags": [
@@ -29996,7 +29996,7 @@
 						"content": [
 							{
 								"kind": "text",
-								"text": "decorators → add() does not stamp audit fields.\r\nThis entity has NO @AuditTrail() → add() does not write audit-of-audit.\r\nThe "
+								"text": "decorators → add() does not stamp audit fields.\nThis entity has NO @AuditTrail() → add() does not write audit-of-audit.\nThe "
 							},
 							{
 								"kind": "code",
@@ -30004,7 +30004,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " column has a DB DEFAULT → add() omits it, DB generates.\r\n\r\nUsage:\r\n  repo.add(AuditLogEntity, { entity_uuid, action, ... }, { tableName: \"customers_audit\" })\r\n  repo.findByPage(AuditLogEntity, projections, { tableName: \"organizations_audit\", filters, ... })"
+								"text": " column has a DB DEFAULT → add() omits it, DB generates.\n\nUsage:\n  repo.add(AuditLogEntity, { entity_uuid, action, ... }, { tableName: \"customers_audit\" })\n  repo.findByPage(AuditLogEntity, projections, { tableName: \"organizations_audit\", filters, ... })"
 							}
 						]
 					}
@@ -30331,7 +30331,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Standard join configuration for auditable entities.\r\nAutomatically adds LEFT JOINs to the user entity table for created_by, updated_by, deleted_by fields.\r\n\r\nUses regex guardrail pattern to only join when the field contains a valid UUID.\r\nThis prevents errors when the field contains non-UUID values like \"system\"."
+								"text": "Standard join configuration for auditable entities.\nAutomatically adds LEFT JOINs to the user entity table for created_by, updated_by, deleted_by fields.\n\nUses regex guardrail pattern to only join when the field contains a valid UUID.\nThis prevents errors when the field contains non-UUID values like \"system\"."
 							}
 						],
 						"blockTags": [
@@ -30451,7 +30451,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Enhanced version that allows selective joins (e.g., only creator and updater).\r\nUseful when you only need specific audit fields to reduce query overhead.\r\n\r\nWhen "
+								"text": "Enhanced version that allows selective joins (e.g., only creator and updater).\nUseful when you only need specific audit fields to reduce query overhead.\n\nWhen "
 							},
 							{
 								"kind": "code",
@@ -30467,7 +30467,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " projection),\r\nevery actor column also joins it on "
+								"text": " projection),\nevery actor column also joins it on "
 							},
 							{
 								"kind": "code",
@@ -30475,7 +30475,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " —\r\nthe "
+								"text": " —\nthe "
 							},
 							{
 								"kind": "code",
@@ -30491,7 +30491,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " resolves\r\n"
+								"text": " resolves\n"
 							},
 							{
 								"kind": "code",
@@ -30499,7 +30499,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " and two verbatim verdict\r\nprojections feed the lazy-ref contract:\r\n"
+								"text": " and two verbatim verdict\nprojections feed the lazy-ref contract:\n"
 							},
 							{
 								"kind": "code",
@@ -30515,7 +30515,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — NULL\r\nfor writers no join resolved, e.g. "
+								"text": " — NULL\nfor writers no join resolved, e.g. "
 							},
 							{
 								"kind": "code",
@@ -30531,7 +30531,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n(the resolved key). The verdict is JOIN-MATCH driven, not string-shaped:\r\nwhichever join found a row owns the ref."
+								"text": "\n(the resolved key). The verdict is JOIN-MATCH driven, not string-shaped:\nwhichever join found a row owns the ref."
 							}
 						],
 						"blockTags": [
@@ -30707,7 +30707,7 @@
 													},
 													{
 														"kind": "text",
-														"text": " entities carry\r\n the column; the caller gates on "
+														"text": " entities carry\n the column; the caller gates on "
 													},
 													{
 														"kind": "code",
@@ -30752,7 +30752,7 @@
 													},
 													{
 														"kind": "text",
-														"text": "\r\n actors resolve to the service's "
+														"text": "\n actors resolve to the service's "
 													},
 													{
 														"kind": "code",
@@ -30768,7 +30768,7 @@
 													},
 													{
 														"kind": "text",
-														"text": "\r\n lazy-ref target. Absent → display/vocab keep the raw token."
+														"text": "\n lazy-ref target. Absent → display/vocab keep the raw token."
 													}
 												]
 											},
@@ -30842,7 +30842,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Build LEFT JOIN + projections for audit trail entities (AuditLogEntity).\r\n\r\nAudit trail entities have a single "
+								"text": "Build LEFT JOIN + projections for audit trail entities (AuditLogEntity).\n\nAudit trail entities have a single "
 							},
 							{
 								"kind": "code",
@@ -30850,7 +30850,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " column (not created_by/updated_by/deleted_by).\r\nThis function joins the user entity to resolve "
+								"text": " column (not created_by/updated_by/deleted_by).\nThis function joins the user entity to resolve "
 							},
 							{
 								"kind": "code",
@@ -30874,7 +30874,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ".\r\n\r\nUses "
+								"text": ".\n\nUses "
 							},
 							{
 								"kind": "code",
@@ -30890,7 +30890,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " to trigger the regex guardrail\r\n("
+								"text": " to trigger the regex guardrail\n("
 							},
 							{
 								"kind": "code",
@@ -30898,7 +30898,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") automatically in renderJoins().\r\nThis prevents errors when "
+								"text": ") automatically in renderJoins().\nThis prevents errors when "
 							},
 							{
 								"kind": "code",
@@ -30906,7 +30906,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " contains non-UUID values like \"system\".\r\n\r\nDistinct from buildAuditableJoins() which uses castRightTo: \"text\" (no guardrail, text = text).\r\nbuildAuditTrailJoins() uses castRightTo: \"uuid\" + castLeftTo: \"uuid\" (guardrail + uuid = uuid)."
+								"text": " contains non-UUID values like \"system\".\n\nDistinct from buildAuditableJoins() which uses castRightTo: \"text\" (no guardrail, text = text).\nbuildAuditTrailJoins() uses castRightTo: \"uuid\" + castLeftTo: \"uuid\" (guardrail + uuid = uuid)."
 							}
 						],
 						"blockTags": [
@@ -30990,7 +30990,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " ref of the audit table actually queried\r\n  (callers query via "
+										"text": " ref of the audit table actually queried\n  (callers query via "
 									},
 									{
 										"kind": "code",
@@ -31006,7 +31006,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "); needed so the\r\n  COALESCE fallback can qualify "
+										"text": "); needed so the\n  COALESCE fallback can qualify "
 									},
 									{
 										"kind": "code",
@@ -31106,7 +31106,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Adds display name fields to a row type for auditable entities.\r\nUse this to type the result of queries that include auditable joins."
+						"text": "Adds display name fields to a row type for auditable entities.\nUse this to type the result of queries that include auditable joins."
 					}
 				]
 			},
@@ -31803,7 +31803,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Declared schema domain — the ONLY PostgreSQL schemas this service may\r\ntouch (from "
+								"text": "Declared schema domain — the ONLY PostgreSQL schemas this service may\ntouch (from "
 							},
 							{
 								"kind": "code",
@@ -31819,7 +31819,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is the owned/primary schema\r\n(patch registry, config_entries live here). Entity operations resolving\r\noutside this set throw SchemaDomainViolationError. Required."
+								"text": " is the owned/primary schema\n(patch registry, config_entries live here). Entity operations resolving\noutside this set throw SchemaDomainViolationError. Required."
 							}
 						]
 					},
@@ -31851,7 +31851,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Shared table names exempt from the schema-domain check — governed\r\ncross-schema table contracts where every module schema carries the\r\nsame table and a designated manager reaches all of them. Today only\r\n"
+								"text": "Shared table names exempt from the schema-domain check — governed\ncross-schema table contracts where every module schema carries the\nsame table and a designated manager reaches all of them. Today only\n"
 							},
 							{
 								"kind": "code",
@@ -31867,7 +31867,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nfor every registered module). The entity's schema pin still applies —\r\nonly the domain check is bypassed, for that table name only."
+								"text": "\nfor every registered module). The entity's schema pin still applies —\nonly the domain check is bypassed, for that table name only."
 							}
 						]
 					},
@@ -31899,7 +31899,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Maximum pool size. Default: 10.\r\n Formula: max ≤ (PG max_connections − reserved) / service_instances.\r\n The lib cannot pick this for you, but it documents it."
+								"text": "Maximum pool size. Default: 10.\n Formula: max ≤ (PG max_connections − reserved) / service_instances.\n The lib cannot pick this for you, but it documents it."
 							}
 						]
 					},
@@ -31928,7 +31928,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Per-statement timeout in ms, set via SET statement_timeout on every connection.\r\n Default: 30000. Set to 0 to disable.\r\n This is the full wall-clock (command arrival → server completion → all rows transmitted)."
+								"text": "Per-statement timeout in ms, set via SET statement_timeout on every connection.\n Default: 30000. Set to 0 to disable.\n This is the full wall-clock (command arrival → server completion → all rows transmitted)."
 							}
 						]
 					},
@@ -31957,7 +31957,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Maximum wall-clock budget in ms for a single *Many operation\r\n (addMany/upsertMany/updateMany/deleteMany). The whole transaction must\r\n complete within this budget — on expiry the work is aborted and the\r\n transaction rolled back (no partial writes).\r\n Default: 1800000 (30 min). Per-call override: "
+								"text": "Maximum wall-clock budget in ms for a single *Many operation\n (addMany/upsertMany/updateMany/deleteMany). The whole transaction must\n complete within this budget — on expiry the work is aborted and the\n transaction rolled back (no partial writes).\n Default: 1800000 (30 min). Per-call override: "
 							},
 							{
 								"kind": "code",
@@ -31965,7 +31965,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ".\r\n Set to 0 to disable."
+								"text": ".\n Set to 0 to disable."
 							}
 						]
 					},
@@ -31994,7 +31994,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Time to wait when acquiring a connection from the pool before erroring.\r\n Default: 5000. Fail fast when pool exhausted — don't let requests queue forever."
+								"text": "Time to wait when acquiring a connection from the pool before erroring.\n Default: 5000. Fail fast when pool exhausted — don't let requests queue forever."
 							}
 						]
 					},
@@ -32052,7 +32052,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Optional: recycle connections after N uses to clear per-session state.\r\n Default: undefined (off)."
+								"text": "Optional: recycle connections after N uses to clear per-session state.\n Default: undefined (off)."
 							}
 						]
 					},
@@ -32110,7 +32110,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Optional decorator applied to the Dal's internal root Repository at\r\nconstruction — the governed seam for cross-cutting behavior such as\r\nentity caching ("
+								"text": "Optional decorator applied to the Dal's internal root Repository at\nconstruction — the governed seam for cross-cutting behavior such as\nentity caching ("
 							},
 							{
 								"kind": "code",
@@ -32126,7 +32126,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ",\r\n"
+								"text": ",\n"
 							},
 							{
 								"kind": "code",
@@ -32134,7 +32134,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", and every entity proxy on this instance, so the\r\ndecoration applies uniformly without consumers building their own\r\nrepositories. Tx-scoped repositories handed to "
+								"text": ", and every entity proxy on this instance, so the\ndecoration applies uniformly without consumers building their own\nrepositories. Tx-scoped repositories handed to "
 							},
 							{
 								"kind": "code",
@@ -32142,7 +32142,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\ncallbacks are NOT decorated — writes inside an open transaction must\r\nnot trigger cache writes/invalidation before commit."
+								"text": "\ncallbacks are NOT decorated — writes inside an open transaction must\nnot trigger cache writes/invalidation before commit."
 							}
 						]
 					},
@@ -32233,7 +32233,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Per-operation timeout override for dedicated-client work\r\n ("
+						"text": "Per-operation timeout override for dedicated-client work\n ("
 					},
 					{
 						"kind": "code",
@@ -32274,7 +32274,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with\r\n session-default restore for "
+								"text": "\n (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with\n session-default restore for "
 							},
 							{
 								"kind": "code",
@@ -32531,7 +32531,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Graceful shutdown — drains the pool with a timeout deadline.\r\n\r\n- Re-entrant: concurrent calls return immediately (the first call wins).\r\n- Timeout: if pool.end() doesn't complete within timeoutMs, the promise\r\n  resolves anyway (the pool is left to be reaped by the OS/TCP stack).\r\n- Error containment: if pool.end() throws, the error is logged and swallowed.\r\n- Does NOT install process.on() handlers — that is a consumer-side concern."
+										"text": "Graceful shutdown — drains the pool with a timeout deadline.\n\n- Re-entrant: concurrent calls return immediately (the first call wins).\n- Timeout: if pool.end() doesn't complete within timeoutMs, the promise\n  resolves anyway (the pool is left to be reaped by the OS/TCP stack).\n- Error containment: if pool.end() throws, the error is logged and swallowed.\n- Does NOT install process.on() handlers — that is a consumer-side concern."
 									}
 								]
 							},
@@ -33508,7 +33508,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\n"
+										"text": ".\n"
 									},
 									{
 										"kind": "code",
@@ -33516,7 +33516,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " with the query\r\nvector bound as a parameter (HNSW/ivfflat-safe). "
+										"text": " with the query\nvector bound as a parameter (HNSW/ivfflat-safe). "
 									},
 									{
 										"kind": "code",
@@ -33524,7 +33524,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " score for\r\ncosine ("
+										"text": " score for\ncosine ("
 									},
 									{
 										"kind": "code",
@@ -38986,7 +38986,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "The public path to the generic entity-service worker. The gateway\r\ninjects its own (schema-domain-guarded, pool-scoped) Repository — the\r\nconsumer never sees it. "
+										"text": "The public path to the generic entity-service worker. The gateway\ninjects its own (schema-domain-guarded, pool-scoped) Repository — the\nconsumer never sees it. "
 									},
 									{
 										"kind": "code",
@@ -38994,7 +38994,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " exists only as a decorator seam\r\n(e.g. BE "
+										"text": " exists only as a decorator seam\n(e.g. BE "
 									},
 									{
 										"kind": "code",
@@ -39118,7 +39118,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " writer port, bound to the gateway\r\nRepository. Use for adapters that need an AuditPort without exposing\r\nthe Repository itself."
+										"text": " writer port, bound to the gateway\nRepository. Use for adapters that need an AuditPort without exposing\nthe Repository itself."
 									}
 								]
 							},
@@ -39164,7 +39164,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Server version + connectivity probe in one call. A successful response\r\nalready proves the connection is alive — there is deliberately no\r\nseparate "
+										"text": "Server version + connectivity probe in one call. A successful response\nalready proves the connection is alive — there is deliberately no\nseparate "
 									},
 									{
 										"kind": "code",
@@ -39180,7 +39180,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " would be a redundant round-trip).\r\nThrows on connectivity/timeout failure."
+										"text": " would be a redundant round-trip).\nThrows on connectivity/timeout failure."
 									}
 								]
 							},
@@ -39315,7 +39315,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " around a\r\ntx-scoped Repository. Use for cascades, multi-write units, and any\r\nsequence that must commit or fail as one. Post-commit side effects\r\n(cache invalidation, events) belong AFTER this resolves, never inside."
+										"text": " around a\ntx-scoped Repository. Use for cascades, multi-write units, and any\nsequence that must commit or fail as one. Post-commit side effects\n(cache invalidation, events) belong AFTER this resolves, never inside."
 									}
 								]
 							},
@@ -39476,7 +39476,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ",\r\n"
+										"text": ",\n"
 									},
 									{
 										"kind": "code",
@@ -39492,7 +39492,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " compiles and runs them\r\nas ONE data-modifying CTE statement. Atomicity is PostgreSQL's\r\nsingle-statement guarantee — no BEGIN/COMMIT/ROLLBACK and no rollback\r\npath exist in this mode. Inter-op values flow via "
+										"text": " compiles and runs them\nas ONE data-modifying CTE statement. Atomicity is PostgreSQL's\nsingle-statement guarantee — no BEGIN/COMMIT/ROLLBACK and no rollback\npath exist in this mode. Inter-op values flow via "
 									},
 									{
 										"kind": "code",
@@ -39500,7 +39500,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ";\r\nconditional TS logic on mid-flow results stays in "
+										"text": ";\nconditional TS logic on mid-flow results stays in "
 									},
 									{
 										"kind": "code",
@@ -39579,7 +39579,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (entity-resolved,\r\nschema-domain guarded). For auditable tables prefer soft-delete; TRUNCATE\r\nis for caches, KB stores, and test teardown."
+										"text": " (entity-resolved,\nschema-domain guarded). For auditable tables prefer soft-delete; TRUNCATE\nis for caches, KB stores, and test teardown."
 									}
 								]
 							},
@@ -39722,7 +39722,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "pg_partman retention executor — metadata-driven, identical for every\r\nservice. Purges "
+										"text": "pg_partman retention executor — metadata-driven, identical for every\nservice. Purges "
 									},
 									{
 										"kind": "code",
@@ -39730,7 +39730,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " children of expired parents (before\r\nthe partition drop), removes expired strays from the default partition,\r\nthen runs "
+										"text": " children of expired parents (before\nthe partition drop), removes expired strays from the default partition,\nthen runs "
 									},
 									{
 										"kind": "code",
@@ -39738,7 +39738,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Called by the service's\r\n"
+										"text": ". Called by the service's\n"
 									},
 									{
 										"kind": "code",
@@ -39769,7 +39769,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "the service's entity registry — every maintained\r\n  surface participates ("
+												"text": "the service's entity registry — every maintained\n  surface participates ("
 											},
 											{
 												"kind": "code",
@@ -39777,7 +39777,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " parents, synthesized\r\n  "
+												"text": " parents, synthesized\n  "
 											},
 											{
 												"kind": "code",
@@ -39801,7 +39801,7 @@
 											},
 											{
 												"kind": "text",
-												"text": "\r\n  row-sweeps on plain tables); everything else is ignored"
+												"text": "\n  row-sweeps on plain tables); everything else is ignored"
 											}
 										]
 									},
@@ -39937,7 +39937,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Partition-maintenance job factory — the ONE wiring a service passes to\r\n"
+								"text": "Partition-maintenance job factory — the ONE wiring a service passes to\n"
 							},
 							{
 								"kind": "code",
@@ -39953,7 +39953,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is the metadata\r\ngate ("
+								"text": " is the metadata\ngate ("
 							},
 							{
 								"kind": "code",
@@ -39977,7 +39977,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " /\r\n"
+								"text": " /\n"
 							},
 							{
 								"kind": "code",
@@ -39993,7 +39993,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " resolves the DAL singleton lazily at fire\r\ntime, so the option can be built before "
+								"text": " resolves the DAL singleton lazily at fire\ntime, so the option can be built before "
 							},
 							{
 								"kind": "code",
@@ -40194,7 +40194,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Returns the process-wide singleton Dal instance. Creates it on first call.\r\n\r\n- First call: requires "
+								"text": "Returns the process-wide singleton Dal instance. Creates it on first call.\n\n- First call: requires "
 							},
 							{
 								"kind": "code",
@@ -40202,7 +40202,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", creates the singleton.\r\n- Subsequent calls with NO config: returns the existing instance.\r\n- Subsequent calls with the SAME connectionString: returns the existing instance.\r\n- Subsequent calls with a DIFFERENT connectionString: throws (prevents accidental\r\n  double-init with wrong params).\r\n\r\nFor multi-DB: construct "
+								"text": ", creates the singleton.\n- Subsequent calls with NO config: returns the existing instance.\n- Subsequent calls with the SAME connectionString: returns the existing instance.\n- Subsequent calls with a DIFFERENT connectionString: throws (prevents accidental\n  double-init with wrong params).\n\nFor multi-DB: construct "
 							},
 							{
 								"kind": "code",
@@ -40273,7 +40273,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Resets the singleton. Closes the existing instance if any.\r\nIntended for tests — call in afterAll to release the pool."
+								"text": "Resets the singleton. Closes the existing instance if any.\nIntended for tests — call in afterAll to release the pool."
 							}
 						]
 					},
@@ -40322,7 +40322,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — embeddable in a later\r\nop's payload/match values. At compile time the "
+						"text": " — embeddable in a later\nop's payload/match values. At compile time the "
 					},
 					{
 						"kind": "code",
@@ -40330,7 +40330,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " it would occupy is\r\nrewritten to "
+						"text": " it would occupy is\nrewritten to "
 					},
 					{
 						"kind": "code",
@@ -40338,7 +40338,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " over the source op's RETURNING\r\nbranch. Never a bound parameter — survives "
+						"text": " over the source op's RETURNING\nbranch. Never a bound parameter — survives "
 					},
 					{
 						"kind": "code",
@@ -40382,7 +40382,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Handle for a buffered operation's future result. NOT a Promise — awaiting\r\nit pre-commit would deadlock (commit is never reached), so it deliberately\r\nexposes no "
+						"text": "Handle for a buffered operation's future result. NOT a Promise — awaiting\nit pre-commit would deadlock (commit is never reached), so it deliberately\nexposes no "
 					},
 					{
 						"kind": "code",
@@ -44970,7 +44970,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Compile every buffered op into ONE statement and execute it. Atomicity\r\nis the statement's own: a failure anywhere (constraint, pg_raise guard,\r\nabort branch, timeout) rolls back every branch — no rollback code exists\r\nbecause none is needed. Resolves when all "
+										"text": "Compile every buffered op into ONE statement and execute it. Atomicity\nis the statement's own: a failure anywhere (constraint, pg_raise guard,\nabort branch, timeout) rolls back every branch — no rollback code exists\nbecause none is needed. Resolves when all "
 									},
 									{
 										"kind": "code",
@@ -44978,7 +44978,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " handles are\r\nmaterialized; rejects with the first failure."
+										"text": " handles are\nmaterialized; rejects with the first failure."
 									}
 								]
 							},
@@ -45034,7 +45034,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Abandon the buffer without executing anything. Nothing has run yet by\r\ndesign — this simply invalidates the transaction and its Deferred handles."
+										"text": "Abandon the buffer without executing anything. Nothing has run yet by\ndesign — this simply invalidates the transaction and its Deferred handles."
 									}
 								]
 							},
@@ -45638,7 +45638,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " when\r\nthe registry contains ANY retention-bearing surface: a "
+								"text": " when\nthe registry contains ANY retention-bearing surface: a "
 							},
 							{
 								"kind": "code",
@@ -45646,7 +45646,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nparent, an "
+								"text": "\nparent, an "
 							},
 							{
 								"kind": "code",
@@ -45662,7 +45662,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is a maintained\r\nparent), or a "
+								"text": " is a maintained\nparent), or a "
 							},
 							{
 								"kind": "code",
@@ -45678,7 +45678,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " = nothing to maintain → the\r\nSDK mounts no callable and materializes no trigger."
+								"text": " = nothing to maintain → the\nSDK mounts no callable and materializes no trigger."
 							}
 						]
 					},
@@ -45820,7 +45820,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "ConfigEntityBase — standard dictionary-style config table entity.\r\n\r\nEvery Primebrick config table (BE "
+						"text": "ConfigEntityBase — standard dictionary-style config table entity.\n\nEvery Primebrick config table (BE "
 					},
 					{
 						"kind": "code",
@@ -45836,7 +45836,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ")\r\nextends this base class to get the standard column set without copy-paste.\r\n\r\nColumns:\r\n  key            varchar(100) NOT NULL UNIQUE — stable snake_case setting key\r\n  value          text nullable                 — raw TEXT; null = \"not set\"\r\n  type           varchar(50)  NOT NULL         — ConfigType (drives SDK coercion + FE widget)\r\n  type_config    text nullable                 — JSONB-text extra per-type config (badge values, list API URL, etc.)\r\n  label_key      varchar(100) nullable         — i18n key for the setting title\r\n  description_key varchar(100) nullable        — i18n key for the explanatory text\r\n  reserved       boolean NOT NULL DEFAULT false — if true: editable but not deletable\r\n  group_key      varchar(100) nullable         — UI grouping key (null/empty = ungrouped, top of list)\r\n\r\nPlus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by).\r\n\r\nThe consumer creates a concrete subclass:\r\n  @Entity(\"config\", \"public\")\r\n  export class ConfigEntryEntity extends ConfigEntityBase {}\r\n\r\nThis class is DB-agnostic — it does NOT import from @primebrick/sdk.\r\nThe SDK's IConfigEntity interface mirrors the field names for port-level use."
+						"text": ")\nextends this base class to get the standard column set without copy-paste.\n\nColumns:\n  key            varchar(100) NOT NULL UNIQUE — stable snake_case setting key\n  value          text nullable                 — raw TEXT; null = \"not set\"\n  type           varchar(50)  NOT NULL         — ConfigType (drives SDK coercion + FE widget)\n  type_config    text nullable                 — JSONB-text extra per-type config (badge values, list API URL, etc.)\n  label_key      varchar(100) nullable         — i18n key for the setting title\n  description_key varchar(100) nullable        — i18n key for the explanatory text\n  reserved       boolean NOT NULL DEFAULT false — if true: editable but not deletable\n  group_key      varchar(100) nullable         — UI grouping key (null/empty = ungrouped, top of list)\n\nPlus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by).\n\nThe consumer creates a concrete subclass:\n  @Entity(\"config\", \"public\")\n  export class ConfigEntryEntity extends ConfigEntityBase {}\n\nThis class is DB-agnostic — it does NOT import from @primebrick/sdk.\nThe SDK's IConfigEntity interface mirrors the field names for port-level use."
 					}
 				]
 			},
@@ -46545,7 +46545,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "DictEntityBase — standard dictionary/enum-table entity.\r\n\r\nEvery Primebrick dict table (lookup/enum vocabularies: customer_types,\r\ncontact_types, account_kinds…) extends this base to get the shared\r\ncolumn set without copy-paste AND the "
+						"text": "DictEntityBase — standard dictionary/enum-table entity.\n\nEvery Primebrick dict table (lookup/enum vocabularies: customer_types,\ncontact_types, account_kinds…) extends this base to get the shared\ncolumn set without copy-paste AND the "
 					},
 					{
 						"kind": "code",
@@ -46553,7 +46553,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " marker — the class-level\r\nflag that propagates through the prototype chain ("
+						"text": " marker — the class-level\nflag that propagates through the prototype chain ("
 					},
 					{
 						"kind": "code",
@@ -46561,7 +46561,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\nparent-first, subclass wins) so "
+						"text": "\nparent-first, subclass wins) so "
 					},
 					{
 						"kind": "code",
@@ -46569,7 +46569,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " resolves\r\nit without ever instantiating. The served meta "
+						"text": " resolves\nit without ever instantiating. The served meta "
 					},
 					{
 						"kind": "code",
@@ -46577,7 +46577,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " facet and the\r\n"
+						"text": " facet and the\n"
 					},
 					{
 						"kind": "code",
@@ -46585,7 +46585,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " page archetype derive from this ONE declaration point.\r\n\r\nColumns carried by the base:\r\n  uuid  uuid PK (uuidv7) — wire uid AND row identity\r\n  code  varchar(50) NOT NULL UNIQUE — stable business key\r\n  sort  int NOT NULL — dictionary ordering (order_field convention)\r\n\r\n"
+						"text": " page archetype derive from this ONE declaration point.\n\nColumns carried by the base:\n  uuid  uuid PK (uuidv7) — wire uid AND row identity\n  code  varchar(50) NOT NULL UNIQUE — stable business key\n  sort  int NOT NULL — dictionary ordering (order_field convention)\n\n"
 					},
 					{
 						"kind": "code",
@@ -46593,7 +46593,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " is deliberately NOT on the base: ISO/seed-managed dicts\r\n(legal_forms) carry "
+						"text": " is deliberately NOT on the base: ISO/seed-managed dicts\n(legal_forms) carry "
 					},
 					{
 						"kind": "code",
@@ -46601,7 +46601,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " as their label instead — declare\r\n"
+						"text": " as their label instead — declare\n"
 					},
 					{
 						"kind": "code",
@@ -46609,7 +46609,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " per-entity when the rows are i18n-keyed.\r\n\r\nThe consumer creates a concrete subclass:\r\n  @Entity(\"customer_types\", \"crm\")\r\n  @Cached(300_000)              // sdk-side decorator — stays per-class\r\n  export class CustomerTypeEntity extends DictEntityBase {}\r\n  // + extras: label_key, value_kind, category, min_size, …\r\n\r\nConfigEntityBase remains its own base (divergent "
+						"text": " per-entity when the rows are i18n-keyed.\n\nThe consumer creates a concrete subclass:\n  @Entity(\"customer_types\", \"crm\")\n  @Cached(300_000)              // sdk-side decorator — stays per-class\n  export class CustomerTypeEntity extends DictEntityBase {}\n  // + extras: label_key, value_kind, category, min_size, …\n\nConfigEntityBase remains its own base (divergent "
 					},
 					{
 						"kind": "code",
@@ -46633,7 +46633,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\ncolumns); re-basing it onto DictEntityBase — with the "
+						"text": "\ncolumns); re-basing it onto DictEntityBase — with the "
 					},
 					{
 						"kind": "code",
@@ -46649,7 +46649,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\nrename — is the config-entry migration step's decision.\r\n\r\nThis class is DB-agnostic — it does NOT import from @primebrick/sdk."
+						"text": "\nrename — is the config-entry migration step's decision.\n\nThis class is DB-agnostic — it does NOT import from @primebrick/sdk."
 					}
 				]
 			},
@@ -46752,7 +46752,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " convention the dict page's\r\n reorder CTAs mutate; persists through the atomic bulk save."
+								"text": " convention the dict page's\n reorder CTAs mutate; persists through the atomic bulk save."
 							}
 						]
 					},
@@ -47163,7 +47163,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Entity capability mixins — declare shared audit/deletable columns ONCE,\r\ncompose them per-entity instead of copy-pasting decorated fields.\r\n\r\nAuditable and deletable are ORTHOGONAL capabilities:\r\n  - audit-only  (hard delete): "
+						"text": "Entity capability mixins — declare shared audit/deletable columns ONCE,\ncompose them per-entity instead of copy-pasting decorated fields.\n\nAuditable and deletable are ORTHOGONAL capabilities:\n  - audit-only  (hard delete): "
 					},
 					{
 						"kind": "code",
@@ -47171,7 +47171,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n  - delete-only:               "
+						"text": "\n  - delete-only:               "
 					},
 					{
 						"kind": "code",
@@ -47179,7 +47179,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n  - both (soft delete):        "
+						"text": "\n  - both (soft delete):        "
 					},
 					{
 						"kind": "code",
@@ -47187,7 +47187,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n  - neither:                   "
+						"text": "\n  - neither:                   "
 					},
 					{
 						"kind": "code",
@@ -47195,7 +47195,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n\r\nThe concrete entity still owns "
+						"text": "\n\nThe concrete entity still owns "
 					},
 					{
 						"kind": "code",
@@ -47203,7 +47203,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " and the opt-in\r\n"
+						"text": " and the opt-in\n"
 					},
 					{
 						"kind": "code",
@@ -47211,7 +47211,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " (audit-log table — separate decision from audit columns).\r\nField decorators on each anonymous mixin class register on that\r\nconstructor; "
+						"text": " (audit-log table — separate decision from audit columns).\nField decorators on each anonymous mixin class register on that\nconstructor; "
 					},
 					{
 						"kind": "code",
@@ -47219,7 +47219,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " merges the whole prototype chain\r\nparent-first (see collectMetaChain), so subclass fields always win.\r\n\r\nExtra per-entity capabilities ("
+						"text": " merges the whole prototype chain\nparent-first (see collectMetaChain), so subclass fields always win.\n\nExtra per-entity capabilities ("
 					},
 					{
 						"kind": "code",
@@ -47235,7 +47235,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", …)\r\nkeep their "
+						"text": ", …)\nkeep their "
 					},
 					{
 						"kind": "code",
@@ -47243,7 +47243,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " on the concrete class — they are pure type\r\ncontracts, not column sets."
+						"text": " on the concrete class — they are pure type\ncontracts, not column sets."
 					}
 				]
 			},
@@ -47397,7 +47397,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Adds created_at / created_by / updated_at / updated_by / version\r\n(optimistic-lock column). Does NOT add soft-delete — compose "
+								"text": "Adds created_at / created_by / updated_at / updated_by / version\n(optimistic-lock column). Does NOT add soft-delete — compose "
 							},
 							{
 								"kind": "code",
@@ -47405,7 +47405,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nwhen the entity needs it."
+								"text": "\nwhen the entity needs it."
 							}
 						]
 					},
@@ -47741,7 +47741,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (self-ref to the\r\n source record), "
+								"text": " (self-ref to the\n source record), "
 							},
 							{
 								"kind": "code",
@@ -47757,7 +47757,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (clone actor,\r\n user_profile ref). All three are clone-write-path-owned: written once\r\n at clone time, never user-editable."
+								"text": " (clone actor,\n user_profile ref). All three are clone-write-path-owned: written once\n at clone time, never user-editable."
 							}
 						]
 					},
@@ -47910,7 +47910,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — read-only projection of the platform\r\nregistry table "
+						"text": " — read-only projection of the platform\nregistry table "
 					},
 					{
 						"kind": "code",
@@ -47918,7 +47918,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", owned by the DAL so any\r\nservice may legally join the module-identity source (e.g. a schedule\r\nresolving its service armer for display).\r\n\r\n"
+						"text": ", owned by the DAL so any\nservice may legally join the module-identity source (e.g. a schedule\nresolving its service armer for display).\n\n"
 					},
 					{
 						"kind": "code",
@@ -47934,7 +47934,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "), not a module\r\ndomain: "
+						"text": "), not a module\ndomain: "
 					},
 					{
 						"kind": "code",
@@ -47942,7 +47942,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " is exempted from the schema-domain check via\r\nthe built-in "
+						"text": " is exempted from the schema-domain check via\nthe built-in "
 					},
 					{
 						"kind": "code",
@@ -47958,7 +47958,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", so the\r\njoin resolves legally from every service domain — the same contract\r\n"
+						"text": ", so the\njoin resolves legally from every service domain — the same contract\n"
 					},
 					{
 						"kind": "code",
@@ -47974,7 +47974,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ".\r\n\r\nThis is NOT "
+						"text": ".\n\nThis is NOT "
 					},
 					{
 						"kind": "code",
@@ -47982,7 +47982,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ": the full entity — registration\r\nlifecycle, all columns, admin routes — stays owned by the backend\r\n("
+						"text": ": the full entity — registration\nlifecycle, all columns, admin routes — stays owned by the backend\n("
 					},
 					{
 						"kind": "code",
@@ -47990,7 +47990,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "). Only the three columns an identity join\r\nneeds are projected here."
+						"text": "). Only the three columns an identity join\nneeds are projected here."
 					}
 				]
 			},
@@ -48114,7 +48114,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "TranslationEntityBase — standard i18n translations table entity.\r\n\r\nSchema = module boundary. Each module creates a concrete subclass with its\r\nown schema. The DAL's Repository resolves the schema natively via\r\ngetQualifiedTableName(entity) — no raw SQL, no string interpolation.\r\n\r\nBE creates entity classes for all modules it manages:\r\n  @Entity(\"translations\", \"public\")\r\n  export class AppTranslationEntity extends TranslationEntityBase {}\r\n\r\n  @Entity(\"translations\", \"system\")\r\n  export class SystemTranslationEntity extends TranslationEntityBase {}\r\n\r\n  @Entity(\"translations\", \"emailsender\")\r\n  export class EmailsenderTranslationEntity extends TranslationEntityBase {}\r\n\r\nThe BE's central CRUD handler maps module code → entity class → Repository.\r\nUS microservices do NOT create entity classes — the BE manages their schemas.\r\n\r\nColumns:\r\n  key       varchar(255) NOT NULL — full dot-path (e.g. 'app.auth.login.title')\r\n  language  varchar(10)  NOT NULL — BCP 47 tag (e.g. 'it-IT')\r\n  value     text         NOT NULL — translated string\r\n\r\nComposite unique: (key, language) — non-partial index: a soft-deleted row\r\nstill reserves the key; recreating it surfaces a conflict (ERR05 → restore),\r\nnever a deleted+live duplicate.\r\n\r\nPlus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by)."
+						"text": "TranslationEntityBase — standard i18n translations table entity.\n\nSchema = module boundary. Each module creates a concrete subclass with its\nown schema. The DAL's Repository resolves the schema natively via\ngetQualifiedTableName(entity) — no raw SQL, no string interpolation.\n\nBE creates entity classes for all modules it manages:\n  @Entity(\"translations\", \"public\")\n  export class AppTranslationEntity extends TranslationEntityBase {}\n\n  @Entity(\"translations\", \"system\")\n  export class SystemTranslationEntity extends TranslationEntityBase {}\n\n  @Entity(\"translations\", \"emailsender\")\n  export class EmailsenderTranslationEntity extends TranslationEntityBase {}\n\nThe BE's central CRUD handler maps module code → entity class → Repository.\nUS microservices do NOT create entity classes — the BE manages their schemas.\n\nColumns:\n  key       varchar(255) NOT NULL — full dot-path (e.g. 'app.auth.login.title')\n  language  varchar(10)  NOT NULL — BCP 47 tag (e.g. 'it-IT')\n  value     text         NOT NULL — translated string\n\nComposite unique: (key, language) — non-partial index: a soft-deleted row\nstill reserves the key; recreating it surfaces a conflict (ERR05 → restore),\nnever a deleted+live duplicate.\n\nPlus standard audit columns (created_at/by, updated_at/by, version, deleted_at/by)."
 					}
 				]
 			},
@@ -48670,7 +48670,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — read-only projection of the platform identity\r\ntable "
+						"text": " — read-only projection of the platform identity\ntable "
 					},
 					{
 						"kind": "code",
@@ -48678,7 +48678,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", owned by the DAL so the auditable\r\ndisplay-name join is a STATIC, hardcoded statement: every auditable\r\nentity read (list/get/stream/audit) LEFT JOINs this table and projects\r\n"
+						"text": ", owned by the DAL so the auditable\ndisplay-name join is a STATIC, hardcoded statement: every auditable\nentity read (list/get/stream/audit) LEFT JOINs this table and projects\n"
 					},
 					{
 						"kind": "code",
@@ -48694,7 +48694,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — no consumer config, no per-service entity.\r\n\r\n"
+						"text": " — no consumer config, no per-service entity.\n\n"
 					},
 					{
 						"kind": "code",
@@ -48710,7 +48710,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "), not a module\r\ndomain: "
+						"text": "), not a module\ndomain: "
 					},
 					{
 						"kind": "code",
@@ -48718,7 +48718,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " is exempted from the schema-domain check via the\r\nbuilt-in "
+						"text": " is exempted from the schema-domain check via the\nbuilt-in "
 					},
 					{
 						"kind": "code",
@@ -48734,7 +48734,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", so the join\r\nresolves legally from every service domain.\r\n\r\nThis is NOT "
+						"text": ", so the join\nresolves legally from every service domain.\n\nThis is NOT "
 					},
 					{
 						"kind": "code",
@@ -48742,7 +48742,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ": the full entity — Casdoor sync, all\r\ncolumns, CRUD + routes — stays owned by the backend. Only the three\r\ncolumns the auditable join needs are projected here."
+						"text": ": the full entity — Casdoor sync, all\ncolumns, CRUD + routes — stays owned by the backend. Only the three\ncolumns the auditable join needs are projected here."
 					}
 				]
 			},
@@ -48907,7 +48907,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " /\r\n"
+								"text": " /\n"
 							},
 							{
 								"kind": "code",
@@ -48923,7 +48923,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is the audited\r\nrow's entity class — its column meta carries the "
+								"text": " is the audited\nrow's entity class — its column meta carries the "
 							},
 							{
 								"kind": "code",
@@ -48931,7 +48931,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " targets.\r\nReturns the same rows (deltas replaced in place via spread copy —\r\ncaller owns the mapping)."
+								"text": " targets.\nReturns the same rows (deltas replaced in place via spread copy —\ncaller owns the mapping)."
 							}
 						]
 					},
@@ -49582,7 +49582,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Page through an entity audit table, newest first.\r\n"
+								"text": "Page through an entity audit table, newest first.\n"
 							},
 							{
 								"kind": "code",
@@ -49598,7 +49598,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " —\r\n"
+								"text": " —\n"
 							},
 							{
 								"kind": "code",
@@ -49606,7 +49606,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " COALESCEs onto the raw actor (uuid / \"system\")\r\nwhen no profile row matches."
+								"text": " COALESCEs onto the raw actor (uuid / \"system\")\nwhen no profile row matches."
 							}
 						]
 					},
@@ -50000,7 +50000,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " — the\r\n entity-router's assembleMeta injects it into the served meta."
+									"text": " — the\n entity-router's assembleMeta injects it into the served meta."
 								}
 							]
 						},
@@ -50079,7 +50079,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " —\r\n the entity-router's assembleMeta injects it into the served meta."
+									"text": " —\n the entity-router's assembleMeta injects it into the served meta."
 								}
 							]
 						},
@@ -50180,7 +50180,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " on the entity class — the entity HAS an audit-trail\r\n table. The router derives "
+									"text": " on the entity class — the entity HAS an audit-trail\n table. The router derives "
 								},
 								{
 									"kind": "code",
@@ -50188,7 +50188,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " from this; never\r\n restated in the decl."
+									"text": " from this; never\n restated in the decl."
 								}
 							]
 						},
@@ -50264,7 +50264,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " mixin on the entity class — clone-tracking columns exist,\r\n so "
+									"text": " mixin on the entity class — clone-tracking columns exist,\n so "
 								},
 								{
 									"kind": "code",
@@ -50272,7 +50272,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " may register. Entities without it never expose the\r\n route: a clone with no tracking columns writes an untracked copy."
+									"text": " may register. Entities without it never expose the\n route: a clone with no tracking columns writes an untracked copy."
 								}
 							]
 						},
@@ -50325,7 +50325,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Ref-display registration sink — the route layer (which is DAL-free\r\n and can't reach the registry directly) feeds the entity's\r\n materialized display template, derived from the SAME authored\r\n "
+										"text": "Ref-display registration sink — the route layer (which is DAL-free\n and can't reach the registry directly) feeds the entity's\n materialized display template, derived from the SAME authored\n "
 									},
 									{
 										"kind": "code",
@@ -50341,7 +50341,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Called once at route\r\n wiring — module-load time, so the registry is complete before any\r\n "
+										"text": ". Called once at route\n wiring — module-load time, so the registry is complete before any\n "
 									},
 									{
 										"kind": "code",
@@ -50349,7 +50349,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " builds and before the first request. Plain\r\n "
+										"text": " builds and before the first request. Plain\n "
 									},
 									{
 										"kind": "code",
@@ -50425,7 +50425,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Subclass seam for config enrichment (auditPort / actor / userEntity\r\ninjection). Runs once, inside the lazy "
+										"text": "Subclass seam for config enrichment (auditPort / actor / userEntity\ninjection). Runs once, inside the lazy "
 									},
 									{
 										"kind": "code",
@@ -50441,7 +50441,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\r\nis available here."
+										"text": "\nis available here."
 									}
 								]
 							},
@@ -51686,7 +51686,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " — present ONLY\r\n when the entity stamps audit columns ("
+									"text": " — present ONLY\n when the entity stamps audit columns ("
 								},
 								{
 									"kind": "code",
@@ -51694,7 +51694,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " mixin). The\r\n entity-router registers "
+									"text": " mixin). The\n entity-router registers "
 								},
 								{
 									"kind": "code",
@@ -51702,7 +51702,7 @@
 								},
 								{
 									"kind": "text",
-									"text": " on this capability's\r\n presence, so presence must be provable WITHOUT touching "
+									"text": " on this capability's\n presence, so presence must be provable WITHOUT touching "
 								},
 								{
 									"kind": "code",
@@ -51710,7 +51710,7 @@
 								},
 								{
 									"kind": "text",
-									"text": "\r\n (the DAL resolves lazily — dereferencing it at route-registration\r\n time crashes the boot). The call itself still resolves lazily."
+									"text": "\n (the DAL resolves lazily — dereferencing it at route-registration\n time crashes the boot). The call itself still resolves lazily."
 								}
 							]
 						},
@@ -56671,11 +56671,11 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Stable error codes for DAL optimistic concurrency control.\r\n\r\nThese codes are used as PostgreSQL SQLSTATE values (via "
+						"text": "Stable error codes for DAL optimistic concurrency control.\n\nThese codes are used as PostgreSQL SQLSTATE values (via "
 					},
 					{
 						"kind": "code",
-						"text": "`RAISE EXCEPTION\r\nUSING ERRCODE = 'ERR01'`"
+						"text": "`RAISE EXCEPTION\nUSING ERRCODE = 'ERR01'`"
 					},
 					{
 						"kind": "text",
@@ -56687,7 +56687,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " values. Consumers (BE,\r\nUS, FE) branch on the string literal (e.g. "
+						"text": " values. Consumers (BE,\nUS, FE) branch on the string literal (e.g. "
 					},
 					{
 						"kind": "code",
@@ -56695,7 +56695,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ") so that\r\nPG-originated errors and TS-originated errors share the same code.\r\n\r\nConvention: "
+						"text": ") so that\nPG-originated errors and TS-originated errors share the same code.\n\nConvention: "
 					},
 					{
 						"kind": "code",
@@ -56711,7 +56711,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " class is outside the SQL-standard\r\nSQLSTATE classes ("
+						"text": " class is outside the SQL-standard\nSQLSTATE classes ("
 					},
 					{
 						"kind": "code",
@@ -56909,7 +56909,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\r\nconflict-reporting CTE via "
+										"text": "\nconflict-reporting CTE via "
 									},
 									{
 										"kind": "code",
@@ -56917,7 +56917,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (PG-originated) or thrown as\r\n"
+										"text": " (PG-originated) or thrown as\n"
 									},
 									{
 										"kind": "code",
@@ -56925,7 +56925,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " when the conflicting row is not identifiable.\r\nHTTP 409."
+										"text": " when the conflicting row is not identifiable.\nHTTP 409."
 									}
 								]
 							},
@@ -56963,7 +56963,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " set) —\r\nthe row must be restored, never duplicated. PG-originated via\r\n"
+										"text": " set) —\nthe row must be restored, never duplicated. PG-originated via\n"
 									},
 									{
 										"kind": "code",
@@ -56987,7 +56987,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\nHTTP 409."
+										"text": ".\nHTTP 409."
 									}
 								]
 							},
@@ -57025,7 +57025,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " operation exceeded its wall-clock\r\nbudget ("
+										"text": " operation exceeded its wall-clock\nbudget ("
 									},
 									{
 										"kind": "code",
@@ -57041,7 +57041,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ") and the\r\ntransaction was rolled back. TS-originated "
+										"text": ") and the\ntransaction was rolled back. TS-originated "
 									},
 									{
 										"kind": "code",
@@ -57049,7 +57049,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (JS\r\ndeadline between statements) or PG "
+										"text": " (JS\ndeadline between statements) or PG "
 									},
 									{
 										"kind": "code",
@@ -57061,11 +57061,11 @@
 									},
 									{
 										"kind": "code",
-										"text": "`SET LOCAL\r\nstatement_timeout`"
+										"text": "`SET LOCAL\nstatement_timeout`"
 									},
 									{
 										"kind": "text",
-										"text": " killing a slow statement inside the bulk tx).\r\nHTTP 408."
+										"text": " killing a slow statement inside the bulk tx).\nHTTP 408."
 									}
 								]
 							},
@@ -57103,7 +57103,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\r\n("
+										"text": "\n("
 									},
 									{
 										"kind": "code",
@@ -57119,7 +57119,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ":\r\nthe per-connection "
+										"text": ":\nthe per-connection "
 									},
 									{
 										"kind": "code",
@@ -57135,7 +57135,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " inside\r\na bulk transaction). PG never emits "
+										"text": " inside\na bulk transaction). PG never emits "
 									},
 									{
 										"kind": "code",
@@ -57143,7 +57143,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " itself — the boundary maps\r\n"
+										"text": " itself — the boundary maps\n"
 									},
 									{
 										"kind": "code",
@@ -57151,7 +57151,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " to this code. HTTP 500 (typed; 504 is reserved for\r\nDB-unreachable)."
+										"text": " to this code. HTTP 500 (typed; 504 is reserved for\nDB-unreachable)."
 									}
 								]
 							},
@@ -57189,7 +57189,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " that did NOT come through the\r\nDAL conflict CTEs (i.e. a constraint not declared as "
+										"text": " that did NOT come through the\nDAL conflict CTEs (i.e. a constraint not declared as "
 									},
 									{
 										"kind": "code",
@@ -57197,7 +57197,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " in the\r\nentity metadata: manual indexes, deferred/partial constraints). The\r\nboundary maps "
+										"text": " in the\nentity metadata: manual indexes, deferred/partial constraints). The\nboundary maps "
 									},
 									{
 										"kind": "code",
@@ -57205,7 +57205,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " to this code — poor detail, and a signal that a\r\n"
+										"text": " to this code — poor detail, and a signal that a\n"
 									},
 									{
 										"kind": "code",
@@ -57213,7 +57213,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " group may be missing from the entity declaration.\r\nHTTP 409."
+										"text": " group may be missing from the entity declaration.\nHTTP 409."
 									}
 								]
 							},
@@ -57251,7 +57251,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " references a\r\nproperty that is not "
+										"text": " references a\nproperty that is not "
 									},
 									{
 										"kind": "code",
@@ -57275,7 +57275,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " group is\r\nsupplied partially, or the payload carries no identity field at all.\r\nTS-originated "
+										"text": " group is\nsupplied partially, or the payload carries no identity field at all.\nTS-originated "
 									},
 									{
 										"kind": "code",
@@ -57313,7 +57313,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Incoherent or ambiguous identity — the supplied identity fields do not\r\nconverge on a single row: e.g. "
+										"text": "Incoherent or ambiguous identity — the supplied identity fields do not\nconverge on a single row: e.g. "
 									},
 									{
 										"kind": "code",
@@ -57329,7 +57329,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " point at different rows, or\r\nthe match hit more than one row (in-statement "
+										"text": " point at different rows, or\nthe match hit more than one row (in-statement "
 									},
 									{
 										"kind": "code",
@@ -57337,7 +57337,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " guard aborts\r\nthe write atomically). HTTP 412."
+										"text": " guard aborts\nthe write atomically). HTTP 412."
 									}
 								]
 							},
@@ -57375,7 +57375,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " unordered-pair\r\nindex rejected a write whose (parent, child) ends collide with an\r\nexisting row in the REVERSED orientation: in a hierarchy read that\r\nedge would close a 2-cycle. Raised by the add()/update()\r\nconflict-reporting CTE via "
+										"text": " unordered-pair\nindex rejected a write whose (parent, child) ends collide with an\nexisting row in the REVERSED orientation: in a hierarchy read that\nedge would close a 2-cycle. Raised by the add()/update()\nconflict-reporting CTE via "
 									},
 									{
 										"kind": "code",
@@ -57391,7 +57391,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " carries the\r\nconflicting row's uuid and its stored end columns. HTTP 409."
+										"text": " carries the\nconflicting row's uuid and its stored end columns. HTTP 409."
 									}
 								]
 							},
@@ -60569,7 +60569,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Thrown when an auditable-entity write (update/upsert-ON-CONFLICT/delete/restore/hardDelete)\r\nis attempted without a "
+						"text": "Thrown when an auditable-entity write (update/upsert-ON-CONFLICT/delete/restore/hardDelete)\nis attempted without a "
 					},
 					{
 						"kind": "code",
@@ -60577,7 +60577,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " field in the payload.\r\n\r\nCode: "
+						"text": " field in the payload.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -61228,7 +61228,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Thrown when an auditable-entity write matches zero rows AND a disambiguation\r\nSELECT confirms the row no longer exists (was hard-deleted by another writer).\r\n\r\nCode: "
+						"text": "Thrown when an auditable-entity write matches zero rows AND a disambiguation\nSELECT confirms the row no longer exists (was hard-deleted by another writer).\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -61236,7 +61236,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ". TS-originated. HTTP 404.\r\n\r\nDistinct from "
+						"text": ". TS-originated. HTTP 404.\n\nDistinct from "
 					},
 					{
 						"kind": "code",
@@ -61252,7 +61252,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " specifically\r\nmeans \"the row existed when you read it but is now gone\"."
+						"text": " specifically\nmeans \"the row existed when you read it but is now gone\"."
 					}
 				]
 			},
@@ -61859,7 +61859,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " optimistic concurrency violation.\r\n\r\nThe DAL does NOT throw this class in the happy/conflict path — PostgreSQL\r\nraises "
+						"text": " optimistic concurrency violation.\n\nThe DAL does NOT throw this class in the happy/conflict path — PostgreSQL\nraises "
 					},
 					{
 						"kind": "code",
@@ -61867,7 +61867,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " and node-postgres\r\npropagates it as a "
+						"text": " and node-postgres\npropagates it as a "
 					},
 					{
 						"kind": "code",
@@ -61883,7 +61883,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ". This class\r\nis provided only for ergonomic "
+						"text": ". This class\nis provided only for ergonomic "
 					},
 					{
 						"kind": "code",
@@ -61891,7 +61891,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " checks if a consumer wants to\r\nnormalize PG errors into TS errors at a boundary.\r\n\r\nCode: "
+						"text": " checks if a consumer wants to\nnormalize PG errors into TS errors at a boundary.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -62498,7 +62498,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Unique-constraint conflict on a live row.\r\n\r\nNormally PG-originated: the "
+						"text": "Unique-constraint conflict on a live row.\n\nNormally PG-originated: the "
 					},
 					{
 						"kind": "code",
@@ -62506,7 +62506,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " conflict-reporting CTE calls\r\n"
+						"text": " conflict-reporting CTE calls\n"
 					},
 					{
 						"kind": "code",
@@ -62514,7 +62514,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", and node-postgres propagates it as a\r\n"
+						"text": ", and node-postgres propagates it as a\n"
 					},
 					{
 						"kind": "code",
@@ -62538,7 +62538,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n("
+						"text": "\n("
 					},
 					{
 						"kind": "code",
@@ -62546,7 +62546,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "). The DAL throws this class only\r\nwhen the conflict cannot be attributed to any identifiable row (unique\r\ngroup whose attempted values are all DB-generated, e.g. a payload-less\r\n"
+						"text": "). The DAL throws this class only\nwhen the conflict cannot be attributed to any identifiable row (unique\ngroup whose attempted values are all DB-generated, e.g. a payload-less\n"
 					},
 					{
 						"kind": "code",
@@ -62562,7 +62562,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " checks.\r\n\r\nCode: "
+						"text": " checks.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -63169,7 +63169,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Unique-constraint conflict on a soft-deleted row — the row exists with\r\n"
+						"text": "Unique-constraint conflict on a soft-deleted row — the row exists with\n"
 					},
 					{
 						"kind": "code",
@@ -63177,7 +63177,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " set and must be restored, never duplicated.\r\n\r\nPG-originated via "
+						"text": " set and must be restored, never duplicated.\n\nPG-originated via "
 					},
 					{
 						"kind": "code",
@@ -63193,7 +63193,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\ntravels in the error "
+						"text": "\ntravels in the error "
 					},
 					{
 						"kind": "code",
@@ -63201,7 +63201,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " so consumers can offer a direct restore.\r\nThis class is provided for ergonomic "
+						"text": " so consumers can offer a direct restore.\nThis class is provided for ergonomic "
 					},
 					{
 						"kind": "code",
@@ -63209,7 +63209,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " checks.\r\n\r\nCode: "
+						"text": " checks.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -63816,7 +63816,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Out-of-range page on a paginated list — the requested page exceeds the\r\nlast available page while matching rows DO exist. An empty page-1 result\r\nis a legitimate empty set, never this error; "
+						"text": "Out-of-range page on a paginated list — the requested page exceeds the\nlast available page while matching rows DO exist. An empty page-1 result\nis a legitimate empty set, never this error; "
 					},
 					{
 						"kind": "code",
@@ -63824,7 +63824,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " on a\r\nnon-empty filter is a request violation (probing or stale client state),\r\nnot data to fabricate — the wire answers an error, not a lying total.\r\n\r\nCode: "
+						"text": " on a\nnon-empty filter is a request violation (probing or stale client state),\nnot data to fabricate — the wire answers an error, not a lying total.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -64479,7 +64479,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Thrown when a bulk write exceeds its wall-clock budget\r\n("
+						"text": "Thrown when a bulk write exceeds its wall-clock budget\n("
 					},
 					{
 						"kind": "code",
@@ -64495,7 +64495,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "). The surrounding\r\ntransaction is rolled back — no partial writes survive.\r\n\r\nCode: "
+						"text": "). The surrounding\ntransaction is rolled back — no partial writes survive.\n\nCode: "
 					},
 					{
 						"kind": "code",
@@ -64503,11 +64503,11 @@
 					},
 					{
 						"kind": "text",
-						"text": ". TS-originated (the JS deadline fires between\r\nstatements; a slow single statement is bounded by "
+						"text": ". TS-originated (the JS deadline fires between\nstatements; a slow single statement is bounded by "
 					},
 					{
 						"kind": "code",
-						"text": "`SET LOCAL\r\nstatement_timeout`"
+						"text": "`SET LOCAL\nstatement_timeout`"
 					},
 					{
 						"kind": "text",
@@ -65375,7 +65375,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Resolved storage type from runtime meta — explicit pgType or semantic\r\n pin ("
+								"text": "Resolved storage type from runtime meta — explicit pgType or semantic\n pin ("
 							},
 							{
 								"kind": "code",
@@ -65383,7 +65383,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " when unknown). Non-authoritative: used as a codec hint,\r\n not as schema truth."
+								"text": " when unknown). Non-authoritative: used as a codec hint,\n not as schema truth."
 							}
 						]
 					},
@@ -66563,7 +66563,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nfield, an "
+								"text": "\nfield, an "
 							},
 							{
 								"kind": "code",
@@ -66571,7 +66571,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " codec hint, or an explicit timestamptz/timestamp\r\npgType. "
+								"text": " codec hint, or an explicit timestamptz/timestamp\npgType. "
 							},
 							{
 								"kind": "code",
@@ -66611,7 +66611,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " strings —\r\nNOT Dates — by contract."
+								"text": " strings —\nNOT Dates — by contract."
 							}
 						]
 					},
@@ -66678,7 +66678,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " query parameters.\r\n"
+								"text": " query parameters.\n"
 							},
 							{
 								"kind": "code",
@@ -66702,7 +66702,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ");\r\n"
+								"text": ");\n"
 							},
 							{
 								"kind": "code",
@@ -66734,7 +66734,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " literal;\r\njsonb payloads → JSON string (nested bigint → number — jsonb numerics are\r\ndoubles anyway and BigInt breaks JSON.stringify)."
+								"text": " literal;\njsonb payloads → JSON string (nested bigint → number — jsonb numerics are\ndoubles anyway and BigInt breaks JSON.stringify)."
 							}
 						]
 					},
@@ -66812,7 +66812,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for date-like\r\ncolumns, "
+								"text": " for date-like\ncolumns, "
 							},
 							{
 								"kind": "code",
@@ -66828,7 +66828,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for vector columns.\r\nDriver-native shapes (pg already returns "
+								"text": " for vector columns.\nDriver-native shapes (pg already returns "
 							},
 							{
 								"kind": "code",
@@ -66844,7 +66844,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "/arrays) pass\r\nthrough unchanged."
+								"text": "/arrays) pass\nthrough unchanged."
 							}
 						]
 					},
@@ -66977,7 +66977,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " from JSON, restore column-typed values on the\r\nentity: "
+								"text": " from JSON, restore column-typed values on the\nentity: "
 							},
 							{
 								"kind": "code",
@@ -67017,7 +67017,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " or a\r\nbare numeric string), "
+								"text": " or a\nbare numeric string), "
 							},
 							{
 								"kind": "code",
@@ -67651,7 +67651,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " chain (subclass first — wins on conflicts, matching the\r\ndecorator-merge semantics of "
+								"text": " chain (subclass first — wins on conflicts, matching the\ndecorator-merge semantics of "
 							},
 							{
 								"kind": "code",
@@ -67659,7 +67659,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "). Returns the\r\nannotation info for "
+								"text": "). Returns the\nannotation info for "
 							},
 							{
 								"kind": "code",
@@ -67683,7 +67683,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " when the chain\r\ndeclares no such property."
+								"text": " when the chain\ndeclares no such property."
 							}
 						]
 					},
@@ -67783,7 +67783,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n(usually the entity registry module). "
+								"text": "\n(usually the entity registry module). "
 							},
 							{
 								"kind": "code",
@@ -67791,7 +67791,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " are taken from the\r\nnearest "
+								"text": " are taken from the\nnearest "
 							},
 							{
 								"kind": "code",
@@ -67855,7 +67855,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Entity metadata via legacy TypeScript decorators (WeakMap \"reflection\").\r\n\r\n**Convention:** every \"data\" property on the class "
+						"text": "Entity metadata via legacy TypeScript decorators (WeakMap \"reflection\").\n\n**Convention:** every \"data\" property on the class "
 					},
 					{
 						"kind": "code",
@@ -67863,7 +67863,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " is a SQL column\r\nwith a name equal to the property name (snake_case). "
+						"text": " is a SQL column\nwith a name equal to the property name (snake_case). "
 					},
 					{
 						"kind": "code",
@@ -67871,7 +67871,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " is only needed\r\nfor: "
+						"text": " is only needed\nfor: "
 					},
 					{
 						"kind": "code",
@@ -67895,7 +67895,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ", or a short alias for the column name.\r\n\r\n- "
+						"text": ", or a short alias for the column name.\n\n- "
 					},
 					{
 						"kind": "code",
@@ -67903,7 +67903,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — table name; optional argument if different from class name.\r\n- "
+						"text": " — table name; optional argument if different from class name.\n- "
 					},
 					{
 						"kind": "code",
@@ -67911,7 +67911,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — primary key (one column only).\r\n- "
+						"text": " — primary key (one column only).\n- "
 					},
 					{
 						"kind": "code",
@@ -67919,7 +67919,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — unique index (DDL patch).\r\n- "
+						"text": " — unique index (DDL patch).\n- "
 					},
 					{
 						"kind": "code",
@@ -67927,7 +67927,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — excludes the property from persistence meta & DAL queries.\r\n- "
+						"text": " — excludes the property from persistence meta & DAL queries.\n- "
 					},
 					{
 						"kind": "code",
@@ -67935,7 +67935,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — marks a field as audit (created_at, created_by, etc.).\r\n- "
+						"text": " — marks a field as audit (created_at, created_by, etc.).\n- "
 					},
 					{
 						"kind": "code",
@@ -67943,7 +67943,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — marks a field as soft-delete (deleted_at, deleted_by).\r\n- "
+						"text": " — marks a field as soft-delete (deleted_at, deleted_by).\n- "
 					},
 					{
 						"kind": "code",
@@ -67951,7 +67951,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — marks a field as clone tracking (cloned_from).\r\n- "
+						"text": " — marks a field as clone tracking (cloned_from).\n- "
 					},
 					{
 						"kind": "code",
@@ -68346,7 +68346,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " form a composite index,\r\nordered by "
+								"text": " form a composite index,\nordered by "
 							},
 							{
 								"kind": "code",
@@ -68354,7 +68354,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (ascending). Omitted → single-column index\r\nauto-named "
+								"text": " (ascending). Omitted → single-column index\nauto-named "
 							},
 							{
 								"kind": "code",
@@ -68835,7 +68835,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "PostgreSQL storage type override for DDL + io. Canonical names only\r\n("
+								"text": "PostgreSQL storage type override for DDL + io. Canonical names only\n("
 							},
 							{
 								"kind": "code",
@@ -68843,7 +68843,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " union) — aliases are compile errors; modifiers come from\r\n"
+								"text": " union) — aliases are compile errors; modifiers come from\n"
 							},
 							{
 								"kind": "code",
@@ -68867,7 +68867,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", never from the string.\r\nOmit when the annotation already implies the right type\r\n("
+								"text": ", never from the string.\nOmit when the annotation already implies the right type\n("
 							},
 							{
 								"kind": "code",
@@ -69245,7 +69245,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — the RANGE partition key declaration.\r\n Partitioning is SLICING only — retention is the orthogonal\r\n "
+						"text": " — the RANGE partition key declaration.\n Partitioning is SLICING only — retention is the orthogonal\n "
 					},
 					{
 						"kind": "code",
@@ -69434,7 +69434,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — declares membership in a partitioned\r\n parent's atomic delete/retention unit."
+						"text": " — declares membership in a partitioned\n parent's atomic delete/retention unit."
 					}
 				]
 			},
@@ -69640,7 +69640,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Maps the class to a DB table. Optional argument overrides the table name;\r\nif omitted, the table name equals the class name."
+								"text": "Maps the class to a DB table. Optional argument overrides the table name;\nif omitted, the table name equals the class name."
 							}
 						]
 					},
@@ -69987,7 +69987,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ",\r\n "
+								"text": ",\n "
 							},
 							{
 								"kind": "code",
@@ -70003,7 +70003,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ". The annotation is erased at\r\n transpile; without it the column resolves "
+								"text": ". The annotation is erased at\n transpile; without it the column resolves "
 							},
 							{
 								"kind": "code",
@@ -70011,7 +70011,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " in meta and\r\n hydrates by driver default."
+								"text": " in meta and\n hydrates by driver default."
 							}
 						]
 					},
@@ -70052,7 +70052,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is honest.\r\n ("
+								"text": " is honest.\n ("
 							},
 							{
 								"kind": "code",
@@ -70060,7 +70060,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on the prop means \"may be absent on non-read paths\" — a different\r\n fact; both are legal together.)"
+								"text": " on the prop means \"may be absent on non-read paths\" — a different\n fact; both are legal together.)"
 							}
 						]
 					},
@@ -70122,7 +70122,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Marks a property as a calculated SQL projection — never a physical column.\r\nThe expression lives ONCE on the entity class; the DAL injects it as\r\n"
+								"text": "Marks a property as a calculated SQL projection — never a physical column.\nThe expression lives ONCE on the entity class; the DAL injects it as\n"
 							},
 							{
 								"kind": "code",
@@ -70130,7 +70130,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on every list/get and substitutes it into WHERE/ORDER BY,\r\nso calculated columns are sortable/filterable like physical ones.\r\n"
+								"text": " on every list/get and substitutes it into WHERE/ORDER BY,\nso calculated columns are sortable/filterable like physical ones.\n"
 							},
 							{
 								"kind": "code",
@@ -70146,7 +70146,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " token (rendered as\r\n"
+								"text": " token (rendered as\n"
 							},
 							{
 								"kind": "code",
@@ -70292,7 +70292,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " form a\r\ncomposite unique index, ordered by "
+								"text": " form a\ncomposite unique index, ordered by "
 							},
 							{
 								"kind": "code",
@@ -70300,7 +70300,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (ascending).\r\nIf omitted, the column gets a single-column unique index (legacy behavior)."
+								"text": " (ascending).\nIf omitted, the column gets a single-column unique index (legacy behavior)."
 							}
 						]
 					},
@@ -70329,7 +70329,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Order priority within a composite unique index (0-based).\r\nLower values come first in the index. Only meaningful when "
+								"text": "Order priority within a composite unique index (0-based).\nLower values come first in the index. Only meaningful when "
 							},
 							{
 								"kind": "code",
@@ -70374,7 +70374,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — NULL members of the unique group are\r\n treated as equal (they conflict instead of stacking). Declare on any\r\n member of the group; convention is the order-0 member."
+								"text": " — NULL members of the unique group are\n treated as equal (they conflict instead of stacking). Declare on any\n member of the group; convention is the order-0 member."
 							}
 						]
 					},
@@ -71030,7 +71030,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " defaults to\r\n "
+								"text": " defaults to\n "
 							},
 							{
 								"kind": "code",
@@ -71046,7 +71046,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", exactly\r\n one per entity). "
+								"text": ", exactly\n one per entity). "
 							},
 							{
 								"kind": "code",
@@ -71062,7 +71062,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " mark the immutable\r\n clone-audit columns the write path populates at clone time."
+								"text": " mark the immutable\n clone-audit columns the write path populates at clone time."
 							}
 						]
 					},
@@ -71133,7 +71133,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Declares a served-meta reference: the column's value is the uid (uuid)\r\n of a record in the named entity — the single source of truth behind\r\n "
+								"text": "Declares a served-meta reference: the column's value is the uid (uuid)\n of a record in the named entity — the single source of truth behind\n "
 							},
 							{
 								"kind": "code",
@@ -71149,7 +71149,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on the served column. Applied once on the\r\n "
+								"text": " on the served column. Applied once on the\n "
 							},
 							{
 								"kind": "code",
@@ -71173,7 +71173,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " actor columns it is inherited by\r\n every entity; it is also the declaration path for domain FK display\r\n refs (replacing authored "
+								"text": " actor columns it is inherited by\n every entity; it is also the declaration path for domain FK display\n refs (replacing authored "
 							},
 							{
 								"kind": "code",
@@ -71244,7 +71244,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Marks an entity as having an audit trail table.\r\n "
+								"text": "Marks an entity as having an audit trail table.\n "
 							},
 							{
 								"kind": "code",
@@ -71252,7 +71252,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " overrides the audit-table retention window —\r\n default "
+								"text": " overrides the audit-table retention window —\n default "
 							},
 							{
 								"kind": "code",
@@ -71260,7 +71260,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (audit is a bounded operational cost, not an\r\n archive); "
+								"text": " (audit is a bounded operational cost, not an\n archive); "
 							},
 							{
 								"kind": "code",
@@ -71370,7 +71370,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Marks a class as BEING an audit trail entity (e.g., AuditLogEntity).\r\nDistinct from @AuditTrail() which marks an entity as HAVING an audit trail.\r\nThe changedByColumn specifies which property holds the actor (default: \"changed_by\")."
+								"text": "Marks a class as BEING an audit trail entity (e.g., AuditLogEntity).\nDistinct from @AuditTrail() which marks an entity as HAVING an audit trail.\nThe changedByColumn specifies which property holds the actor (default: \"changed_by\")."
 							}
 						]
 					},
@@ -71472,7 +71472,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Marks a column as the RANGE partition key of the table (pg_partman,\r\nmonthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and\r\ndate/timestamptz-typed; every unique group and the primary key emitted in\r\nDDL must include it (PostgreSQL requirement) — "
+								"text": "Marks a column as the RANGE partition key of the table (pg_partman,\nmonthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and\ndate/timestamptz-typed; every unique group and the primary key emitted in\nDDL must include it (PostgreSQL requirement) — "
 							},
 							{
 								"kind": "code",
@@ -71480,7 +71480,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nvalidates this and throws otherwise, so a partitioned entity can never\r\nproduce an invalid table definition."
+								"text": "\nvalidates this and throws otherwise, so a partitioned entity can never\nproduce an invalid table definition."
 							}
 						]
 					},
@@ -71554,7 +71554,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " option that\r\nconflated slicing with expiry. Retention now lives on "
+								"text": " option that\nconflated slicing with expiry. Retention now lives on "
 							},
 							{
 								"kind": "code",
@@ -71595,7 +71595,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Marks a column as the RANGE partition key of the table (pg_partman,\r\nmonthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and\r\ndate/timestamptz-typed; every unique group and the primary key emitted in\r\nDDL must include it (PostgreSQL requirement) — "
+										"text": "Marks a column as the RANGE partition key of the table (pg_partman,\nmonthly/daily/…). Exactly ONE per entity. The column must be NOT NULL and\ndate/timestamptz-typed; every unique group and the primary key emitted in\nDDL must include it (PostgreSQL requirement) — "
 									},
 									{
 										"kind": "code",
@@ -71603,7 +71603,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\r\nvalidates this and throws otherwise, so a partitioned entity can never\r\nproduce an invalid table definition."
+										"text": "\nvalidates this and throws otherwise, so a partitioned entity can never\nproduce an invalid table definition."
 									}
 								]
 							},
@@ -71665,7 +71665,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Declares how long rows live — the EXPIRY policy, orthogonal to\r\n"
+								"text": "Declares how long rows live — the EXPIRY policy, orthogonal to\n"
 							},
 							{
 								"kind": "code",
@@ -71673,7 +71673,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (slicing). Property decorator on the expiry column:\r\n- on a "
+								"text": " (slicing). Property decorator on the expiry column:\n- on a "
 							},
 							{
 								"kind": "code",
@@ -71681,7 +71681,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "-ed entity it MUST sit on the partition column —\r\n  retention drops aged partitions (meta validation throws otherwise);\r\n- on a non-partitioned entity it drives a row-level sweep\r\n  ("
+								"text": "-ed entity it MUST sit on the partition column —\n  retention drops aged partitions (meta validation throws otherwise);\n- on a non-partitioned entity it drives a row-level sweep\n  ("
 							},
 							{
 								"kind": "code",
@@ -71689,7 +71689,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") in the same maintenance run.\r\n"
+								"text": ") in the same maintenance run.\n"
 							},
 							{
 								"kind": "code",
@@ -71705,7 +71705,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\ndefault, "
+								"text": "\ndefault, "
 							},
 							{
 								"kind": "code",
@@ -71721,7 +71721,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " targets the\r\nDOMAIN table, never the audit table."
+								"text": " targets the\nDOMAIN table, never the audit table."
 							}
 						]
 					},
@@ -71804,7 +71804,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " → single-column\r\nbtree auto-named "
+								"text": " → single-column\nbtree auto-named "
 							},
 							{
 								"kind": "code",
@@ -71820,7 +71820,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on multiple columns →\r\ncomposite index ordered by "
+								"text": " on multiple columns →\ncomposite index ordered by "
 							},
 							{
 								"kind": "code",
@@ -71828,7 +71828,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ". Supports every PG access method:\r\n"
+								"text": ". Supports every PG access method:\n"
 							},
 							{
 								"kind": "code",
@@ -71836,7 +71836,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ",\r\n"
+								"text": ",\n"
 							},
 							{
 								"kind": "code",
@@ -71844,7 +71844,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for partial indexes.\r\nUnique indexes stay on "
+								"text": " for partial indexes.\nUnique indexes stay on "
 							},
 							{
 								"kind": "code",
@@ -71893,7 +71893,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " → single-column\r\nbtree auto-named "
+								"text": " → single-column\nbtree auto-named "
 							},
 							{
 								"kind": "code",
@@ -71909,7 +71909,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on multiple columns →\r\ncomposite index ordered by "
+								"text": " on multiple columns →\ncomposite index ordered by "
 							},
 							{
 								"kind": "code",
@@ -71917,7 +71917,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ". Supports every PG access method:\r\n"
+								"text": ". Supports every PG access method:\n"
 							},
 							{
 								"kind": "code",
@@ -71925,7 +71925,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ",\r\n"
+								"text": ",\n"
 							},
 							{
 								"kind": "code",
@@ -71933,7 +71933,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for partial indexes.\r\nUnique indexes stay on "
+								"text": " for partial indexes.\nUnique indexes stay on "
 							},
 							{
 								"kind": "code",
@@ -72006,7 +72006,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Declares a FOREIGN KEY constraint referencing another entity's column.\r\n"
+								"text": "Declares a FOREIGN KEY constraint referencing another entity's column.\n"
 							},
 							{
 								"kind": "code",
@@ -72022,7 +72022,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") so circular entity\r\nreferences resolve at meta-read time, not class-eval time.\r\nMinimal form "
+								"text": ") so circular entity\nreferences resolve at meta-read time, not class-eval time.\nMinimal form "
 							},
 							{
 								"kind": "code",
@@ -72030,7 +72030,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " references the target's\r\n"
+								"text": " references the target's\n"
 							},
 							{
 								"kind": "code",
@@ -72054,7 +72054,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " —\r\nthe zero-option path is the safest behavior.\r\nNote: a partitioned parent ("
+								"text": " —\nthe zero-option path is the safest behavior.\nNote: a partitioned parent ("
 							},
 							{
 								"kind": "code",
@@ -72062,7 +72062,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") cannot be a plain FK target\r\nunless the referenced unique constraint includes the partition key —\r\nmeta validation throws and points to "
+								"text": ") cannot be a plain FK target\nunless the referenced unique constraint includes the partition key —\nmeta validation throws and points to "
 							},
 							{
 								"kind": "code",
@@ -72177,7 +72177,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "-partitioned\r\nparent: it joins the parent's atomic delete and retention purge unit.\r\nNeeded because a partitioned parent cannot host a plain FOREIGN KEY\r\n(unique constraints must contain the partition key) — the relationship\r\nis application-level, enforced by the repository cascade and the\r\npartition-maintenance purge. Entities that merely REFERENCE a parent\r\n(telemetry, logs) simply don't declare this."
+								"text": "-partitioned\nparent: it joins the parent's atomic delete and retention purge unit.\nNeeded because a partitioned parent cannot host a plain FOREIGN KEY\n(unique constraints must contain the partition key) — the relationship\nis application-level, enforced by the repository cascade and the\npartition-maintenance purge. Entities that merely REFERENCE a parent\n(telemetry, logs) simply don't declare this."
 							}
 						]
 					},
@@ -72242,7 +72242,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Marks an entity as a dictionary/enum surface — typically set ONCE on a\r\nshared base class (e.g. DictEntityBase) so every subclass inherits the\r\nmarker through collectMetaChain. "
+								"text": "Marks an entity as a dictionary/enum surface — typically set ONCE on a\nshared base class (e.g. DictEntityBase) so every subclass inherits the\nmarker through collectMetaChain. "
 							},
 							{
 								"kind": "code",
@@ -72258,7 +72258,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nfacet; redeclaring on a concrete class replaces it wholesale."
+								"text": "\nfacet; redeclaring on a concrete class replaces it wholesale."
 							}
 						]
 					},
@@ -72333,7 +72333,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " facet — subclass-first walk of the meta\r\nchain (same precedence as every class-level flag). "
+								"text": " facet — subclass-first walk of the meta\nchain (same precedence as every class-level flag). "
 							},
 							{
 								"kind": "code",
@@ -72341,7 +72341,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " when no\r\nancestor carries "
+								"text": " when no\nancestor carries "
 							},
 							{
 								"kind": "code",
@@ -72423,7 +72423,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — declares a directed parent→child edge entity (e.g.\r\n"
+								"text": " — declares a directed parent→child edge entity (e.g.\n"
 							},
 							{
 								"kind": "code",
@@ -72431,7 +72431,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "): rows are typed arcs between two entity references,\r\nnever standalone page entities. The served meta carries the "
+								"text": "): rows are typed arcs between two entity references,\nnever standalone page entities. The served meta carries the "
 							},
 							{
 								"kind": "code",
@@ -72439,7 +72439,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nfacet (no "
+								"text": "\nfacet (no "
 							},
 							{
 								"kind": "code",
@@ -72447,7 +72447,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", no pinned column — the display is\r\nviewpoint-dependent: "
+								"text": ", no pinned column — the display is\nviewpoint-dependent: "
 							},
 							{
 								"kind": "code",
@@ -72455,7 +72455,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " from the parent's page,\r\n"
+								"text": " from the parent's page,\n"
 							},
 							{
 								"kind": "code",
@@ -72471,7 +72471,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\ninjects "
+								"text": "\ninjects "
 							},
 							{
 								"kind": "code",
@@ -72479,7 +72479,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on the two end columns (repointing an edge is\r\ndelete+create); "
+								"text": " on the two end columns (repointing an edge is\ndelete+create); "
 							},
 							{
 								"kind": "code",
@@ -72487,7 +72487,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " derives the unordered-pair\r\nunique index "
+								"text": " derives the unordered-pair\nunique index "
 							},
 							{
 								"kind": "code",
@@ -72495,7 +72495,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — the atomic\r\nrejection of both exact duplicates and direction-reversed duplicates\r\n(a reversed row is a circular reference, not \"the same edge twice\" —\r\nno check-insert race exists because the constraint lives in the index).\r\n"
+								"text": " — the atomic\nrejection of both exact duplicates and direction-reversed duplicates\n(a reversed row is a circular reference, not \"the same edge twice\" —\nno check-insert race exists because the constraint lives in the index).\n"
 							},
 							{
 								"kind": "code",
@@ -72503,7 +72503,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " points at the directional vocabulary dict carrying the\r\nforward/inverse label pair; "
+								"text": " points at the directional vocabulary dict carrying the\nforward/inverse label pair; "
 							},
 							{
 								"kind": "code",
@@ -72511,7 +72511,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " opts into deep-cycle\r\n(3+ hops, same-type edges) detection on insert."
+								"text": " opts into deep-cycle\n(3+ hops, same-type edges) detection on insert."
 							}
 						]
 					},
@@ -72584,7 +72584,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " facet — subclass-first walk of the\r\nmeta chain (same precedence as "
+								"text": " facet — subclass-first walk of the\nmeta chain (same precedence as "
 							},
 							{
 								"kind": "code",
@@ -72600,7 +72600,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " when no\r\nancestor carries "
+								"text": " when no\nancestor carries "
 							},
 							{
 								"kind": "code",
@@ -72746,7 +72746,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — i.e. it HAS an\r\n audit-trail table. Distinct from column-level "
+								"text": " — i.e. it HAS an\n audit-trail table. Distinct from column-level "
 							},
 							{
 								"kind": "code",
@@ -72754,7 +72754,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", which\r\n only marks write-path-stamped columns. Named "
+								"text": ", which\n only marks write-path-stamped columns. Named "
 							},
 							{
 								"kind": "code",
@@ -72762,7 +72762,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " so it\r\n never collides with the meta-level "
+								"text": " so it\n never collides with the meta-level "
 							},
 							{
 								"kind": "code",
@@ -72841,7 +72841,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " column — the\r\n "
+								"text": " column — the\n "
 							},
 							{
 								"kind": "code",
@@ -72857,7 +72857,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ". Entities without it must not expose\r\n "
+								"text": ". Entities without it must not expose\n "
 							},
 							{
 								"kind": "code",
@@ -72975,7 +72975,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Returns a schema-qualified table reference for SQL generation.\r\nWhen the entity has an explicit @Entity(\"table\", \"schema\") override,\r\nreturns "
+								"text": "Returns a schema-qualified table reference for SQL generation.\nWhen the entity has an explicit @Entity(\"table\", \"schema\") override,\nreturns "
 							},
 							{
 								"kind": "code",
@@ -73200,7 +73200,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", or undefined when the prop\r\n is a physical/non-existent column. Used by the query builder to swap the\r\n column ref for the raw expression in WHERE/ORDER BY."
+								"text": ", or undefined when the prop\n is a physical/non-existent column. Used by the query builder to swap the\n column ref for the raw expression in WHERE/ORDER BY."
 							}
 						]
 					},
@@ -74441,7 +74441,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ").\r\n Not physical columns: absent from DDL, present in read projections.\r\n "
+								"text": ").\n Not physical columns: absent from DDL, present in read projections.\n "
 							},
 							{
 								"kind": "code",
@@ -74629,7 +74629,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " exists.\r\n Slicing only — expiry lives on "
+								"text": " exists.\n Slicing only — expiry lives on "
 							},
 							{
 								"kind": "code",
@@ -74771,7 +74771,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " exists.\r\n On partitioned tables "
+								"text": " exists.\n On partitioned tables "
 							},
 							{
 								"kind": "code",
@@ -74787,7 +74787,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (validated);\r\n on plain tables it marks the row-sweep expiry column."
+								"text": " (validated);\n on plain tables it marks the row-sweep expiry column."
 							}
 						]
 					},
@@ -75150,7 +75150,7 @@
 											"summary": [
 												{
 													"kind": "text",
-													"text": "Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the\r\n plain columns — produced by the "
+													"text": "Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the\n plain columns — produced by the "
 												},
 												{
 													"kind": "code",
@@ -75158,7 +75158,7 @@
 												},
 												{
 													"kind": "text",
-													"text": " pair-unique derivation\r\n ("
+													"text": " pair-unique derivation\n ("
 												},
 												{
 													"kind": "code",
@@ -75206,7 +75206,7 @@
 												},
 												{
 													"kind": "text",
-													"text": " pair constraint) — plain\r\n "
+													"text": " pair constraint) — plain\n "
 												},
 												{
 													"kind": "code",
@@ -75530,7 +75530,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\nColumn map is keyed by **SQL column name** so it aligns with "
+										"text": ".\nColumn map is keyed by **SQL column name** so it aligns with "
 									},
 									{
 										"kind": "code",
@@ -75773,7 +75773,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Semantic decorators pin the storage type of system columns —\r\n"
+								"text": "Semantic decorators pin the storage type of system columns —\n"
 							},
 							{
 								"kind": "code",
@@ -75789,7 +75789,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " regardless of how the prop\r\nis annotated ("
+								"text": " regardless of how the prop\nis annotated ("
 							},
 							{
 								"kind": "code",
@@ -75888,7 +75888,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " keys are surrogate int8 columns\r\n by construction: the decorator semantics already pin the storage."
+								"text": " keys are surrogate int8 columns\n by construction: the decorator semantics already pin the storage."
 							}
 						]
 					},
@@ -75921,7 +75921,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " runtime type hint — a builtin codec name or a\r\n class ctor (jsonb instance revival). Also pins storage since the TS\r\n annotation is erased at transpile."
+								"text": " runtime type hint — a builtin codec name or a\n class ctor (jsonb instance revival). Also pins storage since the TS\n annotation is erased at transpile."
 							}
 						]
 					},
@@ -75956,7 +75956,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Static source annotation (present in the schema pipeline; absent at\r\n runtime — runtime io never needs it, it drives params via value shape)."
+								"text": "Static source annotation (present in the schema pipeline; absent at\n runtime — runtime io never needs it, it drives params via value shape)."
 							}
 						]
 					},
@@ -76111,7 +76111,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for unmappable annotations —\r\nthe caller decides whether that's an error (schema pipeline) or a\r\nnon-authoritative runtime hint."
+								"text": " for unmappable annotations —\nthe caller decides whether that's an error (schema pipeline) or a\nnon-authoritative runtime hint."
 							}
 						]
 					},
@@ -76187,7 +76187,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", else\r\nsemantic decorator pin, else "
+								"text": ", else\nsemantic decorator pin, else "
 							},
 							{
 								"kind": "code",
@@ -76195,7 +76195,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " pin (codec names + class ctor →\r\njsonb), else annotation inference. Throws when none can produce a type —\r\nan unmappable entity property must never silently become "
+								"text": " pin (codec names + class ctor →\njsonb), else annotation inference. Throws when none can produce a type —\nan unmappable entity property must never silently become "
 							},
 							{
 								"kind": "code",
@@ -76270,7 +76270,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is incompatible with the declared TS\r\nannotation family (e.g. "
+								"text": " is incompatible with the declared TS\nannotation family (e.g. "
 							},
 							{
 								"kind": "code",
@@ -76298,7 +76298,7 @@
 							},
 							{
 								"kind": "code",
-								"text": "`pgType:\r\n\"int8\"`"
+								"text": "`pgType:\n\"int8\"`"
 							},
 							{
 								"kind": "text",
@@ -76512,7 +76512,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Authoring warnings for one column:\r\n- "
+								"text": "Authoring warnings for one column:\n- "
 							},
 							{
 								"kind": "code",
@@ -76536,7 +76536,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " column resolving to a non-uuid type.\r\n  The name SAYS uuid; either the column should be "
+								"text": " column resolving to a non-uuid type.\n  The name SAYS uuid; either the column should be "
 							},
 							{
 								"kind": "code",
@@ -76544,7 +76544,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (retype the prop\r\n  to "
+								"text": " (retype the prop\n  to "
 							},
 							{
 								"kind": "code",
@@ -76560,7 +76560,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") or the name lies.\r\n- "
+								"text": ") or the name lies.\n- "
 							},
 							{
 								"kind": "code",
@@ -76576,7 +76576,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " equal to what RUNTIME inference\r\n  would resolve without it (annotation stripped — erased at runtime, so\r\n  a restatement of the annotation default is NOT redundant: it is the\r\n  required runtime declaration). Truly redundant only when the type\r\n  comes from another runtime-visible channel — e.g. "
+								"text": " equal to what RUNTIME inference\n  would resolve without it (annotation stripped — erased at runtime, so\n  a restatement of the annotation default is NOT redundant: it is the\n  required runtime declaration). Truly redundant only when the type\n  comes from another runtime-visible channel — e.g. "
 							},
 							{
 								"kind": "code",
@@ -76584,7 +76584,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " on\r\n  a string prop, or a pgType already covered by a semantic/jsType pin."
+								"text": " on\n  a string prop, or a pgType already covered by a semantic/jsType pin."
 							}
 						]
 					},
@@ -76678,7 +76678,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n(an explicit"
+								"text": "\n(an explicit"
 							}
 						],
 						"blockTags": [
@@ -76687,7 +76687,7 @@
 								"content": [
 									{
 										"kind": "text",
-										"text": "schema pin wins; bare entities resolve to the\r\nprimary schema "
+										"text": "schema pin wins; bare entities resolve to the\nprimary schema "
 									},
 									{
 										"kind": "code",
@@ -76695,7 +76695,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "). Throws with the full violation list — the\r\nservice must crash, not degrade.\r\n\r\n"
+										"text": "). Throws with the full violation list — the\nservice must crash, not degrade.\n\n"
 									},
 									{
 										"kind": "code",
@@ -76711,7 +76711,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ": an entity whose TABLE\r\nNAME is in the shared set is exempt (the governed cross-schema contract\r\n— e.g. the gateway's "
+										"text": ": an entity whose TABLE\nNAME is in the shared set is exempt (the governed cross-schema contract\n— e.g. the gateway's "
 									},
 									{
 										"kind": "code",
@@ -76807,7 +76807,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Schema sovereignty domain — the set of PostgreSQL schemas a service is\r\nallowed to touch, declared via "
+						"text": "Schema sovereignty domain — the set of PostgreSQL schemas a service is\nallowed to touch, declared via "
 					},
 					{
 						"kind": "code",
@@ -76815,7 +76815,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " and pushed here by the\r\n"
+						"text": " and pushed here by the\n"
 					},
 					{
 						"kind": "code",
@@ -76831,7 +76831,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ").\r\n\r\nEnforcement points:\r\n- boot: "
+						"text": ").\n\nEnforcement points:\n- boot: "
 					},
 					{
 						"kind": "code",
@@ -76839,7 +76839,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " (schema-domain-assert.ts) — every\r\n  registered"
+						"text": " (schema-domain-assert.ts) — every\n  registered"
 					}
 				],
 				"blockTags": [
@@ -76848,7 +76848,7 @@
 						"content": [
 							{
 								"kind": "text",
-								"text": "must resolve to a declared schema, else the service\r\n  crashes before serving traffic;\r\n- runtime: "
+								"text": "must resolve to a declared schema, else the service\n  crashes before serving traffic;\n- runtime: "
 							},
 							{
 								"kind": "code",
@@ -76856,7 +76856,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is consulted by getQualifiedTableName /\r\n  persistence-meta so ANY entity operation whose schema is outside the\r\n  declared domain throws "
+								"text": " is consulted by getQualifiedTableName /\n  persistence-meta so ANY entity operation whose schema is outside the\n  declared domain throws "
 							},
 							{
 								"kind": "code",
@@ -76864,7 +76864,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " before SQL is built.\r\n\r\nWhat this does NOT cover: raw "
+								"text": " before SQL is built.\n\nWhat this does NOT cover: raw "
 							},
 							{
 								"kind": "code",
@@ -76872,7 +76872,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n— SQL text is not inspected. Physical enforcement against raw SQL is the\r\nper-schema PG role layer (svc_<schema>), a separate hardening task.\r\n\r\nNOTE: this module must not import entity-meta/entity-decorators — they\r\nimport this file (one direction only, no cycle)."
+								"text": "\n— SQL text is not inspected. Physical enforcement against raw SQL is the\nper-schema PG role layer (svc_<schema>), a separate hardening task.\n\nNOTE: this module must not import entity-meta/entity-decorators — they\nimport this file (one direction only, no cycle)."
 							}
 						]
 					}
@@ -77751,7 +77751,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Table names exempt from the domain check in ANY schema — governed\r\ncross-schema contracts. The built-in "
+								"text": "Table names exempt from the domain check in ANY schema — governed\ncross-schema contracts. The built-in "
 							},
 							{
 								"kind": "code",
@@ -77759,7 +77759,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " set is\r\nalways unioned in: "
+								"text": " set is\nalways unioned in: "
 							},
 							{
 								"kind": "code",
@@ -77775,7 +77775,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " are cross-app platform domains,\r\nnot module domains — "
+								"text": " are cross-app platform domains,\nnot module domains — "
 							},
 							{
 								"kind": "code",
@@ -77783,7 +77783,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (platform identity, auditable\r\ndisplay-name joins), "
+								"text": " (platform identity, auditable\ndisplay-name joins), "
 							},
 							{
 								"kind": "code",
@@ -77791,7 +77791,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (module identity — schedule\r\narmer / service display joins) and "
+								"text": " (module identity — schedule\narmer / service display joins) and "
 							},
 							{
 								"kind": "code",
@@ -77799,7 +77799,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (every module\r\nschema carries one; the BE i18n gateway manages them all) are\r\nplatform infrastructure."
+								"text": " (every module\nschema carries one; the BE i18n gateway manages them all) are\nplatform infrastructure."
 							}
 						]
 					},
@@ -78050,7 +78050,7 @@
 								"content": [
 									{
 										"kind": "text",
-										"text": "schema pin\r\nwins, otherwise the domain primary (search_path head). When a domain is\r\nconfigured, any schema outside the declared set throws.\r\n\r\nWithout a configured domain the caller's "
+										"text": "schema pin\nwins, otherwise the domain primary (search_path head). When a domain is\nconfigured, any schema outside the declared set throws.\n\nWithout a configured domain the caller's "
 									},
 									{
 										"kind": "code",
@@ -78066,7 +78066,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ")\r\napplies — the guard is inert so standalone tooling/tests keep working."
+										"text": ")\napplies — the guard is inert so standalone tooling/tests keep working."
 									}
 								]
 							}
@@ -78300,7 +78300,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "True when the diff contains only database-only objects (extras we never\r\ndrop) — i.e. no unapplied entity intent remains."
+								"text": "True when the diff contains only database-only objects (extras we never\ndrop) — i.e. no unapplied entity intent remains."
 							}
 						]
 					},
@@ -80644,7 +80644,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Per-service-schema patch registry (v2).\r\n\r\nEach service owns "
+						"text": "Per-service-schema patch registry (v2).\n\nEach service owns "
 					},
 					{
 						"kind": "code",
@@ -80652,7 +80652,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — the registry is\r\ndomain data of the owning microservice, not a shared global table.\r\nThe DDL is self-bootstrapping: the engine runs it unconditionally before any\r\nread, so an empty database upgrades itself."
+						"text": " — the registry is\ndomain data of the owning microservice, not a shared global table.\nThe DDL is self-bootstrapping: the engine runs it unconditionally before any\nread, so an empty database upgrades itself."
 					}
 				]
 			},
@@ -81201,7 +81201,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Split a patch file into execution segments. Default content is transactional\r\n("
+								"text": "Split a patch file into execution segments. Default content is transactional\n("
 							},
 							{
 								"kind": "code",
@@ -81225,7 +81225,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nrun per-statement in autocommit (for CREATE INDEX CONCURRENTLY & friends).\r\nWhole-file "
+								"text": "\nrun per-statement in autocommit (for CREATE INDEX CONCURRENTLY & friends).\nWhole-file "
 							},
 							{
 								"kind": "code",
@@ -81303,7 +81303,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " segments.\r\n\r\nNeeded because node-pg's simple query protocol executes a multi-statement\r\nstring in a single implicit transaction — to get per-statement autocommit\r\n(required for CREATE INDEX CONCURRENTLY etc.) statements must be sent\r\nseparately. Handles: single/double-quoted strings, dollar-quoted bodies\r\n($$…$$, $tag$…$tag$), line comments, block comments."
+								"text": " segments.\n\nNeeded because node-pg's simple query protocol executes a multi-statement\nstring in a single implicit transaction — to get per-statement autocommit\n(required for CREATE INDEX CONCURRENTLY etc.) statements must be sent\nseparately. Handles: single/double-quoted strings, dollar-quoted bodies\n($$…$$, $tag$…$tag$), line comments, block comments."
 							}
 						]
 					},
@@ -81545,7 +81545,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "pending_review → approved for ONE named patch: the engine treats an\r\n"
+								"text": "pending_review → approved for ONE named patch: the engine treats an\n"
 							},
 							{
 								"kind": "code",
@@ -81979,7 +81979,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\nare replaced by "
+						"text": "\nare replaced by "
 					},
 					{
 						"kind": "code",
@@ -81987,7 +81987,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " bound parameters in order of appearance.\r\n\r\n"
+						"text": " bound parameters in order of appearance.\n\n"
 					},
 					{
 						"kind": "code",
@@ -82003,7 +82003,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\ncarries the only dynamic data. Example:\r\n  "
+						"text": "\ncarries the only dynamic data. Example:\n  "
 					},
 					{
 						"kind": "code",
@@ -82811,7 +82811,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Parameterized operands — functions, casts, computed expressions\r\n (e.g. "
+												"text": "Parameterized operands — functions, casts, computed expressions\n (e.g. "
 											},
 											{
 												"kind": "code",
@@ -82819,7 +82819,7 @@
 											},
 											{
 												"kind": "text",
-												"text": ").\r\n Unlike "
+												"text": ").\n Unlike "
 											},
 											{
 												"kind": "code",
@@ -82843,7 +82843,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " bind\r\n real parameters — the only safe way to mix SQL functions with\r\n user-provided values."
+												"text": " bind\n real parameters — the only safe way to mix SQL functions with\n user-provided values."
 											}
 										]
 									},
@@ -83441,7 +83441,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Binary comparison between parameterized SQL expressions — the standard\r\nway to express function calls / casts on either side of an operator\r\nwith bound values. "
+												"text": "Binary comparison between parameterized SQL expressions — the standard\nway to express function calls / casts on either side of an operator\nwith bound values. "
 											},
 											{
 												"kind": "code",
@@ -83457,7 +83457,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " params in order.\r\n\r\n  Filter.expr(\r\n    { sql: \"to_tsvector(?, d.content)\", params: [\"simple\"] },\r\n    \"@@\",\r\n    { sql: \"websearch_to_tsquery(?, ?)\", params: [\"simple\", userQuery] },\r\n  )\r\n  // → to_tsvector($1, d.content) @@ websearch_to_tsquery($2, $3)"
+												"text": " params in order.\n\n  Filter.expr(\n    { sql: \"to_tsvector(?, d.content)\", params: [\"simple\"] },\n    \"@@\",\n    { sql: \"websearch_to_tsquery(?, ?)\", params: [\"simple\", userQuery] },\n  )\n  // → to_tsvector($1, d.content) @@ websearch_to_tsquery($2, $3)"
 											}
 										]
 									},
@@ -83570,7 +83570,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " joins the\r\ngroup to its SIBLINGS. "
+												"text": " joins the\ngroup to its SIBLINGS. "
 											},
 											{
 												"kind": "code",
@@ -83578,7 +83578,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " therefore renders\r\n"
+												"text": " therefore renders\n"
 											},
 											{
 												"kind": "code",
@@ -83586,7 +83586,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " and is AND-joined to siblings — the historically intended\r\nsemantic (e.g. search clauses)."
+												"text": " and is AND-joined to siblings — the historically intended\nsemantic (e.g. search clauses)."
 											}
 										]
 									},
@@ -84116,7 +84116,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " after\r\n "
+												"text": " after\n "
 											},
 											{
 												"kind": "code",
@@ -84213,7 +84213,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " in\r\n order (same contract as "
+												"text": " in\n order (same contract as "
 											},
 											{
 												"kind": "code",
@@ -84325,7 +84325,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "GROUP BY operand — either an entity field reference or a parameterized\r\nSQL expression ("
+						"text": "GROUP BY operand — either an entity field reference or a parameterized\nSQL expression ("
 					},
 					{
 						"kind": "code",
@@ -84341,7 +84341,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " in order). Expressions are\r\nrequired for grouping over computed values like "
+						"text": " in order). Expressions are\nrequired for grouping over computed values like "
 					},
 					{
 						"kind": "code",
@@ -84349,7 +84349,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ".\r\nNon-aggregate "
+						"text": ".\nNon-aggregate "
 					},
 					{
 						"kind": "code",
@@ -84357,7 +84357,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " projections are auto-added to GROUP BY by the\r\nbuilder; expression projections must be listed here explicitly when they\r\nare the grouping key."
+						"text": " projections are auto-added to GROUP BY by the\nbuilder; expression projections must be listed here explicitly when they\nare the grouping key."
 					}
 				]
 			},
@@ -84525,7 +84525,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Group by a parameterized expression — e.g.\r\n "
+												"text": "Group by a parameterized expression — e.g.\n "
 											},
 											{
 												"kind": "code",
@@ -84533,7 +84533,7 @@
 											},
 											{
 												"kind": "text",
-												"text": ". Column refs in\r\n "
+												"text": ". Column refs in\n "
 											},
 											{
 												"kind": "code",
@@ -84549,7 +84549,7 @@
 											},
 											{
 												"kind": "text",
-												"text": "); only\r\n "
+												"text": "); only\n "
 											},
 											{
 												"kind": "code",
@@ -84818,7 +84818,7 @@
 											},
 											{
 												"kind": "text",
-												"text": ".\r\n "
+												"text": ".\n "
 											},
 											{
 												"kind": "code",
@@ -84826,7 +84826,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " resolves to the qualified base-table ref (honoring the\r\n table-name override), the same substitution "
+												"text": " resolves to the qualified base-table ref (honoring the\n table-name override), the same substitution "
 											},
 											{
 												"kind": "code",
@@ -84834,7 +84834,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " uses.\r\n For joins whose predicate is a function of the base column\r\n ("
+												"text": " uses.\n For joins whose predicate is a function of the base column\n ("
 											},
 											{
 												"kind": "code",
@@ -84885,7 +84885,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Display-name projection this join contributes — emitted as\r\n "
+								"text": "Display-name projection this join contributes — emitted as\n "
 							},
 							{
 								"kind": "code",
@@ -84901,7 +84901,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n references the join alias (typically a rendered display template).\r\n The join declares its own display contract — the builder never\r\n guesses by alias name."
+								"text": "\n references the join alias (typically a rendered display template).\n The join declares its own display contract — the builder never\n guesses by alias name."
 							}
 						]
 					},
@@ -84985,7 +84985,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Extra verbatim projections this join contributes — emitted as\r\n "
+								"text": "Extra verbatim projections this join contributes — emitted as\n "
 							},
 							{
 								"kind": "code",
@@ -84993,7 +84993,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " with NO COALESCE wrap: these wire fields carry the\r\n join's own resolution verdicts (e.g. audit-actor "
+								"text": " with NO COALESCE wrap: these wire fields carry the\n join's own resolution verdicts (e.g. audit-actor "
 							},
 							{
 								"kind": "code",
@@ -85001,7 +85001,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " /\r\n "
+								"text": " /\n "
 							},
 							{
 								"kind": "code",
@@ -85009,7 +85009,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " feeding the lazy-ref contract), where NULL is a\r\n meaningful \"unresolved\" and must not fall back to the raw column."
+								"text": " feeding the lazy-ref contract), where NULL is a\n meaningful \"unresolved\" and must not fall back to the raw column."
 							}
 						]
 					},
@@ -85759,7 +85759,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " in order\r\n (same contract as "
+							"text": " in order\n (same contract as "
 						},
 						{
 							"kind": "code",
@@ -86220,7 +86220,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Optional escaping hook applied to LIKE/ILIKE string values that contain\r\nno "
+								"text": "Optional escaping hook applied to LIKE/ILIKE string values that contain\nno "
 							},
 							{
 								"kind": "code",
@@ -86260,7 +86260,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ".\r\nMust return the full pattern (including surrounding "
+								"text": ".\nMust return the full pattern (including surrounding "
 							},
 							{
 								"kind": "code",
@@ -86820,7 +86820,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "GROUP BY columns. When set, every non-aggregate projected field is\r\nautomatically added to the GROUP BY (base-entity columns via the\r\nprovided/default projection, and joined "
+								"text": "GROUP BY columns. When set, every non-aggregate projected field is\nautomatically added to the GROUP BY (base-entity columns via the\nprovided/default projection, and joined "
 							},
 							{
 								"kind": "code",
@@ -86828,7 +86828,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " display columns) —\r\ncorrectness-by-construction: PostgreSQL requires projected non-aggregate\r\ncolumns to appear in GROUP BY, and grouping the PK already covers the\r\nwhole base row via functional dependency."
+								"text": " display columns) —\ncorrectness-by-construction: PostgreSQL requires projected non-aggregate\ncolumns to appear in GROUP BY, and grouping the PK already covers the\nwhole base row via functional dependency."
 							}
 						]
 					},
@@ -86862,7 +86862,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "pgvector nearest-neighbour ordering. When set, the query ends with\r\n"
+								"text": "pgvector nearest-neighbour ordering. When set, the query ends with\n"
 							},
 							{
 								"kind": "code",
@@ -86870,7 +86870,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (the query vector is always a bound\r\nparameter — required for HNSW/ivfflat index usage) and, when\r\n"
+								"text": " (the query vector is always a bound\nparameter — required for HNSW/ivfflat index usage) and, when\n"
 							},
 							{
 								"kind": "code",
@@ -86878,7 +86878,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is set, projects a score column:\r\n"
+								"text": " is set, projects a score column:\n"
 							},
 							{
 								"kind": "code",
@@ -86894,7 +86894,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ";\r\nother ops → "
+								"text": ";\nother ops → "
 							},
 							{
 								"kind": "code",
@@ -86902,7 +86902,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (raw distance, lower =\r\ncloser)."
+								"text": " (raw distance, lower =\ncloser)."
 							}
 						]
 					},
@@ -87073,7 +87073,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "HAVING conditions on aggregates. Rendered through the same FilterExpr\r\nmachinery as WHERE — use "
+								"text": "HAVING conditions on aggregates. Rendered through the same FilterExpr\nmachinery as WHERE — use "
 							},
 							{
 								"kind": "code",
@@ -87081,7 +87081,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " or\r\n"
+								"text": " or\n"
 							},
 							{
 								"kind": "code",
@@ -87089,7 +87089,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for aggregate predicates. Joined with the\r\nper-expression operand, same as filters."
+								"text": " for aggregate predicates. Joined with the\nper-expression operand, same as filters."
 							}
 						]
 					},
@@ -87878,7 +87878,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "CASE-based score adjustment on an expression (e.g.\r\n "
+								"text": "CASE-based score adjustment on an expression (e.g.\n "
 							},
 							{
 								"kind": "code",
@@ -88122,7 +88122,7 @@
 								"content": [
 									{
 										"kind": "code",
-										"text": "```ts\r\nconst stream = createStream(pool, \"SELECT * FROM users\", []);\r\nfor await (const row of stream) {\r\n  console.log(row);\r\n}\r\n```"
+										"text": "```ts\nconst stream = createStream(pool, \"SELECT * FROM users\", []);\nfor await (const row of stream) {\n  console.log(row);\n}\n```"
 									}
 								]
 							}
@@ -88383,7 +88383,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Whole-operation wall-clock budget (ms) for every\r\n  *Many method — the transaction must complete within this bound or it is\r\n  aborted and rolled back. "
+												"text": "Whole-operation wall-clock budget (ms) for every\n  *Many method — the transaction must complete within this bound or it is\n  aborted and rolled back. "
 											},
 											{
 												"kind": "code",
@@ -88399,7 +88399,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " disables the budget.\r\n  Per-call override: "
+												"text": " disables the budget.\n  Per-call override: "
 											},
 											{
 												"kind": "code",
@@ -88456,7 +88456,7 @@
 										"content": [
 											{
 												"kind": "text",
-												"text": "Internal/FK-driven use only. API paths must identify rows by\r\nuuid — the INT8 "
+												"text": "Internal/FK-driven use only. API paths must identify rows by\nuuid — the INT8 "
 											},
 											{
 												"kind": "code",
@@ -89053,7 +89053,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "pgvector nearest-neighbour search — the DAL-native replacement for raw\r\n"
+										"text": "pgvector nearest-neighbour search — the DAL-native replacement for raw\n"
 									},
 									{
 										"kind": "code",
@@ -89061,7 +89061,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "-style similarity queries.\r\n\r\nEmits "
+										"text": "-style similarity queries.\n\nEmits "
 									},
 									{
 										"kind": "code",
@@ -89069,7 +89069,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " with the\r\nquery vector always bound as a parameter (required for HNSW/ivfflat\r\nindex usage — never interpolated). Entity-generic: schema, tableName\r\noverride, filters, projections and soft-delete scoping behave exactly\r\nlike "
+										"text": " with the\nquery vector always bound as a parameter (required for HNSW/ivfflat\nindex usage — never interpolated). Entity-generic: schema, tableName\noverride, filters, projections and soft-delete scoping behave exactly\nlike "
 									},
 									{
 										"kind": "code",
@@ -89077,7 +89077,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ".\r\n\r\nThe result carries a "
+										"text": ".\n\nThe result carries a "
 									},
 									{
 										"kind": "code",
@@ -89093,7 +89093,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " is the\r\ndefault "
+										"text": " is the\ndefault "
 									},
 									{
 										"kind": "code",
@@ -89109,7 +89109,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", higher = closer). For other\r\noperators the projected column is "
+										"text": ", higher = closer). For other\noperators the projected column is "
 									},
 									{
 										"kind": "code",
@@ -89117,7 +89117,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (raw distance, lower =\r\ncloser)."
+										"text": " (raw distance, lower =\ncloser)."
 									}
 								]
 							},
@@ -89656,7 +89656,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "distinctAuditActors — the governed vocabulary behind\r\n"
+										"text": "distinctAuditActors — the governed vocabulary behind\n"
 									},
 									{
 										"kind": "code",
@@ -89664,7 +89664,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ": DISTINCT values across the entity's\r\naudit actor columns ("
+										"text": ": DISTINCT values across the entity's\naudit actor columns ("
 									},
 									{
 										"kind": "code",
@@ -89672,7 +89672,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " +\r\n"
+										"text": " +\n"
 									},
 									{
 										"kind": "code",
@@ -89680,7 +89680,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "), label-resolved through\r\n"
+										"text": "), label-resolved through\n"
 									},
 									{
 										"kind": "code",
@@ -89688,7 +89688,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " — the same cross-app platform join every\r\nauditable read already performs. uuid-shaped actors get the profile\r\n"
+										"text": " — the same cross-app platform join every\nauditable read already performs. uuid-shaped actors get the profile\n"
 									},
 									{
 										"kind": "code",
@@ -89712,7 +89712,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", nats\r\nsubjects) have no profile row and surface their raw value — the\r\nvocab is \"actors that wrote THIS table\", NOT the users table, so a\r\nplain entity-ref combo could never offer them."
+										"text": ", nats\nsubjects) have no profile row and surface their raw value — the\nvocab is \"actors that wrote THIS table\", NOT the users table, so a\nplain entity-ref combo could never offer them."
 									}
 								]
 							},
@@ -89849,7 +89849,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " resolved through\r\nentity metadata, like every other entity op: the schema-domain guard\r\napplies (entities outside the declared domain throw before any SQL).\r\nFor auditable tables prefer soft-delete; TRUNCATE is for caches, KB\r\nstores, and test teardown."
+										"text": " resolved through\nentity metadata, like every other entity op: the schema-domain guard\napplies (entities outside the declared domain throw before any SQL).\nFor auditable tables prefer soft-delete; TRUNCATE is for caches, KB\nstores, and test teardown."
 									}
 								]
 							},
@@ -92662,7 +92662,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Clone an entity record by UUID.\r\n\r\nFetches the source record (including soft-deleted), builds a new row with:\r\n- PK column excluded (DB auto-generates)\r\n- Unique columns excluded (including uuid — a new uuid is generated)\r\n-"
+										"text": "Clone an entity record by UUID.\n\nFetches the source record (including soft-deleted), builds a new row with:\n- PK column excluded (DB auto-generates)\n- Unique columns excluded (including uuid — a new uuid is generated)\n-"
 									}
 								],
 								"blockTags": [
@@ -92671,7 +92671,7 @@
 										"content": [
 											{
 												"kind": "text",
-												"text": "column set to sourceUuid\r\n- Audit fields reset (created_at=now, created_by=actor, updated_at=now, updated_by=actor, version=1)\r\n- Deletable fields reset (deleted_at=null, deleted_by=null)\r\n- All other fields copied from source\r\n\r\nWrites an audit row with action "
+												"text": "column set to sourceUuid\n- Audit fields reset (created_at=now, created_by=actor, updated_at=now, updated_by=actor, version=1)\n- Deletable fields reset (deleted_at=null, deleted_by=null)\n- All other fields copied from source\n\nWrites an audit row with action "
 											},
 											{
 												"kind": "code",
@@ -92679,7 +92679,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " (not INSERT) — version history\r\nMUST distinguish \"created via clone\" from \"created via form\". The delta\r\nis the full new record (same shape as INSERT), and "
+												"text": " (not INSERT) — version history\nMUST distinguish \"created via clone\" from \"created via form\". The delta\nis the full new record (same shape as INSERT), and "
 											},
 											{
 												"kind": "code",
@@ -92687,7 +92687,7 @@
 											},
 											{
 												"kind": "text",
-												"text": " carries\r\nthe source uuid."
+												"text": " carries\nthe source uuid."
 											}
 										]
 									}
@@ -92885,7 +92885,7 @@
 										"content": [
 											{
 												"kind": "text",
-												"text": "No optimistic concurrency control — INSERT does not need version\r\nguards since there is no existing record to compare against.\r\nTODO: if a conflict-target upsert variant is added, version guards must be\r\nimplemented the same way as the single "
+												"text": "No optimistic concurrency control — INSERT does not need version\nguards since there is no existing record to compare against.\nTODO: if a conflict-target upsert variant is added, version guards must be\nimplemented the same way as the single "
 											},
 											{
 												"kind": "code",
@@ -93921,7 +93921,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " but\r\nemits "
+								"text": " but\nemits "
 							},
 							{
 								"kind": "code",
@@ -93929,7 +93929,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " instead of the soft-delete UPDATE.\r\nWorks on deletable AND non-deletable entities (derived-index tables,\r\nappend-only logs). All-or-nothing: ambiguity/version races roll back."
+								"text": " instead of the soft-delete UPDATE.\nWorks on deletable AND non-deletable entities (derived-index tables,\nappend-only logs). All-or-nothing: ambiguity/version races roll back."
 							}
 						]
 					},
@@ -95060,7 +95060,7 @@
 										"content": [
 											{
 												"kind": "text",
-												"text": "Per-row optimistic concurrency: on auditable entities every row\r\nmust carry the caller-observed "
+												"text": "Per-row optimistic concurrency: on auditable entities every row\nmust carry the caller-observed "
 											},
 											{
 												"kind": "code",
@@ -95068,7 +95068,7 @@
 											},
 											{
 												"kind": "text",
-												"text": "; missing → ERR02 (all-or-nothing),\r\nstale/vanished rows → single pg_raise ERR01/ERR03 with ≤10 offenders in\r\nDETAIL, rolling back the whole operation."
+												"text": "; missing → ERR02 (all-or-nothing),\nstale/vanished rows → single pg_raise ERR01/ERR03 with ≤10 offenders in\nDETAIL, rolling back the whole operation."
 											}
 										]
 									}
@@ -95841,7 +95841,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " shape as entities.\r\nUses "
+								"text": " shape as entities.\nUses "
 							},
 							{
 								"kind": "code",
@@ -95865,7 +95865,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (pg-diff-api CatalogApi style) so PostGIS\r\nand other UDTs surface with real "
+								"text": " (pg-diff-api CatalogApi style) so PostGIS\nand other UDTs surface with real "
 							},
 							{
 								"kind": "code",
@@ -95889,7 +95889,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ".\r\n\r\nThe caller owns the connection: pass a Pool (read-only fan-out) or a reserved client."
+								"text": ".\n\nThe caller owns the connection: pass a Pool (read-only fan-out) or a reserved client."
 							}
 						]
 					},
@@ -96051,7 +96051,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " columns that do\r\nnot resolve to "
+								"text": " columns that do\nnot resolve to "
 							},
 							{
 								"kind": "code",
@@ -96067,7 +96067,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " declarations that restate the inferred\r\ndefault. Requires the static annotation map; warnings never fail a gate."
+								"text": " declarations that restate the inferred\ndefault. Requires the static annotation map; warnings never fail a gate."
 							}
 						]
 					},
@@ -96151,7 +96151,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Canonical entity-intent snapshot for a service's entity registry.\r\nParameterized on the registry — no service-specific imports live here."
+								"text": "Canonical entity-intent snapshot for a service's entity registry.\nParameterized on the registry — no service-specific imports live here."
 							}
 						]
 					},
@@ -96250,7 +96250,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Best-effort SQL to move **TARGET database** toward **entity** intent.\r\nDestructive changes (DROP) are never emitted — DB-only objects are WARN comments."
+								"text": "Best-effort SQL to move **TARGET database** toward **entity** intent.\nDestructive changes (DROP) are never emitted — DB-only objects are WARN comments."
 							}
 						]
 					},
@@ -96661,7 +96661,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Patch integrity hashes are EOL-insensitive: a Windows checkout may\r\nmaterialize CRLF while the committed blob and the signed MANIFEST are LF.\r\nNormalize before hashing so manifest verification and the patch registry\r\nare platform-stable."
+								"text": "Patch integrity hashes are EOL-insensitive: a Windows checkout may\nmaterialize CRLF while the committed blob and the signed MANIFEST are LF.\nNormalize before hashing so manifest verification and the patch registry\nare platform-stable."
 							}
 						]
 					},
@@ -97409,7 +97409,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Greedy 1:1 matching: process tiers 0→n, within each tier stable order, no floats.\r\nUses ordinal indexing to avoid scanning all DB-only columns for every entity-only column."
+								"text": "Greedy 1:1 matching: process tiers 0→n, within each tier stable order, no floats.\nUses ordinal indexing to avoid scanning all DB-only columns for every entity-only column."
 							}
 						]
 					},
@@ -97641,7 +97641,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "True if any shared table had ambiguous rename candidates. Coding agents must ask the user\r\nbefore applying "
+								"text": "True if any shared table had ambiguous rename candidates. Coding agents must ask the user\nbefore applying "
 							},
 							{
 								"kind": "code",
@@ -97657,7 +97657,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " column lists intentionally ignore heuristic\r\nrenames in that case so nothing looks “auto-resolved”."
+								"text": " column lists intentionally ignore heuristic\nrenames in that case so nothing looks “auto-resolved”."
 							}
 						]
 					},
@@ -99575,7 +99575,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Schema-diff: canonical entity-vs-database snapshot machinery.\r\nGeneration side of the migration engine (migrations/ is the apply side)."
+						"text": "Schema-diff: canonical entity-vs-database snapshot machinery.\nGeneration side of the migration engine (migrations/ is the apply side)."
 					}
 				]
 			},
@@ -99708,7 +99708,7 @@
 								"content": [
 									{
 										"kind": "text",
-										"text": "declaration (pg_partman RANGE parent) —\r\n slicing only; expiry lives on "
+										"text": "declaration (pg_partman RANGE parent) —\n slicing only; expiry lives on "
 									},
 									{
 										"kind": "code",
@@ -99853,7 +99853,7 @@
 								"content": [
 									{
 										"kind": "text",
-										"text": "declaration (expiry policy — partition\r\n drop on partitioned tables, row sweep on plain tables)."
+										"text": "declaration (expiry policy — partition\n drop on partitioned tables, row sweep on plain tables)."
 									}
 								]
 							}
@@ -99943,7 +99943,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — audit-table retention override\r\n (default "
+								"text": " — audit-table retention override\n (default "
 							},
 							{
 								"kind": "code",
@@ -100255,7 +100255,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Schema-diff: canonical entity-vs-database snapshot machinery.\r\nGeneration side of the migration engine (migrations/ is the apply side)."
+						"text": "Schema-diff: canonical entity-vs-database snapshot machinery.\nGeneration side of the migration engine (migrations/ is the apply side)."
 					}
 				]
 			},
@@ -100588,7 +100588,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Entity has audit stamps (created_at/by, updated_at/by, version).\r\nDoes NOT imply soft-delete — auditable and deletable are independent\r\ncapabilities; compose with "
+						"text": "Entity has audit stamps (created_at/by, updated_at/by, version).\nDoes NOT imply soft-delete — auditable and deletable are independent\ncapabilities; compose with "
 					},
 					{
 						"kind": "code",
@@ -100596,7 +100596,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " where\r\nboth are required (the Dal write-path signatures already do this)."
+						"text": " where\nboth are required (the Dal write-path signatures already do this)."
 					}
 				]
 			},
@@ -100748,7 +100748,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " points at the source record;\r\n "
+						"text": " points at the source record;\n "
 					},
 					{
 						"kind": "code",
@@ -100764,7 +100764,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " are the immutable clone-audit pair the write\r\n path stamps at clone time."
+						"text": " are the immutable clone-audit pair the write\n path stamps at clone time."
 					}
 				]
 			},
@@ -101411,7 +101411,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " — the canonical PostgreSQL column type vocabulary for\r\n"
+						"text": " — the canonical PostgreSQL column type vocabulary for\n"
 					},
 					{
 						"kind": "code",
@@ -101419,7 +101419,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " and the entity type contract.\r\n\r\nA closed union, not a free "
+						"text": " and the entity type contract.\n\nA closed union, not a free "
 					},
 					{
 						"kind": "code",
@@ -101427,7 +101427,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ": aliases like\r\n"
+						"text": ": aliases like\n"
 					},
 					{
 						"kind": "code",
@@ -101451,7 +101451,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\n(write "
+						"text": "\n(write "
 					},
 					{
 						"kind": "code",
@@ -101459,7 +101459,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ") are compile errors, so the diff/snapshot pipeline never\r\nsees spelling variants.\r\n\r\nType modifiers are NEVER written inside "
+						"text": ") are compile errors, so the diff/snapshot pipeline never\nsees spelling variants.\n\nType modifiers are NEVER written inside "
 					},
 					{
 						"kind": "code",
@@ -101475,7 +101475,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " comes from\r\n"
+						"text": " comes from\n"
 					},
 					{
 						"kind": "code",
@@ -101515,7 +101515,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " from\r\n"
+						"text": " from\n"
 					},
 					{
 						"kind": "code",
@@ -101539,7 +101539,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " carries the BASE name only\r\n("
+						"text": " carries the BASE name only\n("
 					},
 					{
 						"kind": "code",
@@ -102188,7 +102188,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "GROUP BY columns. When set, every non-aggregate projected field (base\r\nentity columns and joined "
+								"text": "GROUP BY columns. When set, every non-aggregate projected field (base\nentity columns and joined "
 							},
 							{
 								"kind": "code",
@@ -102196,7 +102196,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " display columns) is automatically\r\nadded to the GROUP BY — correctness-by-construction: PG requires\r\nprojected non-aggregate columns to be grouped, and grouping the PK\r\ncovers base cols anyway (functional dependency). Use "
+								"text": " display columns) is automatically\nadded to the GROUP BY — correctness-by-construction: PG requires\nprojected non-aggregate columns to be grouped, and grouping the PK\ncovers base cols anyway (functional dependency). Use "
 							},
 							{
 								"kind": "code",
@@ -102204,7 +102204,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " for\r\naggregate columns (e.g. COUNT over a LEFT JOIN). To group on a\r\ncomputed expression ("
+								"text": " for\naggregate columns (e.g. COUNT over a LEFT JOIN). To group on a\ncomputed expression ("
 							},
 							{
 								"kind": "code",
@@ -102212,7 +102212,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ", histograms) use\r\n"
+								"text": ", histograms) use\n"
 							},
 							{
 								"kind": "code",
@@ -102704,7 +102704,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Inner-channel row budget — each retrieval CTE fetches\r\n"
+								"text": "Inner-channel row budget — each retrieval CTE fetches\n"
 							},
 							{
 								"kind": "code",
@@ -102712,7 +102712,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " candidates before re-ranking (default 1). Only\r\nmeaningful when hybrid channels below are enabled."
+								"text": " candidates before re-ranking (default 1). Only\nmeaningful when hybrid channels below are enabled."
 							}
 						]
 					},
@@ -102749,7 +102749,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " CTE\r\n("
+								"text": " CTE\n("
 							},
 							{
 								"kind": "code",
@@ -102757,7 +102757,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") runs alongside the vector\r\nchannel, lexical-only hits UNION into the candidate set, and\r\n"
+								"text": ") runs alongside the vector\nchannel, lexical-only hits UNION into the candidate set, and\n"
 							},
 							{
 								"kind": "code",
@@ -103023,7 +103023,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Keyword-hit lateral count — OFF by default. When set, a\r\n"
+								"text": "Keyword-hit lateral count — OFF by default. When set, a\n"
 							},
 							{
 								"kind": "code",
@@ -103031,7 +103031,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " counts ILIKE hits over the given\r\nfields per candidate and projects "
+								"text": " counts ILIKE hits over the given\nfields per candidate and projects "
 							},
 							{
 								"kind": "code",
@@ -103187,7 +103187,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "CASE-based score adjustment — OFF by default. Added to the final score:\r\n"
+								"text": "CASE-based score adjustment — OFF by default. Added to the final score:\n"
 							},
 							{
 								"kind": "code",
@@ -103195,7 +103195,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (e.g.\r\n"
+								"text": " (e.g.\n"
 							},
 							{
 								"kind": "code",
@@ -103627,7 +103627,7 @@
 					[
 						{
 							"kind": "text",
-							"text": "Default. A unique/exclusion conflict raises a typed PG error:\r\n"
+							"text": "Default. A unique/exclusion conflict raises a typed PG error:\n"
 						},
 						{
 							"kind": "code",
@@ -103643,7 +103643,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " when it is\r\nsoft-deleted ("
+							"text": " when it is\nsoft-deleted ("
 						},
 						{
 							"kind": "code",
@@ -103651,7 +103651,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " set → restore it, never duplicate).\r\nGenerated as a CTE: "
+							"text": " set → restore it, never duplicate).\nGenerated as a CTE: "
 						},
 						{
 							"kind": "code",
@@ -103659,7 +103659,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " (INSERT ... ON CONFLICT DO NOTHING\r\nRETURNING), "
+							"text": " (INSERT ... ON CONFLICT DO NOTHING\nRETURNING), "
 						},
 						{
 							"kind": "code",
@@ -103667,7 +103667,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " (matches the pre-existing row by unique-group\r\nvalues), "
+							"text": " (matches the pre-existing row by unique-group\nvalues), "
 						},
 						{
 							"kind": "code",
@@ -103691,7 +103691,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " and the\r\nmatched constraint name travel in the error "
+							"text": " and the\nmatched constraint name travel in the error "
 						},
 						{
 							"kind": "code",
@@ -103713,7 +103713,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " — the conflicting row is skipped without\r\nraising, so the surrounding transaction survives. "
+							"text": " — the conflicting row is skipped without\nraising, so the surrounding transaction survives. "
 						},
 						{
 							"kind": "code",
@@ -103721,7 +103721,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " returns\r\n"
+							"text": " returns\n"
 						},
 						{
 							"kind": "code",
@@ -103729,7 +103729,7 @@
 						},
 						{
 							"kind": "text",
-							"text": " when the row was skipped (RETURNING yields zero rows).\r\nFor statement-level idempotent inserts (e.g. piggybacked translations\r\ninside an entity-write transaction)."
+							"text": " when the row was skipped (RETURNING yields zero rows).\nFor statement-level idempotent inserts (e.g. piggybacked translations\ninside an entity-write transaction)."
 						}
 					]
 				]
@@ -103869,7 +103869,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — see\r\n"
+								"text": " — see\n"
 							},
 							{
 								"kind": "inline-tag",
@@ -103887,7 +103887,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is reserved for statement-level\r\nidempotent inserts that must not abort an open transaction."
+								"text": " is reserved for statement-level\nidempotent inserts that must not abort an open transaction."
 							}
 						]
 					},
@@ -103930,7 +103930,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " only. Restricts conflict identification\r\nto the unique constraint defined by these entity property keys — they\r\nmust exactly match one "
+								"text": " only. Restricts conflict identification\nto the unique constraint defined by these entity property keys — they\nmust exactly match one "
 							},
 							{
 								"kind": "code",
@@ -103938,7 +103938,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " group (single column or named\r\ncomposite). Defaults to every unique group whose attempted values are\r\nall known — payload values (including a caller-provided "
+								"text": " group (single column or named\ncomposite). Defaults to every unique group whose attempted values are\nall known — payload values (including a caller-provided "
 							},
 							{
 								"kind": "code",
@@ -103946,7 +103946,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "),\r\nconstant "
+								"text": "),\nconstant "
 							},
 							{
 								"kind": "code",
@@ -103954,7 +103954,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " literals, or NULL when the column is omitted\r\nwithout a default. Groups containing columns with volatile DB-side\r\ndefaults ("
+								"text": " literals, or NULL when the column is omitted\nwithout a default. Groups containing columns with volatile DB-side\ndefaults ("
 							},
 							{
 								"kind": "code",
@@ -103978,7 +103978,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") are excluded\r\nautomatically since their attempted value is unknowable.\r\nUnknown keys throw "
+								"text": ") are excluded\nautomatically since their attempted value is unknowable.\nUnknown keys throw "
 							},
 							{
 								"kind": "code",
@@ -103986,7 +103986,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "; a set matching no unique\r\ngroup throws "
+								"text": "; a set matching no unique\ngroup throws "
 							},
 							{
 								"kind": "code",
@@ -104042,7 +104042,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Projection applied to the write's RETURNING clause.\r\n- "
+								"text": "Projection applied to the write's RETURNING clause.\n- "
 							},
 							{
 								"kind": "code",
@@ -104050,7 +104050,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (default): every persisted column EXCEPT the identity PK\r\n  ("
+								"text": " (default): every persisted column EXCEPT the identity PK\n  ("
 							},
 							{
 								"kind": "code",
@@ -104058,7 +104058,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " bigint — not JSON-safe), aliased to its TS property key.\r\n- "
+								"text": " bigint — not JSON-safe), aliased to its TS property key.\n- "
 							},
 							{
 								"kind": "code",
@@ -104066,7 +104066,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ": only these fields/expressions are returned —\r\n  honors "
+								"text": ": only these fields/expressions are returned —\n  honors "
 							},
 							{
 								"kind": "code",
@@ -104074,7 +104074,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ": the result object carries exactly the\r\n  projected keys/aliases. Projections must target the base entity —\r\n  RETURNING cannot reference joined tables.\r\nInternal bookkeeping columns ("
+								"text": ": the result object carries exactly the\n  projected keys/aliases. Projections must target the base entity —\n  RETURNING cannot reference joined tables.\nInternal bookkeeping columns ("
 							},
 							{
 								"kind": "code",
@@ -104098,7 +104098,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ") are always\r\nemitted for the audit path, then stripped from the returned object."
+								"text": ") are always\nemitted for the audit path, then stripped from the returned object."
 							}
 						]
 					},
@@ -104342,7 +104342,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " entity\r\nproperties used as AND-match conditions on top of any "
+								"text": " entity\nproperties used as AND-match conditions on top of any "
 							},
 							{
 								"kind": "code",
@@ -104358,7 +104358,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\npresent in the payload. A prop belonging to a composite "
+								"text": "\npresent in the payload. A prop belonging to a composite "
 							},
 							{
 								"kind": "code",
@@ -104366,7 +104366,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\ngroup pulls in the WHOLE group (all group props required in payload).\r\nOmitted → auto-match on "
+								"text": "\ngroup pulls in the WHOLE group (all group props required in payload).\nOmitted → auto-match on "
 							},
 							{
 								"kind": "code",
@@ -104390,7 +104390,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\naccept only a single-column selector for now (pass a 1-element array\r\nor a bare string)."
+								"text": "\naccept only a single-column selector for now (pass a 1-element array\nor a bare string)."
 							}
 						]
 					},
@@ -104547,7 +104547,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " (inserted / upserted /\r\nupdated / deleted). "
+								"text": " (inserted / upserted /\nupdated / deleted). "
 							},
 							{
 								"kind": "code",
@@ -104555,7 +104555,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " is not an error for\r\nupsert/update/delete — it reports unmatched or conflicted rows."
+								"text": " is not an error for\nupsert/update/delete — it reports unmatched or conflicted rows."
 							}
 						]
 					},
@@ -104647,7 +104647,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Whole-operation wall-clock budget in ms for this bulk call — overrides\r\n"
+								"text": "Whole-operation wall-clock budget in ms for this bulk call — overrides\n"
 							},
 							{
 								"kind": "code",
@@ -104663,7 +104663,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\n(bounds each statement) plus a JS deadline checked between statements\r\n(bounds the whole operation); on expiry the transaction rolls back and\r\na "
+								"text": "\n(bounds each statement) plus a JS deadline checked between statements\n(bounds the whole operation); on expiry the transaction rolls back and\na "
 							},
 							{
 								"kind": "code",
@@ -104779,7 +104779,7 @@
 				"summary": [
 					{
 						"kind": "text",
-						"text": "Audit port — consumers inject their own audit writer.\r\nThe DAL calls "
+						"text": "Audit port — consumers inject their own audit writer.\nThe DAL calls "
 					},
 					{
 						"kind": "code",
@@ -104795,7 +104795,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ").\r\nReturns the inserted audit row key (used as "
+						"text": ").\nReturns the inserted audit row key (used as "
 					},
 					{
 						"kind": "code",
@@ -104803,7 +104803,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " in collaboration\r\nmarkers); ports that do not persist a row may return "
+						"text": " in collaboration\nmarkers); ports that do not persist a row may return "
 					},
 					{
 						"kind": "code",
@@ -104985,7 +104985,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " of the audited row — null once the entity has\r\n migrated to a uuid primary key (its "
+								"text": " of the audited row — null once the entity has\n migrated to a uuid primary key (its "
 							},
 							{
 								"kind": "code",
@@ -105358,7 +105358,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Record created by cloning an existing row (distinct from INSERT so the\r\n version history can label \"created via clone\" vs \"created via form\")."
+								"text": "Record created by cloning an existing row (distinct from INSERT so the\n version history can label \"created via clone\" vs \"created via form\")."
 							}
 						]
 					},
@@ -105972,7 +105972,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "App-side uuid v7 generator (RFC 9562 §5.7): 48-bit ms timestamp + version +\r\n12-bit rand_a + variant + 62-bit rand_b. Same layout PostgreSQL "
+								"text": "App-side uuid v7 generator (RFC 9562 §5.7): 48-bit ms timestamp + version +\n12-bit rand_a + variant + 62-bit rand_b. Same layout PostgreSQL "
 							},
 							{
 								"kind": "code",
@@ -105980,7 +105980,7 @@
 							},
 							{
 								"kind": "text",
-								"text": "\r\nproduces — app-injected uuids pass the v7 boundary guard."
+								"text": "\nproduces — app-injected uuids pass the v7 boundary guard."
 							}
 						]
 					},
@@ -106090,7 +106090,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " columns.\r\n\r\nA real class (not a brand) so the DAL can detect it with "
+						"text": " columns.\n\nA real class (not a brand) so the DAL can detect it with "
 					},
 					{
 						"kind": "code",
@@ -106098,7 +106098,7 @@
 					},
 					{
 						"kind": "text",
-						"text": " —\r\narray subclasses ARE "
+						"text": " —\narray subclasses ARE "
 					},
 					{
 						"kind": "code",
@@ -106106,7 +106106,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "-assignable but carry runtime identity.\r\nThat identity is load-bearing: "
+						"text": "-assignable but carry runtime identity.\nThat identity is load-bearing: "
 					},
 					{
 						"kind": "code",
@@ -106122,7 +106122,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\nliteral, while plain "
+						"text": "\nliteral, while plain "
 					},
 					{
 						"kind": "code",
@@ -106138,7 +106138,7 @@
 					},
 					{
 						"kind": "text",
-						"text": ".\r\n\r\nIn entities, "
+						"text": ".\n\nIn entities, "
 					},
 					{
 						"kind": "code",
@@ -106162,7 +106162,7 @@
 					},
 					{
 						"kind": "text",
-						"text": "\r\nsets the dimension ("
+						"text": "\nsets the dimension ("
 					},
 					{
 						"kind": "code",
