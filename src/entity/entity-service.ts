@@ -65,6 +65,7 @@ import {
   CloneFieldType,
   DeletableFieldType,
   getEntityPersistenceMeta,
+  hasAuditTrail,
   isClonableEntity,
   type EntityClass,
 } from "../meta/entity-decorators.js";
@@ -125,6 +126,19 @@ export interface EntityListResult<TEntity> {
 export interface BulkItem {
   uuid: string;
   version: number;
+}
+
+export interface BulkUpdateItem {
+  uuid: string;
+  version: number;
+  [field: string]: unknown;
+}
+
+/** Identity the service resolved for THIS write — passed to `beforeCreate`/
+ *  `beforeUpdate` so the hook judges the same actor that gets stamped on
+ *  audit columns and trail rows, never a second ambient lookup. */
+export interface WriteHookContext {
+  actor: string;
 }
 
 export interface DuplicateResult {
@@ -201,10 +215,12 @@ export interface EntityServiceConfig<TEntity> {
     afterWrite?: (op: EntityAction, entity: TEntity) => void | Promise<void>;
     beforeCreate?: (
       body: Record<string, unknown>,
+      ctx: WriteHookContext,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>;
     beforeUpdate?: (
       uuid: string,
       body: Record<string, unknown>,
+      ctx: WriteHookContext,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   };
 }
@@ -225,6 +241,12 @@ export interface EntityService<TEntity> {
   duplicate(uuids: string[]): Promise<DuplicateResult>;
   bulkDelete(items: BulkItem[]): Promise<unknown>;
   bulkRestore(items: BulkItem[]): Promise<unknown>;
+  /** Internal bulk ops — NOT wire actions (no route registers on them):
+   *  atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+   *  (config batch writes, retention purges). The per-entity bulk gating
+   *  lives in the entity's declared actions and is untouched by these. */
+  bulkUpdate(items: BulkUpdateItem[]): Promise<unknown>;
+  bulkPurge(items: BulkItem[]): Promise<unknown>;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
@@ -404,7 +426,14 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
   // Self-register under the derived api name — domain `@Ref` joins
   // resolve their target's class + display template from this map.
   registerEntityService(cfg);
-  const auditPort = cfg.auditPort ?? makeTableAuditPort(repo);
+  // Bind the audit port ONLY for `@AuditTrail` entities — the trail table
+  // exists iff the decorator declares it. Entities with auditable columns
+  // but no trail get `audit: undefined` so writes never attempt an INSERT
+  // into a nonexistent `{table}_audit` (swallowed fire-and-forget error
+  // on every write before this gate).
+  const auditPort = hasAuditTrail(cfg.entity)
+    ? (cfg.auditPort ?? makeTableAuditPort(repo))
+    : undefined;
   const actor = () => cfg.actor?.() ?? "system";
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
 
@@ -844,7 +873,8 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     },
 
     async create(body, tx) {
-      const prepared = (await cfg.hooks?.beforeCreate?.(body)) ?? body;
+      const resolvedActor = actor();
+      const prepared = (await cfg.hooks?.beforeCreate?.(body, { actor: resolvedActor })) ?? body;
       const row = await (repoFor(tx) as any).add(
         cfg.entity,
         {
@@ -852,7 +882,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           uuid: (prepared as { uuid?: string }).uuid ?? newUuidV7(),
         },
         {
-          actor: actor(),
+          actor: resolvedActor,
           audit: auditPort,
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
@@ -863,12 +893,13 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     },
 
     async update(uuid, body, tx) {
-      const prepared = (await cfg.hooks?.beforeUpdate?.(uuid, body)) ?? body;
+      const resolvedActor = actor();
+      const prepared = (await cfg.hooks?.beforeUpdate?.(uuid, body, { actor: resolvedActor })) ?? body;
       const row = await (repoFor(tx) as any).update(
         cfg.entity,
         { ...(prepared as Record<string, unknown>), uuid },
         {
-          actor: actor(),
+          actor: resolvedActor,
           audit: auditPort,
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
@@ -951,6 +982,22 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
 
     async bulkRestore(items) {
       return (repo as any).restoreMany(cfg.entity, items as never, {
+        actor: actor(),
+        audit: auditPort,
+        matchBy: "uuid" as never,
+      });
+    },
+
+    async bulkUpdate(items) {
+      return (repo as any).updateMany(cfg.entity, items as never, {
+        actor: actor(),
+        audit: auditPort,
+        matchBy: "uuid" as never,
+      });
+    },
+
+    async bulkPurge(items) {
+      return (repo as any).hardDeleteMany(cfg.entity, items as never, {
         actor: actor(),
         audit: auditPort,
         matchBy: "uuid" as never,
