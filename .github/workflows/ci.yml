@@ -96,6 +96,7 @@ jobs:
           if [ -n "$(git status --porcelain -- docs/)" ]; then
             echo "::error::docs/ is stale — run 'pnpm extract-docs' and commit the result"
             git status --porcelain -- docs/
+            git diff -- docs/ | head -80
             exit 1
           fi
 
