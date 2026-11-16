@@ -45,7 +45,9 @@ export {
   Ref,
   AuditTrail,
   AuditTrailEntity,
+  Partition,
   PartitionField,
+  Retention,
   PartitionChildOf,
   Dict,
   getDictFacet,
@@ -75,6 +77,7 @@ export {
   type KeyOptions,
   type UniqueOptions,
   type PartitionFieldOptions,
+  type PartitionOptions,
   type PartitionChildOfOptions,
   type IndexOptions,
   type IndexMethod,
@@ -265,8 +268,10 @@ export {
 // Partition maintenance — metadata-driven pg_partman retention executor
 export {
   runPartitionMaintenance,
+  needsPartitionMaintenance,
   type PartitionMaintenanceReport,
   type PartitionParentReport,
+  type RetentionSweepReport,
 } from "./dal/partition-maintenance.js";
 
 // Generic entity CRUD service — the shared makeEntityService used by every

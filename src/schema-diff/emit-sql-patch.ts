@@ -88,7 +88,7 @@ function partitionSetupSql(t: SchemaTableMeta): string[] {
     `SELECT partman.create_parent('${fq}', '${p.column}', '${p.interval}', 'range'${p.premake !== undefined ? `, p_premake => ${p.premake}` : ""});`,
   ];
   const sets: string[] = [];
-  if (p.retention !== undefined) sets.push(`retention = '${p.retention}'`);
+  if (t.retention !== undefined) sets.push(`retention = '${t.retention.duration}'`);
   sets.push(`retention_keep_table = ${p.keepTable}`);
   lines.push(`UPDATE partman.part_config SET ${sets.join(", ")} WHERE parent_table = '${fq}';`);
   return lines;
@@ -199,16 +199,21 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     }
     safe.push("");
 
-    // audit table + monthly partman partitioning (fixed shape)
+    // audit table + monthly partman partitioning + retention (fixed shape)
     if (t.isAuditable) {
       const auditTableName = `${t.name}_audit`;
       const fqAudit = `${quoteIdent(t.schema)}.${quoteIdent(auditTableName)}`;
+      const fqAuditReg = `${t.schema}.${auditTableName}`;
       // `entity_id` is emitted only while the entity still carries the
       // surrogate bigint `id` — uuid-PK entities write uuid-shaped audits.
       const hasSurrogateId = t.columns["id"] !== undefined;
+      // Audit retention defaults to 12 months — the audit trail is a
+      // bounded operational cost, not an archive. Per-entity override via
+      // `@AuditTrail({retention})`; part_config stays the runtime knob.
+      const auditRetention = t.auditRetention ?? "12 months";
       safe.push(
         `CREATE TABLE IF NOT EXISTS ${fqAudit} (`,
-        `  "id" bigint generated always as identity NOT NULL,`,
+        `  "uuid" uuid NOT NULL DEFAULT uuidv7(),`,
         ...(hasSurrogateId ? [`  "entity_id" bigint NOT NULL,`] : []),
         `  "entity_uuid" uuid NOT NULL,`,
         `  "action" text NOT NULL,`,
@@ -216,10 +221,11 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
         `  "changed_by" text NOT NULL DEFAULT 'system',`,
         `  "version" integer NOT NULL,`,
         `  "delta" jsonb NOT NULL,`,
-        `  PRIMARY KEY ("id", "changed_at")`,
+        `  PRIMARY KEY ("uuid", "changed_at")`,
         `) PARTITION BY RANGE ("changed_at");`,
         "",
-        `SELECT partman.create_parent('${t.schema}.${auditTableName}', 'changed_at', '1 month', 'range');`,
+        `SELECT partman.create_parent('${fqAuditReg}', 'changed_at', '1 month', 'range');`,
+        `UPDATE partman.part_config SET retention = '${auditRetention}', retention_keep_table = false WHERE parent_table = '${fqAuditReg}';`,
         "",
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_entity_uuid_idx`)} ON ${fqAudit} ("entity_uuid");`,
         `CREATE INDEX IF NOT EXISTS ${quoteIdent(`${auditTableName}_action_idx`)} ON ${fqAudit} ("action");`,

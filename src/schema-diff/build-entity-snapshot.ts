@@ -126,6 +126,8 @@ export function buildEntitySnapshot(
       isAuditable: meta.isAuditable,
       columns,
       ...(meta.partition ? { partition: meta.partition } : {}),
+      ...(meta.retention ? { retention: meta.retention } : {}),
+      ...(meta.auditRetention ? { auditRetention: meta.auditRetention } : {}),
       ...(meta.partitionChildOf ? { partitionChildOf: meta.partitionChildOf } : {}),
       ...(meta.indexes || uniqueGroups(meta).length
         ? {

@@ -48,10 +48,48 @@ export interface PartitionParentReport {
   skipped?: string;
 }
 
+export interface RetentionSweepReport {
+  /** `"schema"."table"` swept. */
+  table: string;
+  column: string;
+  retention: string;
+  rows_deleted: number;
+}
+
 export interface PartitionMaintenanceReport {
   parents: PartitionParentReport[];
+  /** `@Retention` sweeps on non-partitioned tables. */
+  sweeps: RetentionSweepReport[];
   /** Whether `partman.run_maintenance_proc()` ran. */
   maintenance_ran: boolean;
+}
+
+/**
+ * Every retention-bearing surface this executor maintains:
+ * - `@Partition` domain parents (pg_partman drop/detach),
+ * - `{table}_audit` parents synthesized from `@AuditTrail()` entities —
+ *   audit tables are not entity classes, so they are derived here with the
+ *   fixed shape (`changed_at` key, `auditRetention ?? "12 months"`),
+ * - `@Retention` sweeps on non-partitioned tables (row-level DELETE).
+ */
+type ParentTarget = {
+  tableSchema: string;
+  tableName: string;
+  partition: { column: string; retention?: string };
+};
+
+/**
+ * Boot-time gate for the `partition_maintenance` system job — `true` when
+ * the registry contains ANY retention-bearing surface: a `@Partition`
+ * parent, an `@AuditTrail()` entity (its `{table}_audit` is a maintained
+ * parent), or a `@Retention` sweep. `false` = nothing to maintain → the
+ * SDK mounts no callable and materializes no trigger.
+ */
+export function needsPartitionMaintenance(entities: readonly EntityClass[]): boolean {
+  return entities.some((e) => {
+    const m = getEntityPersistenceMeta(e);
+    return m.isAuditable === true || m.partition !== undefined || m.retention !== undefined;
+  });
 }
 
 export async function runPartitionMaintenance(
@@ -59,9 +97,45 @@ export async function runPartitionMaintenance(
   entities: readonly EntityClass[],
 ): Promise<PartitionMaintenanceReport> {
   const metas = entities.map((e) => getEntityPersistenceMeta(e));
-  const partitioned = metas.filter((m) => m.partition);
-  const report: PartitionMaintenanceReport = { parents: [], maintenance_ran: false };
-  if (partitioned.length === 0) return report;
+  const parents: ParentTarget[] = [
+    ...metas
+      .filter((m) => m.partition)
+      .map((m) => ({
+        tableSchema: m.tableSchema,
+        tableName: m.tableName,
+        partition: { column: m.partition!.column, retention: m.retention?.duration },
+      })),
+    ...metas
+      .filter((m) => m.isAuditable)
+      .map((m) => ({
+        tableSchema: m.tableSchema,
+        tableName: `${m.tableName}_audit`,
+        partition: { column: "changed_at", retention: m.auditRetention ?? "12 months" },
+      })),
+  ];
+  const sweeps = metas
+    .filter((m) => m.retention && !m.partition)
+    .map((m) => ({
+      tableSchema: m.tableSchema,
+      tableName: m.tableName,
+      retention: m.retention!,
+    }));
+  const report: PartitionMaintenanceReport = { parents: [], sweeps: [], maintenance_ran: false };
+  if (parents.length === 0 && sweeps.length === 0) return report;
+
+  for (const s of sweeps) {
+    const fq = `${quoteIdent(s.tableSchema)}.${quoteIdent(s.tableName)}`;
+    const del = await client.query(
+      `DELETE FROM ${fq} WHERE ${quoteIdent(s.retention.column)} < now() - $1::interval`,
+      [s.retention.duration],
+    );
+    report.sweeps.push({
+      table: fq,
+      column: s.retention.column,
+      retention: s.retention.duration,
+      rows_deleted: del.rowCount ?? 0,
+    });
+  }
 
   const countPartitions = async (regclassName: string): Promise<number> =>
     Number(
@@ -73,10 +147,10 @@ export async function runPartitionMaintenance(
       ).rows[0]?.c ?? 0,
     );
 
-  for (const p of partitioned) {
+  for (const p of parents) {
     const fq = `${quoteIdent(p.tableSchema)}.${quoteIdent(p.tableName)}`;
     const regclass = `${p.tableSchema}.${p.tableName}`;
-    const part = p.partition!;
+    const part = p.partition;
     const pr: PartitionParentReport = {
       table: fq,
       partition_column: part.column,
@@ -143,7 +217,7 @@ export async function runPartitionMaintenance(
   // every part_config row globally (a stale/missing parent elsewhere would
   // abort the whole run); `run_maintenance(parent)` is the per-parent
   // function form and keeps each service's executor inside its own schema.
-  for (const p of partitioned) {
+  for (const p of parents) {
     const pr = report.parents.find((r) => r.table === `${quoteIdent(p.tableSchema)}.${quoteIdent(p.tableName)}`);
     if (!pr || pr.skipped) continue;
     await client.query(

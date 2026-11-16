@@ -49,7 +49,10 @@ import { DeferredTransaction } from "./deferred-transaction.js";
 import { ensureTypeParsers } from "./type-parsers.js";
 import { quoteIdent } from "../query/query-builder.js";
 import { configureSchemaDomain } from "../meta/schema-domain.js";
-import { getQualifiedTableName } from "../meta/entity-decorators.js";
+import {
+  getQualifiedTableName,
+  hasAuditTrail,
+} from "../meta/entity-decorators.js";
 import {
   runPartitionMaintenance,
   type PartitionMaintenanceReport,
@@ -366,7 +369,7 @@ export class Dal {
     row: Partial<Record<keyof TEntity & string, unknown>>,
     options: WriteOptions<TEntity> | AuditableWriteOptions<TEntity>,
   ): Promise<TResult> {
-    return (this.repo as any).add(entity, row, options);
+    return (this.repo as any).add(entity, row, this.auditDefault(entity, options));
   }
 
   // upsert (single-record) removed — see Repository for rationale. Use add()/update().
@@ -403,7 +406,7 @@ export class Dal {
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TResult> {
-    return (this.repo as any).update(entity, updates, options);
+    return (this.repo as any).update(entity, updates, this.auditDefault(entity, options));
   }
 
   async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
@@ -421,7 +424,7 @@ export class Dal {
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TResult> {
-    return (this.repo as any).delete(entity, match, options);
+    return (this.repo as any).delete(entity, match, this.auditDefault(entity, options));
   }
 
   async restore<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
@@ -439,7 +442,7 @@ export class Dal {
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TResult> {
-    return (this.repo as any).restore(entity, match, options);
+    return (this.repo as any).restore(entity, match, this.auditDefault(entity, options));
   }
 
   async hardDelete<TEntity extends object & IAuditableEntity, TResult = TEntity>(
@@ -457,7 +460,7 @@ export class Dal {
     match: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Promise<TResult> {
-    return (this.repo as any).hardDelete(entity, match, options);
+    return (this.repo as any).hardDelete(entity, match, this.auditDefault(entity, options));
   }
 
   // ─── Bulk writes (TEMP TABLE strategy, batched) ───────────────────────────
@@ -597,6 +600,30 @@ export class Dal {
   }
 
   /**
+   * Default audit injection for gateway write ops — audit is a
+   * CONSTRUCTION guarantee, not an opt-in the caller may forget.
+   * Injects `tableAuditPort()` when the entity carries `@AuditTrail()`
+   * (the trail table exists) and the caller did not pass its own port
+   * (explicit `audit:` — e.g. the BE marker port — always wins).
+   * Entities with auditable columns but no `@AuditTrail()` keep
+   * `audit: undefined` — their writes must NOT hit `{table}_audit`.
+   * The options bag is copied, never mutated in place.
+   */
+  private auditDefault<TEntity extends object, TOptions>(
+    entity: EntityClass,
+    options: TOptions,
+  ): TOptions {
+    if (
+      options === undefined ||
+      (options as { audit?: unknown }).audit !== undefined ||
+      !hasAuditTrail(entity)
+    ) {
+      return options;
+    }
+    return { ...(options as object), audit: this.tableAuditPort() } as TOptions;
+  }
+
+  /**
    * Server version + connectivity probe in one call. A successful response
    * already proves the connection is alive — there is deliberately no
    * separate `ping()` (a dedicated `SELECT 1` would be a redundant round-trip).
@@ -627,7 +654,8 @@ export class Dal {
           // no session-default restore needed.
           await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
         }
-        const result = await fn(new Repository(client, REPO_INTERNAL, this.config.bulkTimeoutMs));
+        const txRepo = new Repository(client, REPO_INTERNAL, this.config.bulkTimeoutMs);
+        const result = await fn(withAuditDefaults(txRepo));
         await client.query("COMMIT");
         return result;
       } catch (err) {
@@ -715,6 +743,41 @@ export class Dal {
   ): Promise<PartitionMaintenanceReport> {
     return this.withClient((client) => runPartitionMaintenance(client, entities), options);
   }
+}
+
+/**
+ * Tx-seam audit defaults — the `dal.transaction(fn)` callback receives a
+ * decorated Repository whose audit-capable write ops (`add`, `update`,
+ * `delete`, `restore`, `hardDelete`) inject a tx-bound `makeTableAuditPort`
+ * when the caller did not supply one. Audit INSERTs then queue on the SAME
+ * client before COMMIT — the audit row is atomic with the write.
+ * `hasAuditTrail` gates injection: Auditable-columns-only entities never
+ * attempt a trail write. Explicit `audit:` options always win.
+ * (`beginTransaction`/DeferredTransaction stays audit-free BY DESIGN — it
+ * rejects `options.audit` eagerly since the delta needs the pre-write row.)
+ */
+function withAuditDefaults(repo: Repository): Repository {
+  const port = makeTableAuditPort(repo);
+  const AUDIT_OPS = new Set(["add", "update", "delete", "restore", "hardDelete"]);
+  return new Proxy(repo, {
+    get(target, prop, receiver) {
+      const orig = Reflect.get(target, prop, receiver);
+      if (typeof orig !== "function" || !AUDIT_OPS.has(prop as string)) return orig;
+      return function (this: unknown, entity: EntityClass, ...rest: unknown[]) {
+        const last = rest[rest.length - 1];
+        if (
+          hasAuditTrail(entity) &&
+          last !== null &&
+          typeof last === "object" &&
+          !Array.isArray(last) &&
+          (last as { audit?: unknown }).audit === undefined
+        ) {
+          rest[rest.length - 1] = { ...(last as object), audit: port };
+        }
+        return (orig as (...a: unknown[]) => unknown).apply(target, [entity, ...rest]);
+      };
+    },
+  });
 }
 
 // ─── Singleton factory ──────────────────────────────────────────────────────

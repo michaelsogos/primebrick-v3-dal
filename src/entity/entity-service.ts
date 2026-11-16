@@ -274,12 +274,12 @@ export function makeTableAuditPort(repo: Repository): AuditPort {
         },
         {
           tableName: `${params.tableName}_audit`,
-          // RETURNING must reference only columns guaranteed on BOTH audit
-          // shapes (post-migration tables dropped `entity_id`) — project id.
-          returning: [Project.field(field(AuditLogEntity, "id"))],
+          // RETURNING projects the audit row's own uuid PK (the surrogate
+          // `id` was eradicated — `entity_id` may be absent post-migration).
+          returning: [Project.field(field(AuditLogEntity, "uuid"))],
         },
       );
-      return inserted.id;
+      return inserted.uuid;
     },
   };
 }
