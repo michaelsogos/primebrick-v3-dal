@@ -2,7 +2,8 @@ import "dotenv/config";
 import "reflect-metadata";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal, ValidationError } from "../src/index.js";
+import { ValidationError } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { TestUserNoTrailEntity } from "./entities/test-user-no-trail.entity.js";
 import { ManualUniqueEntity } from "./entities/manual-unique-entity.js";

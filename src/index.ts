@@ -256,9 +256,12 @@ export { DictEntityBase } from "./entities/dict-entity-base.js";
 // Translation entity base — standard i18n translations table entity
 export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 
-// Dal gateway — high-level pool-owning singleton with best-practice defaults
+// Dal gateway — high-level pool-owning singleton with best-practice defaults.
+// `Dal` is exported TYPE-ONLY: consumers may annotate (`private _dal: Dal`)
+// but `new Dal(...)` is unimportable — the singleton is built by initDal/getDal
+// inside the consumer's `db/dal.ts` seam, never ad-hoc.
 export {
-  Dal,
+  type Dal,
   getDal,
   resetDal,
   makePartitionMaintenanceJob,

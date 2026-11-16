@@ -2,7 +2,8 @@ import "dotenv/config";
 import { newUuidV7 } from "../src/types/uuid.js";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal, Filter } from "../src/index.js";
+import { Filter } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import {
   setupTestSchema,

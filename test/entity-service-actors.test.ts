@@ -2,7 +2,7 @@ import "dotenv/config";
 import "reflect-metadata";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
-import { Dal } from "../src/index.js";
+import { Dal } from "../src/dal/dal.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { setupTestSchema, truncateTestTables } from "./helpers/setup.js";
 
