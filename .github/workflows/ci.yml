@@ -17,8 +17,52 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # Sibling layout mirrors check-standards.yml: self + tool + dep
+      # siblings under $GITHUB_WORKSPACE so "../<repo>" paths resolve.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: primebrick-dal-v3
+
+      - name: Checkout core (workspace dep)
+        uses: actions/checkout@v4
+        with:
+          repository: michaelsogos/primebrick-v3-core
+          ref: main
+          path: primebrick-v3-core
+
+      - name: Checkout decimal (transitive workspace dep)
+        uses: actions/checkout@v4
+        with:
+          repository: michaelsogos/primebrick-decimal
+          ref: main
+          path: primebrick-decimal
+
+      - name: Checkout sdk (check-standards tool)
+        uses: actions/checkout@v4
+        with:
+          repository: michaelsogos/primebrick-v3-sdk
+          ref: develop
+          path: primebrick-v3-sdk
+
+      - name: Setup bun (check-standards)
+        uses: oven-sh/setup-bun@v2
+
+      # "workspace:*" deps only resolve inside a pnpm workspace — the tag
+      # checkout is standalone, so we reconstruct the minimal workspace
+      # around the checked-out siblings (dep pins come from each sibling's
+      # package.json: main always carries the latest released version).
+      - name: Reconstruct pnpm workspace
+        run: |
+          cat > package.json <<'EOF'
+          { "name": "ci-workspace", "private": true }
+          EOF
+          cat > pnpm-workspace.yaml <<'EOF'
+          packages:
+            - "primebrick-decimal"
+            - "primebrick-v3-core"
+            - "primebrick-dal-v3"
+          EOF
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -28,19 +72,26 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
 
+      # No --frozen-lockfile: the workspace root is synthetic, its lockfile
+      # is generated here (determinism comes from exact-pinned versions).
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: Build
+        working-directory: primebrick-dal-v3
         run: pnpm run build
 
       - name: Type check
+        working-directory: primebrick-dal-v3
         run: npx tsc --noEmit
 
       - name: Docs freshness check
         # `pnpm build` already regenerated docs/ via prebuild+extract-docs —
         # a dirty docs/ tree here means the committed extraction is stale.
+        working-directory: primebrick-dal-v3
         run: |
           if [ -n "$(git status --porcelain -- docs/)" ]; then
             echo "::error::docs/ is stale — run 'pnpm extract-docs' and commit the result"
@@ -48,10 +99,18 @@ jobs:
             exit 1
           fi
 
+      - name: "Pack (rewrite workspace: protocol)"
+        # pnpm pack emits the published manifest with workspace:* deps
+        # rewritten to their resolved versions — npm publish alone would
+        # ship the literal "workspace:*" spec and fail downstream installs.
+        working-directory: primebrick-dal-v3
+        run: pnpm pack
+
       - name: Publish to NPM (OIDC Trusted Publishing)
         # No NPM_TOKEN env var — OIDC handles authentication.
         # Requires Trusted Publisher configured on npmjs.com:
         #   https://www.npmjs.com/package/@primebrick/dal-pg/access
         # Repository: michaelsogos/primebrick-v3-dal
         # Workflow: .github/workflows/ci.yml
-        run: npm publish --access public --provenance
+        working-directory: primebrick-dal-v3
+        run: npm publish ./*.tgz --access public --provenance
