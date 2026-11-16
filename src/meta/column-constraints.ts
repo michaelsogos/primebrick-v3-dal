@@ -280,10 +280,29 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    itself declared `type:"ref"` (its options carry the row).   */
       if (col.depends_on !== undefined) {
         const dep = col.depends_on;
-        if (!persistence.columns[dep.field] || hiddenKeys.has(dep.field)) {
+        // A `hidden` pivot stays legal for the record-reading facets —
+        // `disabled_when` (`set`/`equals`/`not`/`values`) evaluates the
+        // stored row value, which the served payload still carries even
+        // when the column is suppressed from meta (e.g. an internal
+        // reconcile anchor gating user-editable fields). The interactive
+        // facets instead need a served pivot: `filter_field` is the
+        // user's pick control, `control_prop`/`disabled_when.prop` fetch
+        // the pivot's picked ROW through its ref options delegate.
+        if (!persistence.columns[dep.field]) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on.field "${dep.field}" must name a physical column on the entity class — ` +
               `the pivot is a stored sibling value on the same record`,
+          );
+        }
+        if (
+          hiddenKeys.has(dep.field) &&
+          (dep.filter_field !== undefined ||
+            dep.control_prop !== undefined ||
+            dep.disabled_when?.prop !== undefined)
+        ) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on.field "${dep.field}" names a hidden column — ` +
+              `interactive facets (filter_field / control_prop / disabled_when.prop) require a served pivot; only record-reading gates (set/equals/not/values) may use one`,
           );
         }
         if (dep.filter_field !== undefined && col.type !== "ref") {

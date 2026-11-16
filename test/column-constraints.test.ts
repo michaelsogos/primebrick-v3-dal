@@ -546,6 +546,43 @@ describe("uom + unsigned constraints", () => {
 		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
 	});
 
+	it("a hidden pivot is legal for record-reading gates (set/equals)", () => {
+		const meta = baseMeta();
+		meta.columns[1] = { ...meta.columns[1]!, hidden: true } as never; // event_subject
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { set: true } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { equals: "x" } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	it("a hidden pivot still rejects interactive facets (filter_field/control_prop/prop)", () => {
+		const mkMeta = (): EntityMeta => {
+			const meta = baseMeta();
+			meta.columns[1] = { ...meta.columns[1]!, hidden: true } as never; // event_subject
+			return meta;
+		};
+		const depMeta = mkMeta();
+		depMeta.columns[0] = {
+			...depMeta.columns[0]!,
+			type: "ref",
+			ref: { entity: "legal_form" },
+			depends_on: { field: "event_subject", filter_field: "event_subject" },
+		} as never;
+		expect(() => withColumnConstraints(depMeta, CcRuleEntity)).toThrow(/names a hidden column/);
+		const propMeta = mkMeta();
+		propMeta.columns[0] = {
+			...propMeta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "x" } },
+		} as never;
+		expect(() => withColumnConstraints(propMeta, CcRuleEntity)).toThrow(/names a hidden column/);
+	});
+
 	// ── ref.value_field — non-uid stored values can't detail-link ──────
 	it("ref.value_field with route:'detail' (default) throws", () => {
 		const meta = baseMeta();
