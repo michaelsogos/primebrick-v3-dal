@@ -48,6 +48,7 @@ import type {
   EntityListQuery,
   EntityListResult,
   EntityService,
+  EntityGetOptions,
   EntityServiceConfig,
 } from "./entity-service.js";
 
@@ -144,14 +145,25 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   list(query: EntityListQuery): Promise<EntityListResult<TEntity>> {
     return this.svc.list(query);
   }
-  get(uuid: string): Promise<TEntity> {
-    return this.svc.get(uuid);
+  get(uuid: string, options?: EntityGetOptions & { throwIfNotFound?: true }): Promise<TEntity>;
+  get(uuid: string, options: EntityGetOptions & { throwIfNotFound: false }): Promise<TEntity | null>;
+  get(uuid: string, options?: EntityGetOptions): Promise<TEntity | null> {
+    return this.svc.get(uuid, options as never);
+  }
+  exists(options?: import("../types/types.js").FindOptions): Promise<boolean> {
+    return this.svc.exists(options);
   }
   query<TResult = TEntity>(
     fields?: import("../query/dsl.js").FieldProjector[] | null,
     options?: import("../types/types.js").FindOptions,
   ): Promise<TResult[]> {
     return this.svc.query<TResult>(fields, options);
+  }
+  find<TResult = TEntity>(
+    fields?: import("../query/dsl.js").FieldProjector[] | null,
+    options?: import("../types/types.js").FindOptions,
+  ): Promise<TResult | null> {
+    return this.svc.find<TResult>(fields, options);
   }
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity> {
     return this.svc.create(body, tx);

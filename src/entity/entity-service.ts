@@ -75,7 +75,7 @@ import {
   translateFilterConditions,
   type ListFilterCondition,
 } from "../query/list-filters.js";
-import type { AuditPort, FindOptions, TimeoutOverrideOptions } from "../types/types.js";
+import type { AuditPort, FindOptions, TimeoutOverrideOptions, WithDeletedRecords } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
@@ -242,10 +242,21 @@ export interface EntityServiceConfig<TEntity> {
   };
 }
 
+/** `get` options — the by-uuid door's full contract. `throwIfNotFound:false`
+ *  returns `null` instead of the NotFoundError; `deletedRecords:"INCLUDED"`
+ *  reaches soft-deleted rows; `displayJoins:false` skips the display-name
+ *  joins (lean entity-only read — hot paths, existence-adjacent guards). */
+export type EntityGetOptions = {
+  throwIfNotFound?: boolean;
+  deletedRecords?: WithDeletedRecords;
+  displayJoins?: boolean;
+};
+
 /** The contract every entity service must satisfy — enforced on the router. */
 export interface EntityService<TEntity> {
   list(query: EntityListQuery): Promise<EntityListResult<TEntity>>;
-  get(uuid: string): Promise<TEntity>;
+  get(uuid: string, options?: EntityGetOptions & { throwIfNotFound?: true }): Promise<TEntity>;
+  get(uuid: string, options: EntityGetOptions & { throwIfNotFound: false }): Promise<TEntity | null>;
   /** `query` — the single named internal door for code-authored reads the
    *  wire contract cannot express: `Project.field`/`Project.expr`
    *  projections (`TResult` need not be `TEntity`), `Filter.expr`,
@@ -258,6 +269,17 @@ export interface EntityService<TEntity> {
     fields?: FieldProjector[] | null,
     options?: FindOptions,
   ): Promise<TResult[]>;
+  /** `find` — the single-row variant of `query` (`repo.find` pass-through):
+   *  `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+   *  Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+   *  governed replacement for `dal.find(entity, fields, opts)`. */
+  find<TResult = TEntity>(
+    fields?: FieldProjector[] | null,
+    options?: FindOptions,
+  ): Promise<TResult | null>;
+  /** `exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+   *  the cheap "does it exist" door — no row materialized, no dto. */
+  exists(options?: FindOptions): Promise<boolean>;
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
@@ -918,19 +940,32 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       >;
     },
 
-    async get(uuid) {
+    find(fields, options) {
+      return repo.find<TEntity, unknown>(cfg.entity, fields ?? undefined, options ?? {}) as Promise<
+        never
+      >;
+    },
+
+    get: (async (uuid: string, options?: EntityGetOptions) => {
       const row = await repo.find<TEntity, TEntity>(
         cfg.entity,
         projectRead() as never,
         {
           filters: [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", uuid)],
-          joins: joinsFor(),
+          joins: options?.displayJoins === false ? undefined : joinsFor(),
+          deletedRecords: options?.deletedRecords,
           throwIfNotFound: false,
         } as never,
       );
-      if (!row)
+      if (!row) {
+        if (options?.throwIfNotFound === false) return null;
         throw new NotFoundError(`The requested ${meta.entityClassName} could not be found`);
+      }
       return toDto(row);
+    }) as EntityService<TEntity>["get"],
+
+    exists(options) {
+      return repo.exists(cfg.entity, options ?? {});
     },
 
     async create(body, tx) {

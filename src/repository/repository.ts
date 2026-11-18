@@ -466,6 +466,32 @@ export class Repository {
     return rows[0];
   }
 
+  /**
+   * `exists` — boolean existence probe: `SELECT EXISTS(SELECT 1 …)`. Honors
+   * the same `FindOptions` doors that shape a read (`filters`, `joins`,
+   * `deletedRecords`, `tableName`, `groupBy`/`having`); sorting/projection
+   * are meaningless on a boolean and ignored. Short-circuits at the first
+   * matching row — strictly cheaper than `COUNT(*)` or fetching a row to
+   * truthiness-check it.
+   */
+  async exists<TEntity extends object>(
+    entity: EntityClass,
+    options?: FindOptions
+  ): Promise<boolean> {
+    const q = buildSelectQuery({
+      entity,
+      joins: options?.joins,
+      filters: options?.filters,
+      deletedRecords: options?.deletedRecords,
+      tableName: options?.tableName,
+      groupBy: options?.groupBy,
+      having: options?.having,
+      exists: true,
+    });
+    const r = await this.db.query(q.text, q.values);
+    return (r.rows?.[0] as Record<string, unknown> | undefined)?.exists === true;
+  }
+
   async findAll<TEntity extends object, TResult = TEntity>(
     entity: EntityClass,
     fields?: FieldProjector[] | null,

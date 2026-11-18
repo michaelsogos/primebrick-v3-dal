@@ -410,11 +410,21 @@ is available here.
 |-----------|------|-------------|
 | query | `EntityListQuery` |  |
 
-#### `DomainService.get(uuid): Promise<TEntity>`
+#### `DomainService.get(uuid, options): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
+| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
+
+#### `DomainService.exists(options): Promise<boolean>`
+
+`exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+ the cheap "does it exist" door — no row materialized, no dto.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `FindOptions` |  |
 
 #### `DomainService.query(fields, options): Promise<TResult[]>`
 
@@ -432,17 +442,15 @@ is available here.
 | fields | `FieldProjector[] \| null` |  |
 | options | `FindOptions` |  |
 
-#### `DomainService.queryPage(page, recordsPerPage, fields, options): Promise<PaginatedEntity<TResult>>`
+#### `DomainService.find(fields, options): Promise<TResult \| null>`
 
-`queryPage` — the paged counterpart of `query` for code-authored
- reads that need `LIMIT`/`OFFSET` + total (`findByPage` semantics,
- NOT a `FindOptions` extension — `findAll` stays page-free). Same
- rule as `query`: options are code-authored, never wire-shaped.
+`find` — the single-row variant of `query` (`repo.find` pass-through):
+ `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+ Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+ governed replacement for `dal.find(entity, fields, opts)`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| page | `number` |  |
-| recordsPerPage | `number` |  |
 | fields | `FieldProjector[] \| null` |  |
 | options | `FindOptions` |  |
 
@@ -746,6 +754,20 @@ means "the row existed when you read it but is now gone".
 |-----------|------|-------------|
 | entity | `EntityClass` |  |
 | fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `Repository.exists(entity, options): Promise<boolean>`
+
+`exists` — boolean existence probe: `SELECT EXISTS(SELECT 1 …)`. Honors
+the same `FindOptions` doors that shape a read (`filters`, `joins`,
+`deletedRecords`, `tableName`, `groupBy`/`having`); sorting/projection
+are meaningless on a boolean and ignored. Short-circuits at the first
+matching row — strictly cheaper than `COUNT(*)` or fetching a row to
+truthiness-check it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
 | options | `FindOptions` |  |
 
 #### `Repository.findAll(entity, fields, options): Promise<AsyncIterable<TResult, any, any> \| TResult[]>`
