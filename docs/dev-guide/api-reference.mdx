@@ -432,6 +432,20 @@ is available here.
 | fields | `FieldProjector[] \| null` |  |
 | options | `FindOptions` |  |
 
+#### `DomainService.queryPage(page, recordsPerPage, fields, options): Promise<PaginatedEntity<TResult>>`
+
+`queryPage` — the paged counterpart of `query` for code-authored
+ reads that need `LIMIT`/`OFFSET` + total (`findByPage` semantics,
+ NOT a `FindOptions` extension — `findAll` stays page-free). Same
+ rule as `query`: options are code-authored, never wire-shaped.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| page | `number` |  |
+| recordsPerPage | `number` |  |
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
 #### `DomainService.create(body, tx): Promise<TEntity>`
 
 | Parameter | Type | Description |
@@ -516,6 +530,19 @@ Internal bulk ops — NOT wire actions (no route registers on them):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | fn | `(tx: Repository) => Promise<T>` |  |
+| options | `TimeoutOverrideOptions` |  |
+
+#### `DomainService.beginTransaction(options): DeferredTransaction`
+
+`beginTransaction` — the deferred-tx door for ref()-bound
+ single-statement writes (`tx.add/update/...` return `Deferred`
+ handles whose `.ref()` binds one op's RETURNING into another — the
+ ONLY form that compiles a multi-write CTE). Repo ops inside carry
+ `{ actor }` explicitly by contract. Requires the gateway tx
+ beginner (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
 | options | `TimeoutOverrideOptions` |  |
 
 #### `DomainService.audit(uuid, page, limit): Promise<unknown>`
@@ -1420,6 +1447,9 @@ The contract every entity service must satisfy — enforced on the router.
 | txRunner | `(fn: (tx: Repository) => Promise<T>, options: TimeoutOverrideOptions) => Promise<T>` | Atomic tx runner — INTERNAL injection point only. `dal.entityService`
  supplies `dal.transaction`; consumers never set it. Required only by
  `svc.transaction` — a missing runner fails fast at call time. |
+| txBeginner | `(options: TimeoutOverrideOptions) => DeferredTransaction` | Deferred-tx beginner — INTERNAL injection point only. `dal.entityService`
+ supplies `dal.beginTransaction`; consumers never set it. Required only
+ by `svc.beginTransaction` — a missing beginner fails fast at call time. |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`

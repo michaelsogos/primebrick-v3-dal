@@ -193,6 +193,11 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   ): Promise<T> {
     return this.svc.transaction(fn, options);
   }
+  beginTransaction(
+    options?: import("../types/types.js").TimeoutOverrideOptions,
+  ): import("../dal/deferred-transaction.js").DeferredTransaction {
+    return this.svc.beginTransaction(options);
+  }
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
   }

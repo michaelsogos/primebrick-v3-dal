@@ -43,6 +43,7 @@
 import { newUuidV7 } from "../types/uuid.js";
 
 import { Repository } from "../repository/repository.js";
+import type { DeferredTransaction } from "../dal/deferred-transaction.js";
 import {
   field,
   Filter,
@@ -223,6 +224,10 @@ export interface EntityServiceConfig<TEntity> {
    *  supplies `dal.transaction`; consumers never set it. Required only by
    *  `svc.transaction` — a missing runner fails fast at call time. */
   txRunner?: <T>(fn: (tx: Repository) => Promise<T>, options?: TimeoutOverrideOptions) => Promise<T>;
+  /** Deferred-tx beginner — INTERNAL injection point only. `dal.entityService`
+   *  supplies `dal.beginTransaction`; consumers never set it. Required only
+   *  by `svc.beginTransaction` — a missing beginner fails fast at call time. */
+  txBeginner?: (options?: TimeoutOverrideOptions) => DeferredTransaction;
   hooks?: {
     afterWrite?: (op: EntityAction, entity: TEntity) => void | Promise<void>;
     beforeCreate?: (
@@ -285,6 +290,13 @@ export interface EntityService<TEntity> {
     fn: (tx: Repository) => Promise<T>,
     options?: TimeoutOverrideOptions,
   ): Promise<T>;
+  /** `beginTransaction` — the deferred-tx door for ref()-bound
+   *  single-statement writes (`tx.add/update/...` return `Deferred`
+   *  handles whose `.ref()` binds one op's RETURNING into another — the
+   *  ONLY form that compiles a multi-write CTE). Repo ops inside carry
+   *  `{ actor }` explicitly by contract. Requires the gateway tx
+   *  beginner (`dal.entityService` injects it) — fails fast otherwise. */
+  beginTransaction(options?: TimeoutOverrideOptions): DeferredTransaction;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
@@ -1060,6 +1072,15 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         );
       }
       return cfg.txRunner(fn, options);
+    },
+
+    beginTransaction(options) {
+      if (!cfg.txBeginner) {
+        throw new ValidationError(
+          "svc.beginTransaction requires the gateway tx beginner — use dal.entityService(cfg) so Dal injects it",
+        );
+      }
+      return cfg.txBeginner(options);
     },
 
     async audit(uuid, page, limit) {

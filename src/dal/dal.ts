@@ -586,6 +586,7 @@ export class Dal {
       ...cfg,
       repo: cfg.repo ?? this.repo,
       txRunner: cfg.txRunner ?? ((fn, options) => this.transaction(fn, options)),
+      txBeginner: cfg.txBeginner ?? ((options) => this.beginTransaction(options)),
     });
   }
 
