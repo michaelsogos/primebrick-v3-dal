@@ -436,25 +436,52 @@ describe("uom + unsigned constraints", () => {
 		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
 	});
 
-	it("custom unit (fixed Intl unit) needs no sibling", () => {
-		const meta = pricedMeta([{ uom: { kind: "custom", unit: "millisecond" } }]);
+	it("category kind fixed unit needs no sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "millisecond" } }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
 	});
 
-	it("custom unit outside the Intl-sanctioned list throws", () => {
-		const meta = pricedMeta([{ uom: { kind: "custom", unit: "parsec" } }]);
+	it("category kind unit outside the Intl-sanctioned list throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "parsec" } as never }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not an Intl-sanctioned unit/);
 	});
 
-	it("custom unit mixed with field/source/symbol throws (XOR)", () => {
-		const meta = pricedMeta([
-			{ uom: { kind: "custom", unit: "millisecond", field: "qty_uom", source: { entity: "uom" } } as never },
-		]);
-		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/mixes unit with/);
+	it("category kind unit from a different category throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "kilogram" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/belongs to a different category/);
+	});
+
+	it("category kind with neither unit nor field throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "volume" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/exactly one of unit \| field/);
+	});
+
+	it("category kind with both unit and field throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "millisecond", field: "qty_uom" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/exactly one of unit \| field/);
+	});
+
+	it("category kind per-row field must name a physical sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "length", field: "nope_uom" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/must name a physical column/);
+		const ok = pricedMeta([{ uom: { kind: "length", field: "qty_uom" } }]);
+		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom unit (fixed Intl unit) now throws — category kinds own it", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", unit: "millisecond" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/uom:"custom" declares unit/);
 	});
 
 	it("custom symbol-only (fixed arbitrary suffix) needs no sibling", () => {
 		const meta = pricedMeta([{ uom: { kind: "custom", symbol: "pz" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom field+source may carry symbol as adornment override", () => {
+		const meta = pricedMeta([
+			{ uom: { kind: "custom", field: "qty_uom", source: { entity: "uom" }, symbol: "pz" } },
+		]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
 	});
 
@@ -470,8 +497,13 @@ describe("uom + unsigned constraints", () => {
 		).toThrow(/field without source/);
 	});
 
+	it("custom with neither field nor symbol throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/declares no unit source/);
+	});
+
 	it("unknown uom kind throws", () => {
-		const meta = pricedMeta([{ uom: { kind: "volume" } as never }]);
+		const meta = pricedMeta([{ uom: { kind: "bogus" } as never }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not a declared vocabulary/);
 	});
 

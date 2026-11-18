@@ -44,7 +44,7 @@
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { numericKindOf } from "@primebrick/core";
+import { numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
 import { TEXTLIKE_PG_TYPES } from "../entity/entity-service.js";
 
@@ -235,19 +235,20 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             );
           }
         } else if (uom.kind === "custom") {
-          // ── custom XOR — exactly one facet sources the unit:       */
-          //    `field`+`source` (per-row persisted code), `unit`      */
-          //    (fixed Intl-sanctioned unit) or `symbol` (fixed        */
-          //    arbitrary suffix). `field` may also carry `symbol`     */
-          //    as the adornment override.                             */
+          // ── custom XOR — genuinely non-standard UoM only:            */
+          //    `field`+`source` (per-row code from a custom vocabulary, */
+          //    `symbol` optional adornment override) OR standalone      */
+          //    `symbol` (fixed arbitrary suffix). `unit` moved to the   */
+          //    category kinds — a sanctioned unit on custom is a        */
+          //    construction error, not a variant.                       */
           const hasField = "field" in uom;
           const hasUnit = "unit" in uom;
           const hasSymbol = "symbol" in uom;
           const hasSource = "source" in uom;
-          if (hasUnit && (hasField || hasSymbol || hasSource)) {
+          if (hasUnit) {
             throw new Error(
-              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" mixes unit with field/symbol/source — ` +
-                `unit is a standalone fixed Intl unit; the per-row code path is field+source`,
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares unit — ` +
+                `Intl-sanctioned units belong on a category kind (time | length | digital | …), custom is for non-standard vocabularies only`,
             );
           }
           if (hasField !== hasSource) {
@@ -256,10 +257,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                 `the per-row code path requires BOTH: the sibling column and the selector vocabulary`,
             );
           }
-          if (!hasField && !hasUnit && !hasSymbol) {
+          if (!hasField && !hasSymbol) {
             throw new Error(
               `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares no unit source — ` +
-                `one of field+source | unit | symbol is required`,
+                `one of field+source | symbol is required`,
             );
           }
           if (hasField) {
@@ -280,16 +281,45 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               );
             }
           }
-          if (hasUnit && !INTL_SANCTIONED_UNITS.has(uom.unit)) {
+        } else if (uom.kind in UNIT_CATEGORIES) {
+          // ── category kind — Intl-sanctioned UoM grouped by           */
+          //    UNIT_CATEGORIES (CLDR census, hardcoded in core).        */
+          //    Exactly one of `unit` (fixed) | `field` (per-row code   */
+          //    on a physical sibling — the category IS the picker      */
+          //    vocabulary, no `source` prop exists here).              */
+          const kind = uom.kind as MetaColumnUomKind;
+          const hasField = "field" in uom;
+          const hasUnit = "unit" in uom;
+          if (hasField === hasUnit) {
             throw new Error(
-              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.unit "${uom.unit}" is not an Intl-sanctioned unit — ` +
-                `valid identifiers come from Intl.supportedValuesOf("unit"); free-text units belong in uom.symbol`,
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"${kind}" must declare exactly one of unit | field — ` +
+                `got ${hasUnit && hasField ? "both" : "neither"}`,
+            );
+          }
+          if (hasUnit) {
+            if (!INTL_SANCTIONED_UNITS.has(uom.unit)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.unit "${uom.unit}" is not an Intl-sanctioned unit — ` +
+                  `valid identifiers come from Intl.supportedValuesOf("unit"); free-text units belong in uom:"custom" symbol`,
+              );
+            }
+            if (!UNIT_CATEGORIES[kind].includes(uom.unit)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"${kind}" unit "${uom.unit}" is sanctioned but belongs to a different category — ` +
+                  `one of ${UNIT_CATEGORIES[kind].join(", ")}`,
+              );
+            }
+          }
+          if (hasField && (!persistence.columns[uom.field] || hiddenKeys.has(uom.field))) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
+                `the per-row UoM code is persisted on that sibling column (category "${kind}" values)`,
             );
           }
         } else {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.kind "${String((uom as { kind?: unknown }).kind)}" is not a declared vocabulary — ` +
-              `one of percent | currency | custom`,
+              `one of percent | currency | custom | ${Object.keys(UNIT_CATEGORIES).join(" | ")}`,
           );
         }
       }
