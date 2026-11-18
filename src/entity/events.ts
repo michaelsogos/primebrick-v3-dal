@@ -104,7 +104,7 @@ export const ENTITY_EVENT_SCHEMA: Record<string, unknown> = {
     entity: { type: "string" },
     table: { type: "string" },
     action: { enum: ["create", "update", "delete", "restore", "purge", "duplicate"] },
-    uuid: { type: "string" },
+    uuid: { type: "string", format: "uuid" },
     version: { type: "integer" },
     actor: { type: "string" },
     changed_at: { type: "integer" },

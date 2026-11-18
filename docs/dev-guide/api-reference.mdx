@@ -1253,6 +1253,12 @@ Collaboration fragment injected by `assembleMeta` at serve time.
 | Field | Type | Description |
 |-------|------|-------------|
 | config | `Required<Pick<DalConfig, "max" \| "connectionString" \| "schemas" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
+| eventPort | `EntityEventPort` | Domain-event transport port — assigned ONCE at service boot
+(`dal.eventPort = makeNatsEntityEventPort(code)`). From that point
+every `entityService(cfg)` emits one `EntityEvent` per affected row
+by construction (gated only by the entity's `events` meta), and
+`dal.transaction` drains tx-buffered drafts post-COMMIT. Unset →
+writes emit nothing (fire-and-forget silent skip). |
 
 ### `DalConfig`
 
@@ -1360,6 +1366,31 @@ both match this client; a save from another tab of the same user is
 foreign for merge/conflict purposes. |
 | changed_at | `number` | Epoch ms of the save. |
 
+### `EntityEvent`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| schema | `1` | Contract version — always 1. |
+| service | `string` | Publishing service code ("ai", "job", "be"). |
+| entity | `string` | API entity name (singular — the `/entities/:entity` segment). |
+| table | `string` | Physical table name. |
+| action | `EntityWriteAction` | Write action — see EntityWriteAction. |
+| uuid | `string` | Affected row uuid. |
+| version | `number` | Caller-observed version after the write — auditable entities only. |
+| actor | `string` | Resolved write actor (uuid or "system:&#60;code&#62;"). |
+| changed_at | `number` | Epoch ms of the write. |
+| before | `Record<string, unknown> \| null` | Pre-write row — optimistic-lock oldRecord; null on create/bulk. |
+| after | `Record<string, unknown> \| null` | Post-write row — the RETURNING projection; null on bulk. |
+| delta | `Record<string, { old: unknown; new: unknown }> \| null` | `{field:{old,new}}` change map — the audit delta; null on bulk. |
+| batch | `string` | Shared id correlating the per-item events of one bulk op. |
+
+### `EntityEventPort`
+
+Sink the repo write path calls — fire-and-forget by contract:
+ callers do `void port.emit(e).catch(log)`; a failing emit NEVER fails
+ the write. Implementations: SDK `makeNatsEntityEventPort` (JetStream),
+ a buffering sink inside `dal.transaction` (drains post-COMMIT).
+
 ### `EntityListQuery`
 
 | Field | Type | Description |
@@ -1458,6 +1489,13 @@ The contract every entity service must satisfy — enforced on the router.
  transaction when the op runs `svc.create(body, tx)` (a port bound
  at construction would write the audit row on the gateway pool —
  outside the tx — and survive a rollback). |
+| events | `EntityEventPort` | Domain-event sink — `dal.entityService` auto-injects `dal.eventPort`
+ (SDK `makeNatsEntityEventPort`). Every governed write emits one
+ `EntityEvent` per affected row, subject to the entity's
+ `@Entity(..., {events})` opt-out. Unset → no emission (silent skip,
+ same shape as a missing audit port). Unlike `auditPort` there is no
+ factory form: the tx path buffers drafts on the tx-scoped repo and
+ drains them post-COMMIT — the port object itself is tx-agnostic. |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
 | display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
@@ -2030,6 +2068,22 @@ contracts, not column sets.
 
 **Type:** `(args: any[]) => object`
 
+### `EntityEventDraft`
+
+What the repo write path hands the port — the full event MINUS
+ `service` (the repo doesn't know the service code; the transport port
+ stamps it when building subject + payload).
+
+**Type:** `Omit<EntityEvent, "service">`
+
+### `EntityEventsConfig`
+
+Opt-out contract on `@Entity` options — `false` silences the entity
+ entirely; `{except:[...]}` silences only those actions. Absent =
+ emitting (the default by design).
+
+**Type:** `false \| { except: readonly EntityWriteAction[] }`
+
 ### `EntityMetaResponse`
 
 The served `GET /api/v1/entities/{entity}/meta` response:
@@ -2044,6 +2098,14 @@ Serializable persistence metadata (for JSON compare with DB introspection).
 ### `EntityTypeWarning`
 
 Advisory warning — never fails a build, printed by `primebrick-db`.
+
+### `EntityWriteAction`
+
+Write actions the event vocabulary maps (from the svc method, not the
+ audit enum — `bulkUpdate` items are `update`, `svc.duplicate` is
+ `duplicate` even though its audit row says INSERT).
+
+**Type:** `"create" \| "update" \| "delete" \| "restore" \| "purge" \| "duplicate"`
 
 ### `ExprOperand`
 
@@ -2908,6 +2970,12 @@ Email — same RFC-5322-simplified regex the config validator and the FE
  refine use (documented shared in `sdk/src/config/config-validator.ts`).
 
 **Type:** `RegExp`
+
+### `ENTITY_EVENT_SCHEMA`
+
+JSON Schema for `endpoints.events` payload_schema + wire docs.
+
+**Type:** `Record<string, unknown>`
 
 ### `Filter`
 
@@ -4028,10 +4096,7 @@ caller owns the mapping).
 | entity | `EntityClass` |  |
 | deltas | `Record<string, unknown>[]` |  |
 
-### `Entity(tableName, schema): (ctor: T) => T`
-
-Maps the class to a DB table. Optional argument overrides the table name;
-if omitted, the table name equals the class name.
+### `Entity(tableName, schema): (ctor: Function) => void`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4051,6 +4116,16 @@ if omitted, the table name equals the class name.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | value | `Date` |  |
+
+### `entityEventsEnabled(cfg, action): boolean`
+
+Resolve the meta flag into a runtime verdict: absent = emitting (the
+ default by design); `false` silences; `{except}` silences actions.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `EntityEventsConfig \| undefined` |  |
+| action | `EntityWriteAction` |  |
 
 ### `eq(a, b): boolean`
 
