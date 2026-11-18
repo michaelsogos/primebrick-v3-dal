@@ -58,6 +58,14 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
 const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
 
+/** Intl-sanctioned unit identifiers — the same vocabulary the cell
+ *  formatter feeds `style:"unit"` (`Intl.supportedValuesOf("unit")`,
+ *  ~45 entries: millisecond, kilogram, byte, …). `uom.unit` must be a
+ *  member; arbitrary codes belong in `uom.symbol` (suffix fallback).
+ *  Empty set when the runtime lacks the API — any `unit` declaration
+ *  then fails membership loudly rather than drifting. */
+const INTL_SANCTIONED_UNITS = new Set(Intl.supportedValuesOf?.("unit") ?? []);
+
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string; display_field?: string }>(
   meta: T,
   entityClass: EntityClass,
@@ -213,20 +221,54 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                 `percent is a pure display transform (×100/÷100) and persists no code`,
             );
           }
-        } else if (uom.kind === "currency" || uom.kind === "custom") {
+        } else if (uom.kind === "currency") {
           if (!persistence.columns[uom.field] || hiddenKeys.has(uom.field)) {
             throw new Error(
               `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
                 `the UoM code is persisted per row on that sibling column`,
             );
           }
-          if (uom.kind === "currency" && uom.source !== undefined && uom.source !== "currencies") {
+          if (uom.source !== undefined && uom.source !== "currencies") {
             throw new Error(
               `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"currency" source "${String(uom.source)}" is not a declared vocabulary — ` +
                 `only "currencies" (the ISO 4217 list) is valid`,
             );
           }
-          if (uom.kind === "custom") {
+        } else if (uom.kind === "custom") {
+          // ── custom XOR — exactly one facet sources the unit:       */
+          //    `field`+`source` (per-row persisted code), `unit`      */
+          //    (fixed Intl-sanctioned unit) or `symbol` (fixed        */
+          //    arbitrary suffix). `field` may also carry `symbol`     */
+          //    as the adornment override.                             */
+          const hasField = "field" in uom;
+          const hasUnit = "unit" in uom;
+          const hasSymbol = "symbol" in uom;
+          const hasSource = "source" in uom;
+          if (hasUnit && (hasField || hasSymbol || hasSource)) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" mixes unit with field/symbol/source — ` +
+                `unit is a standalone fixed Intl unit; the per-row code path is field+source`,
+            );
+          }
+          if (hasField !== hasSource) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares field without source (or vice versa) — ` +
+                `the per-row code path requires BOTH: the sibling column and the selector vocabulary`,
+            );
+          }
+          if (!hasField && !hasUnit && !hasSymbol) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares no unit source — ` +
+                `one of field+source | unit | symbol is required`,
+            );
+          }
+          if (hasField) {
+            if (!persistence.columns[uom.field] || hiddenKeys.has(uom.field)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
+                  `the UoM code is persisted per row on that sibling column`,
+              );
+            }
             const src = uom.source;
             const ok =
               src === "currencies" ||
@@ -237,6 +279,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                   `one of "currencies" | { entity } | { api_url }`,
               );
             }
+          }
+          if (hasUnit && !INTL_SANCTIONED_UNITS.has(uom.unit)) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.unit "${uom.unit}" is not an Intl-sanctioned unit — ` +
+                `valid identifiers come from Intl.supportedValuesOf("unit"); free-text units belong in uom.symbol`,
+            );
           }
         } else {
           throw new Error(

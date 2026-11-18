@@ -1311,7 +1311,8 @@ keys actually live in that module's `<code>.translations` schema. |
 | title_key | `string` | Optional i18n key overriding the canonical page title.
 When absent, list/create/edit titles are built from the generic
 `system.entities.page_title.{list\|create\|edit}` templates interpolated
-with `system.entities.<translation_key>.{plural\|singular}`.
+with `{entities_ns}.entities.<translation_key>.{plural\|singular}` —
+`entities_ns` defaults to `system` for BE/core-owned entities.
 Set only for custom pages needing a bespoke title — CRUD entity metas
 must not declare it. |
 | uid | `string` | Field key holding the entity primary key (usually `uuid`). |
@@ -1698,6 +1699,21 @@ Per-operation timeout override for dedicated-client work
 | timeoutMs | `number` | Override statement_timeout (ms). Transaction-scoped for `transaction`
  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
  session-default restore for `partitionMaintenance`. |
+
+### `VisibleKeyPrefs`
+
+Persisted column-visibility intent (storage schema v2): the user's
+deltas from `default_visible` — never the resolved set. Storing intent
+instead of the resolved array is what lets meta evolution (a column
+added later, a flipped `default_visible`) reach profiles that already
+persisted preferences: a key in neither list simply follows its own
+`default_visible`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| v | `2` |  |
+| shown | `string[]` | Served keys the user shows despite `default_visible:false`. |
+| hidden | `string[]` | Served keys the user hides despite `default_visible:true`. |
 
 ### `WriteHookContext`
 
@@ -2146,12 +2162,20 @@ display ÷ 100) — the canonical value stays a fraction; NO sibling field.
 `"currency"`: money semantics — `field` names the SIBLING column that
 persists the ISO code per row (mandatory); `source` defaults to
 `"currencies"` (the shared ISO list).
-`"custom"`: any other UoM (kg, ms, items, …) — `field` persists the code,
-`source` drives the selector options, `symbol` overrides the adornment.
-The `field` sibling requirement is verified by `withColumnConstraints`:
-a uom'd numeric without its code column is a construction error.
+`"custom"`: any other UoM (kg, ms, items, …) — exactly ONE of:
+ - `field` + `source`: the code persists per row on a SIBLING column;
+   `source` drives the selector options, `symbol` overrides the adornment.
+ - `unit`: a FIXED unit from the Intl-sanctioned list — the same
+   vocabulary `Intl.supportedValuesOf("unit")` returns (millisecond,
+   kilogram, byte, …). Rendered via `style:"unit"` — locale-correct
+   inflection for free. Membership is a runtime contract verified by
+   `withColumnConstraints`, not a literal union (ICU-versioned).
+ - `symbol`: a FIXED arbitrary suffix for units Intl does not sanction
+   ("pz", "items", …) — plain suffix display, never `style:"unit"`.
+`withColumnConstraints` enforces the XOR — a `custom` uom with zero or
+several of field/unit/symbol is a construction error.
 
-**Type:** `{ kind: "percent" } \| { kind: "currency"; field: string; source: "currencies" } \| { kind: "custom"; field: string; source: MetaColumnUomSource; symbol: string }`
+**Type:** `{ kind: "percent" } \| { kind: "currency"; field: string; source: "currencies" } \| { kind: "custom"; field: string; source: MetaColumnUomSource; symbol: string } \| { kind: "custom"; unit: string } \| { kind: "custom"; symbol: string }`
 
 ### `MetaColumnUomSource`
 
@@ -3785,6 +3809,19 @@ decorators express physical reality — the two cannot diverge.
 | columns | `MetaColumn[]` |  |
 | entity | `EntityClass` |  |
 
+### `deriveVisibleKeyPrefs(visibleKeys, columns): VisibleKeyPrefs`
+
+Derive the persistable intent from the resolved set + served columns:
+ `shown` = visible keys that are not default-visible;
+ `hidden` = served columns absent from the visible set. A legacy v1
+ array migrates losslessly through the same derivation — identical
+ render, unlocked evolution.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| visibleKeys | `string[]` |  |
+| columns | `MetaColumn[]` |  |
+
 ### `Dict(opts): ClassDecorator`
 
 Marks an entity as a dictionary/enum surface — typically set ONCE on a
@@ -4957,6 +4994,17 @@ single function so the plane stays deterministic.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | specifier | `string` |  |
+
+### `resolveVisibleKeyPrefs(prefs, columns): string[]`
+
+Resolve stored prefs → concrete visible keys:
+ `(defaultVisible ∪ shown) − hidden`, then sanitized (unknown keys
+ dropped, `hideable === false` re-injected, empty → defaults).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| prefs | `Pick<VisibleKeyPrefs, "shown" \| "hidden">` |  |
+| columns | `MetaColumn[]` |  |
 
 ### `Retention(duration): PropertyDecorator`
 

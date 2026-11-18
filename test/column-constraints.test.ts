@@ -436,6 +436,40 @@ describe("uom + unsigned constraints", () => {
 		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
 	});
 
+	it("custom unit (fixed Intl unit) needs no sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", unit: "millisecond" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom unit outside the Intl-sanctioned list throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", unit: "parsec" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not an Intl-sanctioned unit/);
+	});
+
+	it("custom unit mixed with field/source/symbol throws (XOR)", () => {
+		const meta = pricedMeta([
+			{ uom: { kind: "custom", unit: "millisecond", field: "qty_uom", source: { entity: "uom" } } as never },
+		]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/mixes unit with/);
+	});
+
+	it("custom symbol-only (fixed arbitrary suffix) needs no sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", symbol: "pz" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom field without source (or source without field) throws", () => {
+		expect(() =>
+			withColumnConstraints(pricedMeta([{ uom: { kind: "custom", field: "qty_uom" } as never }]), CcPricedEntity),
+		).toThrow(/field without source/);
+		expect(() =>
+			withColumnConstraints(
+				pricedMeta([{ uom: { kind: "custom", source: { entity: "uom" } } as never }]),
+				CcPricedEntity,
+			),
+		).toThrow(/field without source/);
+	});
+
 	it("unknown uom kind throws", () => {
 		const meta = pricedMeta([{ uom: { kind: "volume" } as never }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not a declared vocabulary/);
