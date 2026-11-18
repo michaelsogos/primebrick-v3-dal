@@ -136,7 +136,10 @@ no code path that yields `{uuid}` or `{success: true}`.
 `svc.transaction(txRepo => …)` gives the callback (it delegates to
 `dal.transaction`; the BE's `runEntityWrite` envelope does exactly this
 when the write body carries `{entity, translations}` piggyback rows).
-Deferred transaction/CTE workflows go through `svc.beginTransaction`.
+Deferred transaction/CTE workflows go through `svc.beginTransaction` —
+its buffered ops emit the same entity lifecycle events as direct writes,
+drained after the merged statement commits (never at buffer time; a
+failed commit emits nothing).
 Raw `PoolClient` is never part of the contract.
 `afterWrite` hooks fire **only outside a tx** — inside one, commit is
 the caller's job, so notifications can't precede the durable write.

@@ -70,8 +70,9 @@ function escapeLiteral(value: string): string {
 
 /** Wire-sanitize a record for the entity-event payload/delta — BigInt
  *  values cannot cross JSON.stringify (throws) or the event wire, so they
- *  degrade to Number the same way the audit hardDelete delta does. */
-function eventSafeRecord(record: Record<string, unknown>): Record<string, unknown> {
+ *  degrade to Number the same way the audit hardDelete delta does.
+ *  @internal — shared with the deferred-transaction commit-time drain. */
+export function eventSafeRecord(record: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(record)) {
     out[k] = typeof v === "bigint" ? Number(v) : v;

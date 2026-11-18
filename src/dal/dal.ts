@@ -699,6 +699,7 @@ export class Dal {
     return new DeferredTransaction(
       (text, values) => this.withClient((c) => c.query(text, values), options),
       this.config.bulkTimeoutMs,
+      this.eventPort,
     );
   }
 
