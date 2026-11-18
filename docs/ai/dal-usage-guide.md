@@ -5,6 +5,7 @@ Complete method-by-method reference for the Dal gateway and Repository API.
 ## Table of contents
 
 0. [Dal gateway (initDal/getDal)](#dal-gateway-getdal)
+0.1. [Consumer doors — svc.*](#consumer-doors--svc-domainservice--entityservice)
 1. [Finders](#finders)
 2. [Write operations](#write-operations)
 3. [Bulk operations](#bulk-operations)
@@ -44,9 +45,15 @@ export { getDal } from "@primebrick/dal-pg";
 ```
 
 ```typescript
-// application code — accessor only, never config:
-const dal = getDal();                       // singleton, zero allocation
-const config = await dal.find(EmailConfigEntity, null, { ... });
+// infra seams (health probes, config adapters) use the canonical
+// infra door exported by the consumer's db/dal.ts — never getDal()
+// directly outside db/dal.ts + index.ts:
+const dal = dalInfra();                     // same singleton, named for role
+const ok = await dal.serverVersion();       // the call IS the probe
+
+// entity access in services goes through svc doors (get/exists/find/
+// query/list) — see "Consumer doors" below and entity-service.mdx;
+// getDal() outside the allowlisted files is a dal-access violation.
 
 // graceful shutdown (consumer calls this from signal handlers — see below):
 await dal.close(); // close(timeoutMs?) — default 10s timeout
@@ -83,8 +90,11 @@ import or mount time.
 services never pass config. In the BE, `getDal(`/`initDal(` calls outside
 the consumer repo's `check-standards.json` `dal-access` allowlist fail
 `check:standards`. Worker services extend `DomainService<TEntity>` and
-use `this.dal`/`this.svc` instead of importing `getDal` at all (see the
-`entity-service` dev-guide page).
+use `this.svc`/`this.svcFor` instead of importing `getDal` at all —
+`this.dal`/`this._dal` member access is lint-banned
+(`dal-member-access`, unsuppressible). Infra seams (health probes,
+config adapters) call `dalInfra()` — the consumer's named infra door
+to the same singleton (see the `entity-service` dev-guide page).
 
 ### `dal.transaction(fn, options?)` — atomic multi-statement work
 
@@ -147,6 +157,29 @@ Exposes the underlying `pg.Pool` for tooling that needs raw access (e.g. schema 
 - `findAll` streamed (`stream: true`): **safe** — cursor `FETCH` per batch, each bounded by the session default individually.
 
 ---
+
+## Consumer doors — `svc.*` (DomainService / EntityService)
+
+The `Repository`/`Dal` methods documented below are the **engine
+surface** — what `svc` doors delegate to and what declared infra seams
+(`dalInfra()`) may call. Consumer services do NOT call them directly:
+every entity access goes through the governed `svc` doors, each
+carrying ONE contract:
+
+| Door | Contract | Use for |
+|---|---|---|
+| `svc.get(uuid, options?)` | by-uuid canonical read — full row + display-name joins; `NotFoundError` by default. `EntityGetOptions`: `throwIfNotFound:false` → `null`; `deletedRecords:"INCLUDED"` → soft-deleted rows; `displayJoins:false` → lean entity-only read | every by-uuid lookup |
+| `svc.exists(options?)` | boolean `SELECT EXISTS(SELECT 1 …)` — short-circuits at first match, no row materialized. Accepts filters/joins/deletedRecords/tableName/groupBy/having | "does it exist?" probes |
+| `svc.find(fields?, options?)` | ONE row — `LIMIT 1` + `NotFoundError` unless `throwIfNotFound:false`. `Project.field`/`Project.expr` projections, arbitrary `FindOptions` | single-row reads with projections or non-uuid filters |
+| `svc.query(fields?, options?)` | multi-row code-authored: aggregates (`COUNT(*) FILTER …`), `groupBy`/`having`, joins, `IN`, `Filter.expr` | internal lists, stats, grouped reads — NEVER wire input |
+| `svc.list(query)` | sanitized `EntityListQuery` — paginated wire door; searchable/filterable/sortable allowlists derive from entity meta | public list endpoints only |
+
+Cross-entity access goes through `svcFor(OtherEntity)` — same doors,
+same governance. Transactions: `svc.transaction(txRepo => …)` for
+ordinary atomic work, `svc.beginTransaction(options?)` for deferred
+tx/CTE workflows (`Deferred.ref()`). The full contract is in
+`docs/dev-guide/entity-service.mdx`; consumer-side rules are in each
+repo's `docs/ai/dal-usage.md`.
 
 ## Finders
 
@@ -257,6 +290,21 @@ const result = await repo.findByPage(MyEntity, 2, 25, null, {
 - `ValidationError` — when `page < 1` or `recordsPerPage < 1`
 
 ---
+
+### `exists(entity, options?)`
+
+Boolean probe — `SELECT EXISTS(SELECT 1 FROM … WHERE …)`. Short-circuits
+at the first matching row: no `COUNT(*)` scan, no row materialized.
+Accepts the `FindOptions` subset that can change the answer —
+`filters`, `joins` (a filter may reference joined tables),
+`deletedRecords`, `tableName`, `groupBy`/`having`. Projection, sorting
+and limit do not apply (the result is a `boolean`).
+
+```typescript
+const present = await repo.exists(MyEntity, {
+  filters: [Filter.fieldValue(field(MyEntity, "code"), "=", "IT")],
+});
+```
 
 ### `count(entity)`
 
