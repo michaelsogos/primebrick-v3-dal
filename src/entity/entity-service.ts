@@ -74,7 +74,7 @@ import {
   translateFilterConditions,
   type ListFilterCondition,
 } from "../query/list-filters.js";
-import type { AuditPort, FindOptions } from "../types/types.js";
+import type { AuditPort, FindOptions, TimeoutOverrideOptions } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
@@ -219,6 +219,10 @@ export interface EntityServiceConfig<TEntity> {
     extraFilters?: (q: EntityListQuery) => FilterExpr[];
     aggregates?: AggregateDecl[];
   };
+  /** Atomic tx runner — INTERNAL injection point only. `dal.entityService`
+   *  supplies `dal.transaction`; consumers never set it. Required only by
+   *  `svc.transaction` — a missing runner fails fast at call time. */
+  txRunner?: <T>(fn: (tx: Repository) => Promise<T>, options?: TimeoutOverrideOptions) => Promise<T>;
   hooks?: {
     afterWrite?: (op: EntityAction, entity: TEntity) => void | Promise<void>;
     beforeCreate?: (
@@ -270,6 +274,17 @@ export interface EntityService<TEntity> {
    *  lives in the entity's declared actions and is untouched by these. */
   bulkUpdate(items: BulkUpdateItem[]): Promise<unknown>;
   bulkPurge(items: BulkItem[]): Promise<unknown>;
+  /** `transaction` — atomic multi-op work through the governed surface:
+   *  the callback receives a tx-scoped `Repository`; pass it to the same
+   *  `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+   *  `svc.query(fields, opts)` does not take tx — query inside the
+   *  callback via `tx.findAll` if the row must join the tx). BEGIN /
+   *  COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+   *  (`dal.entityService` injects it) — fails fast otherwise. */
+  transaction<T>(
+    fn: (tx: Repository) => Promise<T>,
+    options?: TimeoutOverrideOptions,
+  ): Promise<T>;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
@@ -1036,6 +1051,15 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         audit: resolveAuditPort(repo),
         matchBy: "uuid" as never,
       });
+    },
+
+    transaction(fn, options) {
+      if (!cfg.txRunner) {
+        throw new ValidationError(
+          "svc.transaction requires the gateway tx runner — use dal.entityService(cfg) so Dal injects it",
+        );
+      }
+      return cfg.txRunner(fn, options);
     },
 
     async audit(uuid, page, limit) {

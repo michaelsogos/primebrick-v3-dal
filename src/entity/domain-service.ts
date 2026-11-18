@@ -187,6 +187,12 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   bulkPurge(items: BulkItem[]): Promise<unknown> {
     return this.svc.bulkPurge(items);
   }
+  transaction<T>(
+    fn: (tx: Repository) => Promise<T>,
+    options?: import("../types/types.js").TimeoutOverrideOptions,
+  ): Promise<T> {
+    return this.svc.transaction(fn, options);
+  }
   audit(uuid: string, page: number, limit: number): Promise<unknown> {
     return this.svc.audit(uuid, page, limit);
   }

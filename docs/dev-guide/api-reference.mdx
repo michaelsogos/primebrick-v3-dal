@@ -373,6 +373,17 @@ The contract every entity service must satisfy — enforced on the router.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+#### `DomainService.svcFor(entity): EntityService<T2>`
+
+Governed `EntityService` handle for ANOTHER entity — memoized.
+ Rare: collaborator services are the norm for cross-entity work;
+ this exists for reads/lookups into a sibling entity where a full
+ collaborator would be ceremony (config refs, display joins).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => object` |  |
+
 #### `DomainService.registerRefDisplay(display)`
 
 Ref-display registration sink — the route layer (which is DAL-free
@@ -404,6 +415,22 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
+
+#### `DomainService.query(fields, options): Promise<TResult[]>`
+
+`query` — the single named internal door for code-authored reads the
+ wire contract cannot express: `Project.field`/`Project.expr`
+ projections (`TResult` need not be `TEntity`), `Filter.expr`,
+ `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+ the raw `FindOptions` DSL — the SQL fragments are code-authored in
+ service source, NEVER request-authored over the wire (`svc.list`
+ stays the sanitizable `EntityListQuery` contract). Returns rows in
+ the caller's declared shape; no `toDto` mapping.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
 #### `DomainService.create(body, tx): Promise<TEntity>`
 
@@ -475,6 +502,21 @@ Internal bulk ops — NOT wire actions (no route registers on them):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | items | `BulkItem[]` |  |
+
+#### `DomainService.transaction(fn, options): Promise<T>`
+
+`transaction` — atomic multi-op work through the governed surface:
+ the callback receives a tx-scoped `Repository`; pass it to the same
+ `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+ `svc.query(fields, opts)` does not take tx — query inside the
+ callback via `tx.findAll` if the row must join the tx). BEGIN /
+ COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+ (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fn | `(tx: Repository) => Promise<T>` |  |
+| options | `TimeoutOverrideOptions` |  |
 
 #### `DomainService.audit(uuid, page, limit): Promise<unknown>`
 
@@ -1375,6 +1417,9 @@ The contract every entity service must satisfy — enforced on the router.
  string the FE uses for this entity's titles. Absent → self-join
  skipped, the ref cell renders the raw uid (COALESCE fallback). |
 | list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| txRunner | `(fn: (tx: Repository) => Promise<T>, options: TimeoutOverrideOptions) => Promise<T>` | Atomic tx runner — INTERNAL injection point only. `dal.entityService`
+ supplies `dal.transaction`; consumers never set it. Required only by
+ `svc.transaction` — a missing runner fails fast at call time. |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`

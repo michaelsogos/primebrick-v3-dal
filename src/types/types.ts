@@ -19,6 +19,15 @@ export type FindByIdOptions = {
   deletedRecords?: WithDeletedRecords;
 };
 
+/** Per-operation timeout override for dedicated-client work
+ *  (`transaction`, `partitionMaintenance`). */
+export interface TimeoutOverrideOptions {
+  /** Override statement_timeout (ms). Transaction-scoped for `transaction`
+   *  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
+   *  session-default restore for `partitionMaintenance`. */
+  timeoutMs?: number;
+}
+
 /** Options for `find`, `findAll`, `findByPage`. */
 export type FindOptions = {
   /** If true (default for `find`), throw `NotFoundError` when rowcount !== 1. Set to false to return null. */

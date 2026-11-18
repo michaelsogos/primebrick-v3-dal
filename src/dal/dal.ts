@@ -71,6 +71,7 @@ import type {
   BulkResult,
   VectorSearchOptions,
   AuditPort,
+  TimeoutOverrideOptions,
 } from "../types/types.js";
 import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
 import type { FieldProjector, FieldRef } from "../query/dsl.js";
@@ -144,14 +145,7 @@ export interface DalConfig {
   repoDecorator?: (repo: Repository) => Repository;
 }
 
-/** Per-operation timeout override for dedicated-client work
- *  (`transaction`, `partitionMaintenance`). */
-export interface TimeoutOverrideOptions {
-  /** Override statement_timeout (ms). Transaction-scoped for `transaction`
-   *  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
-   *  session-default restore for `partitionMaintenance`. */
-  timeoutMs?: number;
-}
+export type { TimeoutOverrideOptions } from "../types/types.js";
 
 /** Default values for DalConfig. */
 const DEFAULTS = {
@@ -588,7 +582,11 @@ export class Dal {
   entityService<TEntity extends Record<string, unknown>>(
     cfg: EntityServiceConfig<TEntity>,
   ): EntityService<TEntity> {
-    return makeEntityService({ ...cfg, repo: cfg.repo ?? this.repo });
+    return makeEntityService({
+      ...cfg,
+      repo: cfg.repo ?? this.repo,
+      txRunner: cfg.txRunner ?? ((fn, options) => this.transaction(fn, options)),
+    });
   }
 
   /**
