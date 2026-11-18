@@ -394,18 +394,21 @@ export class Repository {
     if (!this.eventBuffer && !options.events) return;
     const actor = (options as AuditableWriteOptions).actor ?? options.eventActor ?? "system";
     const draft: EntityEventDraft = {
-      schema: 1,
-      entity: entityApiName(entity),
-      table: `${meta.tableSchema}.${meta.tableName}`,
-      action: evt.action,
-      uuid: evt.uuid,
-      version: evt.version,
-      actor,
-      changed_at: Date.now(),
-      before: evt.before ? eventSafeRecord(evt.before) : null,
-      after: evt.after ? eventSafeRecord(evt.after) : null,
-      delta: evt.delta,
-      ...(evt.batch ? { batch: evt.batch } : {}),
+      event: {
+        schema: 2,
+        entity: entityApiName(entity),
+        action: evt.action,
+        uuid: evt.uuid,
+        version: evt.version,
+        emitted_by: actor,
+        emitted_at: Date.now(),
+        ...(evt.batch ? { batch: evt.batch } : {}),
+      },
+      entity: {
+        before: evt.before ? eventSafeRecord(evt.before) : null,
+        after: evt.after ? eventSafeRecord(evt.after) : null,
+        delta: evt.delta,
+      },
     };
     if (this.eventBuffer) {
       this.eventBuffer.push(draft);

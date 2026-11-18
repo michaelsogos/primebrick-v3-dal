@@ -1370,19 +1370,19 @@ foreign for merge/conflict purposes. |
 
 | Field | Type | Description |
 |-------|------|-------------|
-| schema | `1` | Contract version — always 1. |
-| service | `string` | Publishing service code ("ai", "job", "be"). |
-| entity | `string` | API entity name (singular — the `/entities/:entity` segment). |
-| table | `string` | Physical table name. |
-| action | `EntityWriteAction` | Write action — see EntityWriteAction. |
-| uuid | `string` | Affected row uuid. |
-| version | `number` | Caller-observed version after the write — auditable entities only. |
-| actor | `string` | Resolved write actor (uuid or "system:&#60;code&#62;"). |
-| changed_at | `number` | Epoch ms of the write. |
-| before | `Record<string, unknown> \| null` | Pre-write row — optimistic-lock oldRecord; null on create/bulk. |
-| after | `Record<string, unknown> \| null` | Post-write row — the RETURNING projection; null on bulk. |
-| delta | `Record<string, { old: unknown; new: unknown }> \| null` | `{field:{old,new}}` change map — the audit delta; null on bulk. |
-| batch | `string` | Shared id correlating the per-item events of one bulk op. |
+| event | `EntityEventEnvelope` |  |
+| entity | `{ before: Record<string, unknown> \| null; after: Record<string, unknown> \| null; delta: Record<string, { old: unknown; new: unknown }> \| null }` | Entity-state section — the single-row specialization. |
+
+### `EntityEventDraft`
+
+What the repo write path hands the port — the full event MINUS
+ `service`/`subject` (the repo knows neither the service code nor
+ the transport route; the port stamps both).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| event | `Omit<EntityEventEnvelope, "service" \| "subject">` |  |
+| entity | `{ before: Record<string, unknown> \| null; after: Record<string, unknown> \| null; delta: Record<string, { old: unknown; new: unknown }> \| null }` |  |
 
 ### `EntityEventPort`
 
@@ -2068,14 +2068,6 @@ contracts, not column sets.
 
 **Type:** `(args: any[]) => object`
 
-### `EntityEventDraft`
-
-What the repo write path hands the port — the full event MINUS
- `service` (the repo doesn't know the service code; the transport port
- stamps it when building subject + payload).
-
-**Type:** `Omit<EntityEvent, "service">`
-
 ### `EntityEventsConfig`
 
 Opt-out contract on `@Entity` options — `false` silences the entity
@@ -2295,7 +2287,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang"`
 
 ### `MetaColumnOptionsSource`
 
@@ -2973,7 +2965,10 @@ Email — same RFC-5322-simplified regex the config validator and the FE
 
 ### `ENTITY_EVENT_SCHEMA`
 
-JSON Schema for `endpoints.events` payload_schema + wire docs.
+JSON Schema for `endpoints.events` payload_schema + wire docs —
+ the `{event,entity}` contract (schema:2). `emitted_by` declares
+ `format:"actor_token"` — actor tokens may be uuids OR `system:<code>`,
+ so `uuid` would lie.
 
 **Type:** `Record<string, unknown>`
 
