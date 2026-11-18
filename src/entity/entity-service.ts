@@ -74,7 +74,7 @@ import {
   translateFilterConditions,
   type ListFilterCondition,
 } from "../query/list-filters.js";
-import type { AuditPort } from "../types/types.js";
+import type { AuditPort, FindOptions } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
@@ -237,6 +237,18 @@ export interface EntityServiceConfig<TEntity> {
 export interface EntityService<TEntity> {
   list(query: EntityListQuery): Promise<EntityListResult<TEntity>>;
   get(uuid: string): Promise<TEntity>;
+  /** `query` — the single named internal door for code-authored reads the
+   *  wire contract cannot express: `Project.field`/`Project.expr`
+   *  projections (`TResult` need not be `TEntity`), `Filter.expr`,
+   *  `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+   *  the raw `FindOptions` DSL — the SQL fragments are code-authored in
+   *  service source, NEVER request-authored over the wire (`svc.list`
+   *  stays the sanitizable `EntityListQuery` contract). Returns rows in
+   *  the caller's declared shape; no `toDto` mapping. */
+  query<TResult = TEntity>(
+    fields?: FieldProjector[] | null,
+    options?: FindOptions,
+  ): Promise<TResult[]>;
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
@@ -871,6 +883,12 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         page_size,
         total: result.total_records,
       };
+    },
+
+    query(fields, options) {
+      return repo.findAll<TEntity, unknown>(cfg.entity, fields ?? undefined, options ?? {}) as Promise<
+        never[]
+      >;
     },
 
     async get(uuid) {

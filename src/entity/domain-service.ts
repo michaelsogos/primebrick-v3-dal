@@ -3,9 +3,11 @@
  * service that owns one entity.
  *
  * Layer contract: `CONTROLLER → WORKER SERVICE → DAL lib → DB`. The service
- * reaches data ONLY through `this.dal` (the process singleton — initialized
- * once at bootstrap by the consumer's `initDal()`) and `this.svc` (the
- * composed generic CRUD service — the same object the entity-router uses).
+ * reaches data ONLY through `this.svc` (the composed generic CRUD service —
+ * the same object the entity-router uses: governed writes, `svc.list`
+ * wire contract, `svc.query` code-authored DSL) and `this.svcFor` for
+ * rare cross-entity handles. `this.dal` is PRIVATE — the raw gateway
+ * surface is not part of the subclass API.
  *
  * A subclass IS an `EntityService` — it can be handed to an entity-router
  * unchanged, and it overrides whichever methods carry domain rules. The
@@ -22,8 +24,9 @@
  * invariant (`public.user_profiles` via `UserProfileRefEntity`).
  *
  * Do NOT introduce per-entity `*Dal`/`*Repo` wrapper classes — custom
- * queries belong as methods on the owning service, using `this.dal.*`
- * proxies (find/add/update/findByPage/transaction…).
+ * queries belong as methods on the owning service, using `this.svc.list`
+ * (structured/wire-safe), `this.svc.query` (code-authored DSL escapes)
+ * or `this.svcFor(Entity)`.
  */
 
 import { getDal } from "../dal/dal.js";
@@ -53,17 +56,43 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
 {
   private _dal: Dal | undefined;
   private _svc: EntityService<TEntity> | undefined;
+  private _svcFor = new Map<unknown, EntityService<never>>();
 
   protected constructor(protected readonly cfg: EntityServiceConfig<TEntity>) {}
 
-  /** The gateway singleton — fails fast if bootstrap hasn't run. Resolved on first use. */
-  protected get dal(): Dal {
+  /** The gateway singleton — fails fast if bootstrap hasn't run. Resolved
+   *  on first use. PRIVATE by construction: service data access goes
+   *  through `this.svc` (governed CRUD + `svc.list` wire contract +
+   *  `svc.query` code-authored DSL) or `this.svcFor` — the raw Dal
+   *  surface is not part of the subclass API. */
+  private get dal(): Dal {
     return (this._dal ??= getDal());
   }
 
   /** The composed generic CRUD service — same machinery as the entity-router. */
   protected get svc(): EntityService<TEntity> {
     return (this._svc ??= this.dal.entityService(this.buildConfig()));
+  }
+
+  /** Governed `EntityService` handle for ANOTHER entity — memoized.
+   *  Rare: collaborator services are the norm for cross-entity work;
+   *  this exists for reads/lookups into a sibling entity where a full
+   *  collaborator would be ceremony (config refs, display joins). */
+  protected svcFor<T2 extends Record<string, unknown>>(
+    entity: EntityServiceConfig<T2>["entity"],
+  ): EntityService<T2> {
+    let s = this._svcFor.get(entity);
+    if (!s) {
+      const filterableKeys = new Set(
+        Object.values(getEntityPersistenceMeta(entity).columns).map((c) => c.propertyKey),
+      );
+      s = this.dal.entityService({
+        entity,
+        list: { filterableKeys },
+      }) as EntityService<never>;
+      this._svcFor.set(entity, s);
+    }
+    return s as unknown as EntityService<T2>;
   }
 
   /** The entity's `dict` facet when the class carries `@Dict` — the
@@ -117,6 +146,12 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   }
   get(uuid: string): Promise<TEntity> {
     return this.svc.get(uuid);
+  }
+  query<TResult = TEntity>(
+    fields?: import("../query/dsl.js").FieldProjector[] | null,
+    options?: import("../types/types.js").FindOptions,
+  ): Promise<TResult[]> {
+    return this.svc.query<TResult>(fields, options);
   }
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity> {
     return this.svc.create(body, tx);
