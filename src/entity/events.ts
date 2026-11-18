@@ -47,7 +47,7 @@ export interface EntityEventEnvelope {
    *  payload, still truthful once detached from transport context. */
   subject: string;
   /** Epoch ms of the write that produced the event. */
-  emitted_at: number;
+  emitted_at: string;
   /** Resolved write actor — uuid or "system:<code>" token. */
   emitted_by: string;
   /** What happened — EntityWriteAction for lifecycle events, the
@@ -115,7 +115,7 @@ export const ENTITY_EVENT_SCHEMA: Record<string, unknown> = {
         schema: { const: 2 },
         service: { type: "string", x_label_key: "app.entity_events.event.service" },
         subject: { type: "string", x_label_key: "app.entity_events.event.subject" },
-        emitted_at: { type: "integer", x_label_key: "app.entity_events.event.emitted_at" },
+        emitted_at: { type: "string", format: "date-time", x_label_key: "app.entity_events.event.emitted_at" },
         emitted_by: { type: "string", format: "actor_token", x_label_key: "app.entity_events.event.emitted_by" },
         action: {
           enum: ["create", "update", "delete", "restore", "purge", "duplicate"],

@@ -401,7 +401,7 @@ export class Repository {
         uuid: evt.uuid,
         version: evt.version,
         emitted_by: actor,
-        emitted_at: Date.now(),
+        emitted_at: new Date().toISOString(),
         ...(evt.batch ? { batch: evt.batch } : {}),
       },
       entity: {
