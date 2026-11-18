@@ -247,6 +247,10 @@ type ClassEntityMeta = {
    *  column, viewpoint display) and the persistence meta derives the
    *  unordered-pair+type unique index atomically. */
   relation?: RelationFacet;
+  /** `@Entity(..., {events})` — domain-event emission control.
+   *  `false` silences the entity entirely; `{except:[...]}` silences the
+   *  listed write actions. Absent = emitting (the default by design). */
+  events?: import("../entity/events.js").EntityEventsConfig;
 };
 
 /** Options for `@Partition()` — the RANGE partition key declaration.
@@ -404,11 +408,26 @@ function hasInheritedCalculatedRegistration(ctor: Function, key: PropertyKey): b
  * Maps the class to a DB table. Optional argument overrides the table name;
  * if omitted, the table name equals the class name.
  */
-export function Entity(tableName?: string, schema?: string) {
+/** `@Entity` second argument — a schema name (existing form) or an
+ *  options object: `{schema?, events?}` where `events:false` opts the
+ *  entity out of domain-event emission entirely and
+ *  `events:{except:[...]}` silences only the listed write actions. */
+export type EntityOptions = {
+  schema?: string;
+  events?: import("../entity/events.js").EntityEventsConfig;
+};
+
+export function Entity(tableName?: string, schema?: string): (ctor: Function) => void;
+export function Entity(tableName?: string, options?: EntityOptions): (ctor: Function) => void;
+export function Entity(tableName?: string, schemaOrOptions?: string | EntityOptions) {
   return function <T extends Function>(ctor: T): T {
     const m = ensureMeta(ctor);
     m.tableName = tableName ?? ctor.name;
+    const schema = typeof schemaOrOptions === "string" ? schemaOrOptions : schemaOrOptions?.schema;
     if (schema) m.tableSchema = schema;
+    if (typeof schemaOrOptions === "object" && schemaOrOptions.events !== undefined) {
+      m.events = schemaOrOptions.events;
+    }
     // Expose table name via standard Reflect API for external consumers (no import needed).
     // Used by the SDK's CacheKeyBuilder and any other tooling that needs the table name
     // without importing @primebrick/dal-pg.
@@ -985,6 +1004,10 @@ export type EntityPersistenceMeta = {
   isAuditTrailEntity?: boolean;
   /** Column name used for the `changed_by` field in audit trail entities */
   auditTrailChangedByColumn?: string;
+  /** `@Entity(..., {events})` — domain-event emission control.
+   *  `false` silences the entity; `{except:[...]}` silences actions.
+   *  Absent = emitting (the default by design). */
+  events?: import("../entity/events.js").EntityEventsConfig;
   columns: Record<
     string,
     {
@@ -1443,6 +1466,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     partition,
     retention,
     auditRetention: inherited((m) => m.auditRetention),
+    events: inherited((m) => m.events),
     partitionChildOf,
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,

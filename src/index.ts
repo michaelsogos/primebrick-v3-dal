@@ -300,6 +300,15 @@ export {
 // entity's persistence + business logic; data access via this.dal only).
 export { DomainService } from "./entity/domain-service.js";
 export {
+  entityEventsEnabled,
+  ENTITY_EVENT_SCHEMA,
+  type EntityEvent,
+  type EntityEventDraft,
+  type EntityEventPort,
+  type EntityEventsConfig,
+  type EntityWriteAction,
+} from "./entity/events.js";
+export {
   findAuditPage,
   type AuditPageOptions,
   type AuditPageResult,

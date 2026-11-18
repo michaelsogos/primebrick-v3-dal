@@ -155,6 +155,15 @@ export type OnConflictMode =
 export type WriteOptions<TEntity extends object = Record<string, unknown>> = {
   /** Optional audit port — if not injected, audit is silently skipped. */
   audit?: AuditPort;
+  /** Optional domain-event sink — the write emits one `EntityEvent` per
+   *  affected row (subject to the entity's `events` meta flag). Fire-and-
+   *  forget by contract: emit failures never fail the write. On a
+   *  tx-scoped repo the event buffers and drains post-COMMIT instead. */
+  events?: import("../entity/events.js").EntityEventPort;
+  /** Event attribution for NON-auditable entities — `actor` is rejected
+   *  there (no audit columns to stamp) but the emitted event still wants
+   *  the real caller. Ignored when `actor` is present (auditable path). */
+  eventActor?: string;
   /** Optional logger port — if not injected, errors are swallowed. */
   logger?: LoggerPort;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
