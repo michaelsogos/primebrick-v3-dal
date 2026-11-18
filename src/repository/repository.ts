@@ -388,6 +388,9 @@ export class Repository {
     },
   ): void {
     if (!entityEventsEnabled(meta.events, evt.action)) return;
+    // Audit-trail INSERTs are internal bookkeeping, not domain writes —
+    // without this gate every audited write would emit a shadow event.
+    if (meta.isAuditTrailEntity) return;
     if (!this.eventBuffer && !options.events) return;
     const actor = (options as AuditableWriteOptions).actor ?? options.eventActor ?? "system";
     const draft: EntityEventDraft = {
