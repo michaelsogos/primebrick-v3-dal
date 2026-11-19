@@ -385,7 +385,7 @@ export class Repository {
       before: Record<string, unknown> | null;
       after: Record<string, unknown> | null;
       delta: Record<string, { old: unknown; new: unknown }> | null;
-      batch?: string;
+      entities?: EntityEventDraft["entities"];
     },
   ): void {
     if (!entityEventsEnabled(meta.events, evt.action)) return;
@@ -403,13 +403,13 @@ export class Repository {
         version: evt.version,
         emitted_by: actor,
         emitted_at: new Date().toISOString(),
-        ...(evt.batch ? { batch: evt.batch } : {}),
       },
       entity: {
         before: evt.before ? eventSafeRecord(evt.before) : null,
         after: evt.after ? eventSafeRecord(evt.after) : null,
         delta: evt.delta,
       },
+      ...(evt.entities ? { entities: evt.entities } : {}),
     };
     if (this.eventBuffer) {
       this.eventBuffer.push(draft);
@@ -424,8 +424,10 @@ export class Repository {
    * Emit THIN per-item events for a bulk op — TEMP-TABLE bulk paths have
    * no RETURNING/oldRecord by contract, so `before`/`after`/`delta` are
    * null; every resolvable `uuid` in the match/row set gets its own event
-   * correlated by `batch`, keeping per-uuid trigger bindings working
-   * inside a bulk. Items without a `uuid` value emit nothing.
+   * so per-uuid trigger bindings keep working inside a bulk. The grouped
+   * op rides `entities` on every member event: `batch` correlates them,
+   * `uuids` carries the op's full outcome — each thin event is
+   * self-contained. Items without a `uuid` value emit nothing.
    */
   private emitBulkEntityEvents(
     entity: EntityClass,
@@ -438,17 +440,19 @@ export class Repository {
     if (affected === 0) return;
     if (!entityEventsEnabled(meta.events, action)) return;
     if (!this.eventBuffer && !options.events) return;
-    const batch = newUuidV7();
-    for (const item of items) {
-      const uuid = item["uuid"];
-      if (typeof uuid !== "string" || uuid.length === 0) continue;
+    const uuids = items
+      .map((item) => item["uuid"])
+      .filter((u): u is string => typeof u === "string" && u.length > 0);
+    if (uuids.length === 0) return;
+    const entities = { batch: newUuidV7(), uuids };
+    for (const uuid of uuids) {
       this.emitEntityEvent(entity, meta, options, {
         action,
         uuid,
         before: null,
         after: null,
         delta: null,
-        batch,
+        entities,
       });
     }
   }
@@ -2955,7 +2959,7 @@ WHERE agg.n > 0`;
       const affected = insertRes.rowCount ?? 0;
 
       await client.query("COMMIT");
-      this.emitBulkEntityEvents(entity, meta, options, "create", rows as Array<Record<string, unknown>>, affected);
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_create", rows as Array<Record<string, unknown>>, affected);
       return { received: rows.length, affected };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3343,7 +3347,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
-      this.emitBulkEntityEvents(entity, meta, options, "delete", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_delete", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3496,7 +3500,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
-      this.emitBulkEntityEvents(entity, meta, options, "purge", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_purge", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3677,7 +3681,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
-      this.emitBulkEntityEvents(entity, meta, options, "restore", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_restore", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3942,7 +3946,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
-      this.emitBulkEntityEvents(entity, meta, options, "update", updates as Array<Record<string, unknown>>, result.rowCount ?? 0);
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_update", updates as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: updates.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);

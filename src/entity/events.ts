@@ -16,27 +16,41 @@
  *  - TEMP-TABLE bulk ops (`addMany`/`updateMany`/`deleteMany`/
  *    `restoreMany`/`hardDeleteMany`) emit THIN events — `before`/`after`/
  *    `delta` are null by contract (no RETURNING on bulk paths); every
- *    item's `uuid` still gets its own event, correlated by `batch`, so
- *    per-uuid trigger bindings work inside a bulk. Consumers that need
- *    state re-read via `svc.get`.
+ *    item's `uuid` still gets its own event so per-uuid trigger bindings
+ *    work inside a bulk. The grouped operation rides `entities`:
+ *    `entities.batch` correlates the per-item events and
+ *    `entities.uuids` carries the full outcome of the op, so each thin
+ *    event is self-contained. Consumers that need state re-read via
+ *    `svc.get`.
  */
 
 /** Write actions the event vocabulary maps (from the svc method, not the
- *  audit enum — `bulkUpdate` items are `update`, `svc.duplicate` is
- *  `duplicate` even though its audit row says INSERT). */
+ *  audit enum — `svc.duplicate` is `duplicate` even though its audit row
+ *  says INSERT). Single-row writes and bulk ops are DISJOINT vocabularies
+ *  by design — a `updateMany` row never claims `update`, it claims
+ *  `bulk_update`; a `job_trigger.filter` on `event.action` therefore
+ *  never confuses a single write for one item of a bulk. Deferred-tx ops
+ *  keep the PLAIN vocabulary (they are N individual writes in one atomic
+ *  commit, correlated via `entities`, not a bulk op). */
 export type EntityWriteAction =
   | "create"
   | "update"
   | "delete"
   | "restore"
   | "purge"
-  | "duplicate";
+  | "duplicate"
+  | "bulk_create"
+  | "bulk_update"
+  | "bulk_delete"
+  | "bulk_restore"
+  | "bulk_purge";
 
 /**
  * The event ENVELOPE — identical on every Primebrick domain event,
- * whatever the payload specialization (`entity`, `uuids`, domain
- * extras). `event.*` carries who/what/when/where; everything outside
- * `event` is the event's own domain content.
+ * whatever the payload specialization (`entity`, `entities`, domain
+ * extras). `event.*` carries who/what/when/where — the STANDARD envelope
+ * only, zero operation-specific data; everything outside `event` is the
+ * event's own domain content.
  */
 export interface EntityEventEnvelope {
   /** Contract version — 2 (the `{event,entity}` shape; 1 was flat). */
@@ -59,8 +73,6 @@ export interface EntityEventEnvelope {
   uuid: string;
   /** Caller-observed version after the write — auditable entities only. */
   version?: number;
-  /** Shared id correlating the per-item events of one bulk op. */
-  batch?: string;
 }
 
 export interface EntityEvent {
@@ -74,6 +86,18 @@ export interface EntityEvent {
     /** `{field:{old,new}}` change map — the audit delta; null on bulk. */
     delta: Record<string, { old: unknown; new: unknown }> | null;
   };
+  /** Grouped-operation section — present iff this event is one item of a
+   *  grouped operation (a bulk op, or a deferred-tx commit — every event
+   *  drained from one commit shares it). `batch` correlates the sibling events;
+   *  `uuids` is the full outcome of the operation, so every member event
+   *  is self-contained — a consumer never re-reads siblings to know what
+   *  the operation touched. */
+  entities?: {
+    /** Shared id correlating every per-item event of the operation. */
+    batch: string;
+    /** Every row uuid the operation affected. */
+    uuids: string[];
+  };
 }
 
 /** What the repo write path hands the port — the full event MINUS
@@ -82,6 +106,7 @@ export interface EntityEvent {
 export interface EntityEventDraft {
   event: Omit<EntityEventEnvelope, "service" | "subject">;
   entity: EntityEvent["entity"];
+  entities?: EntityEvent["entities"];
 }
 
 /** Sink the repo write path calls — fire-and-forget by contract:
@@ -101,7 +126,7 @@ export type EntityEventsConfig = false | { except?: readonly EntityWriteAction[]
  *  `EntityPersistenceMeta.events` (`EntityEventsConfig`). */
 
 /** JSON Schema for `endpoints.events` payload_schema + wire docs —
- *  the `{event,entity}` contract (schema:2). `emitted_by` declares
+ *  the `{event,entity,entities}` contract (schema:2). `emitted_by` declares
  *  `format:"actor_token"` — actor tokens may be uuids OR `system:<code>`,
  *  so `uuid` would lie. */
 export const ENTITY_EVENT_SCHEMA: Record<string, unknown> = {
@@ -118,13 +143,15 @@ export const ENTITY_EVENT_SCHEMA: Record<string, unknown> = {
         emitted_at: { type: "string", format: "date-time", x_label_key: "app.entity_events.event.emitted_at" },
         emitted_by: { type: "string", format: "actor_token", x_label_key: "app.entity_events.event.emitted_by" },
         action: {
-          enum: ["create", "update", "delete", "restore", "purge", "duplicate"],
+          enum: [
+            "create", "update", "delete", "restore", "purge", "duplicate",
+            "bulk_create", "bulk_update", "bulk_delete", "bulk_restore", "bulk_purge",
+          ],
           x_label_key: "app.entity_events.event.action",
         },
         entity: { type: "string", x_label_key: "app.entity_events.event.entity" },
         uuid: { type: "string", format: "uuid", x_label_key: "app.entity_events.event.uuid" },
         version: { type: "integer", x_label_key: "app.entity_events.event.version" },
-        batch: { type: "string", x_label_key: "app.entity_events.event.batch" },
       },
     },
     entity: {
@@ -137,10 +164,18 @@ export const ENTITY_EVENT_SCHEMA: Record<string, unknown> = {
         delta: { type: ["object", "null"], x_label_key: "app.entity_events.entity.delta" },
       },
     },
-    uuids: {
-      type: "array",
-      items: { type: "string", format: "uuid" },
-      x_label_key: "app.entity_events.uuids",
+    entities: {
+      type: "object",
+      x_label_key: "app.entity_events.entities",
+      required: ["batch", "uuids"],
+      properties: {
+        batch: { type: "string", format: "uuid", x_label_key: "app.entity_events.entities.batch" },
+        uuids: {
+          type: "array",
+          items: { type: "string", format: "uuid" },
+          x_label_key: "app.entity_events.entities.uuids",
+        },
+      },
     },
   },
 };

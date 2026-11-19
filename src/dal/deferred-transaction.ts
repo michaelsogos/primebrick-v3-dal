@@ -901,10 +901,14 @@ export class DeferredTransaction {
    * `before`/`delta` are unknowable by construction (single statement, no
    * pre-read — the same constraint that makes `options.audit` undeferrable);
    * `after` is the rehydrated RETURNING row, so these events are richer
-   * than bulk thin-events (which carry `after:null`). One shared `batch`
-   * uuid correlates every op of the commit — the deferred tx IS the atomic
-   * multi-write unit `batch` exists for. Per-op `options.events` wins over
-   * the tx-level port; entity `events:false|{except}` gates apply as usual.
+   * than bulk thin-events (which carry `after:null`). Every drained event
+   * carries `entities` — `batch` correlates the ops of the commit (the
+   * deferred tx IS the atomic multi-write unit it exists for) and `uuids`
+   * is the commit's full row outcome, so each event is self-contained.
+   * Actions stay PLAIN (`create`/`update`/…) — these are N individual
+   * writes atomically committed, not a bulk op. Per-op `options.events`
+   * wins over the tx-level port; entity `events:false|{except}` gates
+   * apply as usual.
    */
   private drainEntityEvents(
     payload: Record<string, Array<Record<string, unknown>> | null>,
@@ -916,8 +920,16 @@ export class DeferredTransaction {
       restore: "restore",
       hardDelete: "purge",
     };
-    let batch: string | undefined;
-    const emittedAt = new Date().toISOString();
+    // Pass 1 — resolve the emittable ops (gates + row resolution) so the
+    // shared `entities` container knows the commit's full uuid outcome
+    // before any event is stamped.
+    const emittable: Array<{
+      op: DeferredOp;
+      action: EntityWriteAction;
+      port: EntityEventPort;
+      after: Record<string, unknown>;
+      uuid: string;
+    }> = [];
     for (const op of this.ops) {
       const action = ACTION[op.kind];
       if (!action) continue;
@@ -933,7 +945,16 @@ export class DeferredTransaction {
         const after = eventSafeRecord(rehydrateRow(op.meta, op.propToSql, null, raw));
         const uuid = after["uuid"];
         if (typeof uuid !== "string" || uuid.length === 0) continue;
-        batch ??= newUuidV7();
+        emittable.push({ op, action, port, after, uuid });
+      } catch (err) {
+        op.options?.logger?.error("[DAL Entity Event Drain Error]", err);
+      }
+    }
+    if (emittable.length === 0) return;
+    const entities = { batch: newUuidV7(), uuids: emittable.map((e) => e.uuid) };
+    const emittedAt = new Date().toISOString();
+    for (const { op, action, port, after, uuid } of emittable) {
+      try {
         const draft: EntityEventDraft = {
           event: {
             schema: 2,
@@ -943,9 +964,9 @@ export class DeferredTransaction {
             version: after["version"] as number | undefined,
             emitted_by: op.options?.actor ?? op.options?.eventActor ?? "system",
             emitted_at: emittedAt,
-            batch,
           },
           entity: { before: null, after, delta: null },
+          entities,
         };
         void port
           .emit(draft)

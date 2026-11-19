@@ -131,7 +131,7 @@ describe("entity events — repo write path emission", () => {
     expect(emitted).toHaveLength(0); // update silenced
   });
 
-  it("bulk updateMany emits thin per-item events sharing a batch", async () => {
+  it("bulk updateMany emits thin per-item events sharing entities{batch,uuids}", async () => {
     const { emitted, port } = capturePort();
     const a = await repo.add(SimpleTestEntity, { name: "bulk-a" } as any, actorOpts);
     const b = await repo.add(SimpleTestEntity, { name: "bulk-b" } as any, actorOpts);
@@ -144,14 +144,19 @@ describe("entity events — repo write path emission", () => {
       { ...actorOpts, events: port, matchBy: "uuid" as never },
     );
     await new Promise((r) => setTimeout(r, 10));
-    const bulk = emitted.filter((e) => e.event.action === "update");
+    // Bulk ops use the DISJOINT `bulk_*` vocabulary — never the plain
+    // single-write action — so action filters can't confuse the two.
+    const bulk = emitted.filter((e) => e.event.action === "bulk_update");
     expect(bulk).toHaveLength(2);
     expect(bulk.map((e) => e.event.uuid).sort()).toEqual([a.uuid, b.uuid].sort());
     for (const e of bulk) {
       expect(e.entity.before).toBeNull();
       expect(e.entity.after).toBeNull();
       expect(e.entity.delta).toBeNull();
-      expect(e.event.batch).toBe(bulk[0].event.batch);
+      expect(e.entities?.batch).toBe(bulk[0].entities?.batch);
+      // Every member event is self-contained — the full op outcome rides
+      // `entities.uuids` on each one.
+      expect(e.entities?.uuids?.sort()).toEqual([a.uuid, b.uuid].sort());
     }
   });
 });
@@ -210,7 +215,7 @@ describe("entity events — deferred tx (beginTransaction) drain", () => {
   afterAll(async () => { await dal.close(); });
   beforeEach(async () => { await truncateTestTables(); });
 
-  it("commit emits one thin-with-after event per write op, batch shared", async () => {
+  it("commit emits one thin-with-after event per write op, entities shared", async () => {
     const { emitted, port } = capturePort();
     dal.eventPort = port;
     const seed = await dal.add(SimpleTestEntity, { name: "seed" } as any, actorOpts);
@@ -239,7 +244,13 @@ describe("entity events — deferred tx (beginTransaction) drain", () => {
       expect(e.entity.before).toBeNull();
       expect(e.entity.delta).toBeNull();
       expect(e.entity.after).not.toBeNull();
-      expect(e.event.batch).toBe(emitted[0].event.batch);
+      // Deferred-tx ops keep PLAIN actions — they are N individual writes
+      // in one commit, correlated via `entities` (batch + full uuid
+      // outcome), never the `bulk_*` vocabulary.
+      expect(e.entities?.batch).toBe(emitted[0].entities?.batch);
+      expect(e.entities?.uuids?.sort()).toEqual(
+        [added.value.uuid, seed.uuid].sort(),
+      );
     }
     expect(created.entity.after?.["name"]).toBe("deferred-a");
     expect(updated.entity.after?.["name"]).toBe("deferred-b");
