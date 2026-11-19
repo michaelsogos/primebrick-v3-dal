@@ -43,6 +43,7 @@
 import { newUuidV7 } from "../types/uuid.js";
 
 import { Repository } from "../repository/repository.js";
+import type { DeferredTransaction } from "../dal/deferred-transaction.js";
 import {
   field,
   Filter,
@@ -74,7 +75,7 @@ import {
   translateFilterConditions,
   type ListFilterCondition,
 } from "../query/list-filters.js";
-import type { AuditPort } from "../types/types.js";
+import type { AuditPort, FindOptions, TimeoutOverrideOptions, WithDeletedRecords } from "../types/types.js";
 import { NotFoundError, PageOutOfRangeError, ValidationError } from "../errors/errors.js";
 import { findAuditPage } from "./audit-query.js";
 import { enrichAuditDeltaRefs } from "./audit-delta-refs.js";
@@ -82,6 +83,7 @@ import {
   extJsonStringify,
   isColumnFilterable,
   searchableTextColumns,
+  TEXTLIKE_PG_TYPES,
   type EntityMeta,
   type MetaColumn,
 } from "@primebrick/core";
@@ -188,6 +190,14 @@ export interface EntityServiceConfig<TEntity> {
    *  at construction would write the audit row on the gateway pool —
    *  outside the tx — and survive a rollback). */
   auditPort?: AuditPort | ((repo: Repository) => AuditPort);
+  /** Domain-event sink — `dal.entityService` auto-injects `dal.eventPort`
+   *  (SDK `makeNatsEntityEventPort`). Every governed write emits one
+   *  `EntityEvent` per affected row, subject to the entity's
+   *  `@Entity(..., {events})` opt-out. Unset → no emission (silent skip,
+   *  same shape as a missing audit port). Unlike `auditPort` there is no
+   *  factory form: the tx path buffers drafts on the tx-scoped repo and
+   *  drains them post-COMMIT — the port object itself is tx-agnostic. */
+  events?: import("./events.js").EntityEventPort;
   /** Actor supplier for audit stamping (e.g. SDK `requireActor`). */
   actor?: () => string;
   /** Audit trail table override — default `${tableName}_audit`. */
@@ -219,6 +229,14 @@ export interface EntityServiceConfig<TEntity> {
     extraFilters?: (q: EntityListQuery) => FilterExpr[];
     aggregates?: AggregateDecl[];
   };
+  /** Atomic tx runner — INTERNAL injection point only. `dal.entityService`
+   *  supplies `dal.transaction`; consumers never set it. Required only by
+   *  `svc.transaction` — a missing runner fails fast at call time. */
+  txRunner?: <T>(fn: (tx: Repository) => Promise<T>, options?: TimeoutOverrideOptions) => Promise<T>;
+  /** Deferred-tx beginner — INTERNAL injection point only. `dal.entityService`
+   *  supplies `dal.beginTransaction`; consumers never set it. Required only
+   *  by `svc.beginTransaction` — a missing beginner fails fast at call time. */
+  txBeginner?: (options?: TimeoutOverrideOptions) => DeferredTransaction;
   hooks?: {
     afterWrite?: (op: EntityAction, entity: TEntity) => void | Promise<void>;
     beforeCreate?: (
@@ -233,10 +251,44 @@ export interface EntityServiceConfig<TEntity> {
   };
 }
 
+/** `get` options — the by-uuid door's full contract. `throwIfNotFound:false`
+ *  returns `null` instead of the NotFoundError; `deletedRecords:"INCLUDED"`
+ *  reaches soft-deleted rows; `displayJoins:false` skips the display-name
+ *  joins (lean entity-only read — hot paths, existence-adjacent guards). */
+export type EntityGetOptions = {
+  throwIfNotFound?: boolean;
+  deletedRecords?: WithDeletedRecords;
+  displayJoins?: boolean;
+};
+
 /** The contract every entity service must satisfy — enforced on the router. */
 export interface EntityService<TEntity> {
   list(query: EntityListQuery): Promise<EntityListResult<TEntity>>;
-  get(uuid: string): Promise<TEntity>;
+  get(uuid: string, options?: EntityGetOptions & { throwIfNotFound?: true }): Promise<TEntity>;
+  get(uuid: string, options: EntityGetOptions & { throwIfNotFound: false }): Promise<TEntity | null>;
+  /** `query` — the single named internal door for code-authored reads the
+   *  wire contract cannot express: `Project.field`/`Project.expr`
+   *  projections (`TResult` need not be `TEntity`), `Filter.expr`,
+   *  `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+   *  the raw `FindOptions` DSL — the SQL fragments are code-authored in
+   *  service source, NEVER request-authored over the wire (`svc.list`
+   *  stays the sanitizable `EntityListQuery` contract). Returns rows in
+   *  the caller's declared shape; no `toDto` mapping. */
+  query<TResult = TEntity>(
+    fields?: FieldProjector[] | null,
+    options?: FindOptions,
+  ): Promise<TResult[]>;
+  /** `find` — the single-row variant of `query` (`repo.find` pass-through):
+   *  `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+   *  Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+   *  governed replacement for `dal.find(entity, fields, opts)`. */
+  find<TResult = TEntity>(
+    fields?: FieldProjector[] | null,
+    options?: FindOptions,
+  ): Promise<TResult | null>;
+  /** `exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+   *  the cheap "does it exist" door — no row materialized, no dto. */
+  exists(options?: FindOptions): Promise<boolean>;
   create(body: Record<string, unknown>, tx?: Repository): Promise<TEntity>;
   update(
     uuid: string,
@@ -258,6 +310,24 @@ export interface EntityService<TEntity> {
    *  lives in the entity's declared actions and is untouched by these. */
   bulkUpdate(items: BulkUpdateItem[]): Promise<unknown>;
   bulkPurge(items: BulkItem[]): Promise<unknown>;
+  /** `transaction` — atomic multi-op work through the governed surface:
+   *  the callback receives a tx-scoped `Repository`; pass it to the same
+   *  `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+   *  `svc.query(fields, opts)` does not take tx — query inside the
+   *  callback via `tx.findAll` if the row must join the tx). BEGIN /
+   *  COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+   *  (`dal.entityService` injects it) — fails fast otherwise. */
+  transaction<T>(
+    fn: (tx: Repository) => Promise<T>,
+    options?: TimeoutOverrideOptions,
+  ): Promise<T>;
+  /** `beginTransaction` — the deferred-tx door for ref()-bound
+   *  single-statement writes (`tx.add/update/...` return `Deferred`
+   *  handles whose `.ref()` binds one op's RETURNING into another — the
+   *  ONLY form that compiles a multi-write CTE). Repo ops inside carry
+   *  `{ actor }` explicitly by contract. Requires the gateway tx
+   *  beginner (`dal.entityService` injects it) — fails fast otherwise. */
+  beginTransaction(options?: TimeoutOverrideOptions): DeferredTransaction;
   audit(uuid: string, page: number, limit: number): Promise<unknown>;
   /** `options_source:"audit.actors"` vocabulary feed — the distinct
    *  writers of THIS table, label-resolved through `public.user_profiles`.
@@ -367,12 +437,10 @@ function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
-/** Physical PG types safe for `ILIKE` — `uuid` is searched via the
- *  `CAST(col AS text)` the query-builder already applies. */
-const TEXTLIKE_PG_TYPES = new Set([
-  "character varying", "varchar", "character", "char",
-  "text", "citext", "name", "uuid",
-]);
+/** Physical PG types safe for `ILIKE` — the canonical vocabulary lives
+ *  in `@primebrick/core` (shared with `withColumnConstraints` and the FE
+ *  scope derivations): re-exported here for existing internal imports. */
+export { TEXTLIKE_PG_TYPES };
 
 /**
  * Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
@@ -380,9 +448,12 @@ const TEXTLIKE_PG_TYPES = new Set([
  * also exported for service-side paths that run their own query (outside
  * `makeEntityService`) yet must answer to the same contract:
  *
- *  - `searchable`: `searchable`-flagged text-physical columns plus
- *    `@Calculated` projections (they render to SQL and are ILIKE-safe) —
- *    the `search_in` allowlist + default scope base (`uuid` and joined-name
+ *  - `searchable`: `searchableTextColumns` admits text-physical columns
+ *    plus `kind:"calculated"` projections whose served `pg_type` is
+ *    ILIKE-safe — the UI type is presentation, never a statement about
+ *    the rendered expression's searchability (a `type:"ref"` identity
+ *    column displays the very name the search matches). This is the
+ *    `search_in` allowlist + default scope base (`uuid` and joined-name
  *    keys are admitted on top by the caller).
  *  - `filterable`: `filterable`-flagged columns restricted to WHERE-
  *    resolvable keys (physical + calculated).
@@ -449,6 +520,14 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
     return cfg.auditPort ?? makeTableAuditPort(active);
   };
   const actor = () => cfg.actor?.() ?? "system";
+  // Event plumbing for every write site: the port (emission gated by the
+  // entity's `events` meta inside the repo) plus `eventActor` — the
+  // resolved caller for NON-auditable entities, whose `actor` is rejected
+  // by the write contract but whose events still carry the real actor.
+  const eventOpts = (resolvedActor: string) => ({
+    events: cfg.events,
+    eventActor: resolvedActor,
+  });
   const auditTable = cfg.auditTableName ?? `${meta.tableName}_audit`;
 
   const uuidCol = Object.entries(meta.columns).find(
@@ -871,19 +950,38 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       };
     },
 
-    async get(uuid) {
+    query(fields, options) {
+      return repo.findAll<TEntity, unknown>(cfg.entity, fields ?? undefined, options ?? {}) as Promise<
+        never[]
+      >;
+    },
+
+    find(fields, options) {
+      return repo.find<TEntity, unknown>(cfg.entity, fields ?? undefined, options ?? {}) as Promise<
+        never
+      >;
+    },
+
+    get: (async (uuid: string, options?: EntityGetOptions) => {
       const row = await repo.find<TEntity, TEntity>(
         cfg.entity,
         projectRead() as never,
         {
           filters: [Filter.fieldValue(field(cfg.entity, "uuid" as never), "=", uuid)],
-          joins: joinsFor(),
+          joins: options?.displayJoins === false ? undefined : joinsFor(),
+          deletedRecords: options?.deletedRecords,
           throwIfNotFound: false,
         } as never,
       );
-      if (!row)
+      if (!row) {
+        if (options?.throwIfNotFound === false) return null;
         throw new NotFoundError(`The requested ${meta.entityClassName} could not be found`);
+      }
       return toDto(row);
+    }) as EntityService<TEntity>["get"],
+
+    exists(options) {
+      return repo.exists(cfg.entity, options ?? {});
     },
 
     async create(body, tx) {
@@ -898,6 +996,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           actor: resolvedActor,
           audit: resolveAuditPort(repoFor(tx)),
+          ...eventOpts(resolvedActor),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -915,6 +1014,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
         {
           actor: resolvedActor,
           audit: resolveAuditPort(repoFor(tx)),
+          ...eventOpts(resolvedActor),
           returning: projectAllExceptSurrogateId(cfg.entity) as never,
         },
       );
@@ -927,6 +1027,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const row = await (repo as any).delete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -939,6 +1040,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const row = await (repo as any).restore(cfg.entity, { uuid, version } as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -951,6 +1053,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       const row = await (repo as any).hardDelete(cfg.entity, { uuid, version } as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
         returning: projectAllExceptSurrogateId(cfg.entity) as never,
       });
@@ -975,6 +1078,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
           const cloned = (await (repo as any).clone(cfg.entity, uuid, {
             actor: actor(),
             audit: resolveAuditPort(repo),
+            ...eventOpts(actor()),
           })) as TEntity;
           results.push((cloned as unknown as { uuid: string }).uuid);
         } catch (e) {
@@ -990,6 +1094,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       return (repo as any).deleteMany(cfg.entity, items as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
       });
     },
@@ -998,6 +1103,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       return (repo as any).restoreMany(cfg.entity, items as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
       });
     },
@@ -1006,6 +1112,7 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       return (repo as any).updateMany(cfg.entity, items as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
       });
     },
@@ -1014,8 +1121,27 @@ export function makeEntityService<TEntity extends Record<string, unknown>>(
       return (repo as any).hardDeleteMany(cfg.entity, items as never, {
         actor: actor(),
         audit: resolveAuditPort(repo),
+        ...eventOpts(actor()),
         matchBy: "uuid" as never,
       });
+    },
+
+    transaction(fn, options) {
+      if (!cfg.txRunner) {
+        throw new ValidationError(
+          "svc.transaction requires the gateway tx runner — use dal.entityService(cfg) so Dal injects it",
+        );
+      }
+      return cfg.txRunner(fn, options);
+    },
+
+    beginTransaction(options) {
+      if (!cfg.txBeginner) {
+        throw new ValidationError(
+          "svc.beginTransaction requires the gateway tx beginner — use dal.entityService(cfg) so Dal injects it",
+        );
+      }
+      return cfg.txBeginner(options);
     },
 
     async audit(uuid, page, limit) {

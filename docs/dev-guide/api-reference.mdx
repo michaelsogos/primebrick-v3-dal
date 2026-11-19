@@ -373,6 +373,17 @@ The contract every entity service must satisfy — enforced on the router.
 |-----------|------|-------------|
 | cfg | `EntityServiceConfig<TEntity>` |  |
 
+#### `DomainService.svcFor(entity): EntityService<T2>`
+
+Governed `EntityService` handle for ANOTHER entity — memoized.
+ Rare: collaborator services are the norm for cross-entity work;
+ this exists for reads/lookups into a sibling entity where a full
+ collaborator would be ceremony (config refs, display joins).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => object` |  |
+
 #### `DomainService.registerRefDisplay(display)`
 
 Ref-display registration sink — the route layer (which is DAL-free
@@ -399,11 +410,49 @@ is available here.
 |-----------|------|-------------|
 | query | `EntityListQuery` |  |
 
-#### `DomainService.get(uuid): Promise<TEntity>`
+#### `DomainService.get(uuid, options): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
+| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
+
+#### `DomainService.exists(options): Promise<boolean>`
+
+`exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+ the cheap "does it exist" door — no row materialized, no dto.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `FindOptions` |  |
+
+#### `DomainService.query(fields, options): Promise<TResult[]>`
+
+`query` — the single named internal door for code-authored reads the
+ wire contract cannot express: `Project.field`/`Project.expr`
+ projections (`TResult` need not be `TEntity`), `Filter.expr`,
+ `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+ the raw `FindOptions` DSL — the SQL fragments are code-authored in
+ service source, NEVER request-authored over the wire (`svc.list`
+ stays the sanitizable `EntityListQuery` contract). Returns rows in
+ the caller's declared shape; no `toDto` mapping.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `DomainService.find(fields, options): Promise<TResult \| null>`
+
+`find` — the single-row variant of `query` (`repo.find` pass-through):
+ `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+ Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+ governed replacement for `dal.find(entity, fields, opts)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
 
 #### `DomainService.create(body, tx): Promise<TEntity>`
 
@@ -475,6 +524,34 @@ Internal bulk ops — NOT wire actions (no route registers on them):
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | items | `BulkItem[]` |  |
+
+#### `DomainService.transaction(fn, options): Promise<T>`
+
+`transaction` — atomic multi-op work through the governed surface:
+ the callback receives a tx-scoped `Repository`; pass it to the same
+ `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+ `svc.query(fields, opts)` does not take tx — query inside the
+ callback via `tx.findAll` if the row must join the tx). BEGIN /
+ COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+ (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fn | `(tx: Repository) => Promise<T>` |  |
+| options | `TimeoutOverrideOptions` |  |
+
+#### `DomainService.beginTransaction(options): DeferredTransaction`
+
+`beginTransaction` — the deferred-tx door for ref()-bound
+ single-statement writes (`tx.add/update/...` return `Deferred`
+ handles whose `.ref()` binds one op's RETURNING into another — the
+ ONLY form that compiles a multi-write CTE). Repo ops inside carry
+ `{ actor }` explicitly by contract. Requires the gateway tx
+ beginner (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `TimeoutOverrideOptions` |  |
 
 #### `DomainService.audit(uuid, page, limit): Promise<unknown>`
 
@@ -677,6 +754,20 @@ means "the row existed when you read it but is now gone".
 |-----------|------|-------------|
 | entity | `EntityClass` |  |
 | fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `Repository.exists(entity, options): Promise<boolean>`
+
+`exists` — boolean existence probe: `SELECT EXISTS(SELECT 1 …)`. Honors
+the same `FindOptions` doors that shape a read (`filters`, `joins`,
+`deletedRecords`, `tableName`, `groupBy`/`having`); sorting/projection
+are meaningless on a boolean and ignored. Short-circuits at the first
+matching row — strictly cheaper than `COUNT(*)` or fetching a row to
+truthiness-check it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass` |  |
 | options | `FindOptions` |  |
 
 #### `Repository.findAll(entity, fields, options): Promise<AsyncIterable<TResult, any, any> \| TResult[]>`
@@ -1162,6 +1253,12 @@ Collaboration fragment injected by `assembleMeta` at serve time.
 | Field | Type | Description |
 |-------|------|-------------|
 | config | `Required<Pick<DalConfig, "max" \| "connectionString" \| "schemas" \| "statementTimeoutMs" \| "bulkTimeoutMs" \| "connectionTimeoutMillis" \| "idleTimeoutMillis" \| "applicationName">> & Pick<DalConfig, "sharedTables" \| "maxUses" \| "repoDecorator">` | The resolved configuration (defaults merged with user-provided config). |
+| eventPort | `EntityEventPort` | Domain-event transport port — assigned ONCE at service boot
+(`dal.eventPort = makeNatsEntityEventPort(code)`). From that point
+every `entityService(cfg)` emits one `EntityEvent` per affected row
+by construction (gated only by the entity's `events` meta), and
+`dal.transaction` drains tx-buffered drafts post-COMMIT. Unset →
+writes emit nothing (fire-and-forget silent skip). |
 
 ### `DalConfig`
 
@@ -1269,6 +1366,38 @@ both match this client; a save from another tab of the same user is
 foreign for merge/conflict purposes. |
 | changed_at | `number` | Epoch ms of the save. |
 
+### `EntityEvent`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| event | `EntityEventEnvelope` |  |
+| entity | `{ before: Record<string, unknown> \| null; after: Record<string, unknown> \| null; delta: Record<string, { old: unknown; new: unknown }> \| null }` | Entity-state section — the single-row specialization. |
+| entities | `{ batch: string; uuids: string[] }` | Grouped-operation section — present iff this event is one item of a
+ grouped operation (a bulk op, or a deferred-tx commit — every event
+ drained from one commit shares it). `batch` correlates the sibling events;
+ `uuids` is the full outcome of the operation, so every member event
+ is self-contained — a consumer never re-reads siblings to know what
+ the operation touched. |
+
+### `EntityEventDraft`
+
+What the repo write path hands the port — the full event MINUS
+ `service`/`subject` (the repo knows neither the service code nor
+ the transport route; the port stamps both).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| event | `Omit<EntityEventEnvelope, "service" \| "subject">` |  |
+| entity | `{ before: Record<string, unknown> \| null; after: Record<string, unknown> \| null; delta: Record<string, { old: unknown; new: unknown }> \| null }` |  |
+| entities | `{ batch: string; uuids: string[] }` |  |
+
+### `EntityEventPort`
+
+Sink the repo write path calls — fire-and-forget by contract:
+ callers do `void port.emit(e).catch(log)`; a failing emit NEVER fails
+ the write. Implementations: SDK `makeNatsEntityEventPort` (JetStream),
+ a buffering sink inside `dal.transaction` (drains post-COMMIT).
+
 ### `EntityListQuery`
 
 | Field | Type | Description |
@@ -1311,7 +1440,8 @@ keys actually live in that module's `<code>.translations` schema. |
 | title_key | `string` | Optional i18n key overriding the canonical page title.
 When absent, list/create/edit titles are built from the generic
 `system.entities.page_title.{list\|create\|edit}` templates interpolated
-with `system.entities.<translation_key>.{plural\|singular}`.
+with `{entities_ns}.entities.<translation_key>.{plural\|singular}` —
+`entities_ns` defaults to `system` for BE/core-owned entities.
 Set only for custom pages needing a bespoke title — CRUD entity metas
 must not declare it. |
 | uid | `string` | Field key holding the entity primary key (usually `uuid`). |
@@ -1366,6 +1496,13 @@ The contract every entity service must satisfy — enforced on the router.
  transaction when the op runs `svc.create(body, tx)` (a port bound
  at construction would write the audit row on the gateway pool —
  outside the tx — and survive a rollback). |
+| events | `EntityEventPort` | Domain-event sink — `dal.entityService` auto-injects `dal.eventPort`
+ (SDK `makeNatsEntityEventPort`). Every governed write emits one
+ `EntityEvent` per affected row, subject to the entity's
+ `@Entity(..., {events})` opt-out. Unset → no emission (silent skip,
+ same shape as a missing audit port). Unlike `auditPort` there is no
+ factory form: the tx path buffers drafts on the tx-scoped repo and
+ drains them post-COMMIT — the port object itself is tx-agnostic. |
 | actor | `() => string` | Actor supplier for audit stamping (e.g. SDK `requireActor`). |
 | auditTableName | `string` | Audit trail table override — default `${tableName}_audit`. |
 | display | `string \| null` | The entity's OWN display template (`"${name} (${code})"` syntax —
@@ -1374,6 +1511,12 @@ The contract every entity service must satisfy — enforced on the router.
  string the FE uses for this entity's titles. Absent → self-join
  skipped, the ref cell renders the raw uid (COALESCE fallback). |
 | list | `{ meta: EntityMeta; searchableKeys: readonly string[]; filterableKeys: ReadonlySet<string>; sortableKeys: ReadonlySet<string>; defaultSort: { key: string; dir: "asc" \| "desc" }; extraFilters: (q: EntityListQuery) => FilterExpr[]; aggregates: AggregateDecl[] }` |  |
+| txRunner | `(fn: (tx: Repository) => Promise<T>, options: TimeoutOverrideOptions) => Promise<T>` | Atomic tx runner — INTERNAL injection point only. `dal.entityService`
+ supplies `dal.transaction`; consumers never set it. Required only by
+ `svc.transaction` — a missing runner fails fast at call time. |
+| txBeginner | `(options: TimeoutOverrideOptions) => DeferredTransaction` | Deferred-tx beginner — INTERNAL injection point only. `dal.entityService`
+ supplies `dal.beginTransaction`; consumers never set it. Required only
+ by `svc.beginTransaction` — a missing beginner fails fast at call time. |
 | hooks | `{ afterWrite: (op: EntityAction, entity: TEntity) => void \| Promise<void>; beforeCreate: (body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>>; beforeUpdate: (uuid: string, body: Record<string, unknown>, ctx: WriteHookContext) => Record<string, unknown> \| Promise<Record<string, unknown>> }` |  |
 
 ### `FieldIssue`
@@ -1699,6 +1842,21 @@ Per-operation timeout override for dedicated-client work
  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
  session-default restore for `partitionMaintenance`. |
 
+### `VisibleKeyPrefs`
+
+Persisted column-visibility intent (storage schema v2): the user's
+deltas from `default_visible` — never the resolved set. Storing intent
+instead of the resolved array is what lets meta evolution (a column
+added later, a flipped `default_visible`) reach profiles that already
+persisted preferences: a key in neither list simply follows its own
+`default_visible`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| v | `2` |  |
+| shown | `string[]` | Served keys the user shows despite `default_visible:false`. |
+| hidden | `string[]` | Served keys the user hides despite `default_visible:true`. |
+
 ### `WriteHookContext`
 
 Identity the service resolved for THIS write — passed to `beforeCreate`/
@@ -1917,6 +2075,14 @@ contracts, not column sets.
 
 **Type:** `(args: any[]) => object`
 
+### `EntityEventsConfig`
+
+Opt-out contract on `@Entity` options — `false` silences the entity
+ entirely; `{except:[...]}` silences only those actions. Absent =
+ emitting (the default by design).
+
+**Type:** `false \| { except: readonly EntityWriteAction[] }`
+
 ### `EntityMetaResponse`
 
 The served `GET /api/v1/entities/{entity}/meta` response:
@@ -1931,6 +2097,19 @@ Serializable persistence metadata (for JSON compare with DB introspection).
 ### `EntityTypeWarning`
 
 Advisory warning — never fails a build, printed by `primebrick-db`.
+
+### `EntityWriteAction`
+
+Write actions the event vocabulary maps (from the svc method, not the
+ audit enum — `svc.duplicate` is `duplicate` even though its audit row
+ says INSERT). Single-row writes and bulk ops are DISJOINT vocabularies
+ by design — a `updateMany` row never claims `update`, it claims
+ `bulk_update`; a `job_trigger.filter` on `event.action` therefore
+ never confuses a single write for one item of a bulk. Deferred-tx ops
+ keep the PLAIN vocabulary (they are N individual writes in one atomic
+ commit, correlated via `entities`, not a bulk op).
+
+**Type:** `"create" \| "update" \| "delete" \| "restore" \| "purge" \| "duplicate" \| "bulk_create" \| "bulk_update" \| "bulk_delete" \| "bulk_restore" \| "bulk_purge"`
 
 ### `ExprOperand`
 
@@ -2120,7 +2299,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "slug" \| "no_space" \| "lang"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang"`
 
 ### `MetaColumnOptionsSource`
 
@@ -2146,12 +2325,45 @@ display ÷ 100) — the canonical value stays a fraction; NO sibling field.
 `"currency"`: money semantics — `field` names the SIBLING column that
 persists the ISO code per row (mandatory); `source` defaults to
 `"currencies"` (the shared ISO list).
-`"custom"`: any other UoM (kg, ms, items, …) — `field` persists the code,
-`source` drives the selector options, `symbol` overrides the adornment.
-The `field` sibling requirement is verified by `withColumnConstraints`:
-a uom'd numeric without its code column is a construction error.
+Category kinds (`"time"`, `"length"`, `"digital"`, …): Intl-sanctioned
+UoM grouped by UNIT_CATEGORIES — exactly ONE of:
+ - `unit`: a FIXED identifier, sanctioned ∩ category — rendered
+   `style:"unit"` with locale-correct inflection for free.
+ - `field`: a PER-ROW unit persisted on a SIBLING column, constrained
+   to the category — the picker needs NO `source`, the category itself
+   is the option vocabulary.
+`"custom"`: genuinely non-standard UoM only — exactly ONE of:
+ - `field` + `source`: a per-row code from a custom vocabulary (`entity`
+   rows, `api_url`, …); `symbol` overrides the adornment.
+ - `symbol`: a FIXED arbitrary suffix Intl does not sanction
+   ("pz", "items", …) — plain suffix display, never `style:"unit"`.
+`withColumnConstraints` enforces every XOR at meta bind.
 
-**Type:** `{ kind: "percent" } \| { kind: "currency"; field: string; source: "currencies" } \| { kind: "custom"; field: string; source: MetaColumnUomSource; symbol: string }`
+TAXONOMY (the declaration shapes):
+ 1. UOM TYPE + VALUE both static      → `{kind:'<category>', unit}` /
+    `{kind:'custom', symbol}`.
+ 2. UOM TYPE static, VALUE per-row    → `{kind:'currency', field}` /
+    `{kind:'<category>', field}` / `{kind:'custom', field, source}`.
+ 3. UOM TYPE + VALUE both per-row     → RESERVED, not expressible yet:
+    it needs the KIND itself on a persisted field (e.g.
+    `uom:{kind_field:'uom_kind', field:'uom_code'}` or `kind:'dynamic'`)
+    so a row can be currency and the next percent. Zero consumers today;
+    when one appears, extend this union — never shoehorn it into custom.
+Absent `uom` → plain decimal, no unit semantics.
+
+**Type:** `{ kind: "percent" } \| { kind: "currency"; field: string; source: "currencies" } \| { kind: MetaColumnUomKind; unit: string } \| { kind: MetaColumnUomKind; field: string } \| { kind: "custom"; field: string; source: MetaColumnUomSource; symbol: string } \| { kind: "custom"; symbol: string }`
+
+### `MetaColumnUomKind`
+
+UoM macro-categories — the hardcoded CLDR grouping census. ECMA-402
+exposes `Intl.supportedValuesOf("unit")` as a FLAT list with no
+category accessor (the grouping lives in CLDR data, unreachable from
+JS) — this map is the single reusable categorization. Every member
+MUST be an Intl-sanctioned identifier; coverage matches the runtime
+vocabulary (45 units on ICU ≥ 2024-06). `percent` is intentionally
+absent — adimensional, it is a `kind` of its own.
+
+**Type:** `"length" \| "mass" \| "volume" \| "area" \| "time" \| "temperature" \| "digital" \| "angle"`
 
 ### `MetaColumnUomSource`
 
@@ -2763,6 +2975,15 @@ Email — same RFC-5322-simplified regex the config validator and the FE
 
 **Type:** `RegExp`
 
+### `ENTITY_EVENT_SCHEMA`
+
+JSON Schema for `endpoints.events` payload_schema + wire docs —
+ the `{event,entity,entities}` contract (schema:2). `emitted_by` declares
+ `format:"actor_token"` — actor tokens may be uuids OR `system:<code>`,
+ so `uuid` would lie.
+
+**Type:** `Record<string, unknown>`
+
 ### `Filter`
 
 **Type:** `{ fieldValue: ; fieldField: ; raw: ; expr: ; group:  }`
@@ -3145,6 +3366,15 @@ CHECK constraints — a deliberate release-scoped change, never data.
 
 **Type:** `Decimal`
 
+### `TEXTLIKE_PG_TYPES`
+
+Physical PG types safe for `ILIKE` — `uuid` is searched via the
+ `CAST(col AS text)` the query-builder already applies. The single
+ vocabulary both the wire `search_in` allowlist (dal-pg
+ `deriveListWireSets`) and the FE scope derivations resolve against.
+
+**Type:** `Set<string>`
+
 ### `TRANSLATION_KEY_GRAMMAR`
 
 The ONE key grammar — `[a-z0-9_]+` dot-separated segments, ≥2 segments.
@@ -3160,6 +3390,17 @@ change here, mirror there).
 Single-segment grammar — the unit the full-key grammar repeats.
 
 **Type:** `RegExp`
+
+### `UNIT_CATEGORIES`
+
+**Type:** `Record<MetaColumnUomKind, readonly string[]>`
+
+### `UNIT_TO_CATEGORY`
+
+Reverse lookup — `UNIT_TO_CATEGORY.meter === 'length'`; compound
+ `-per-` units are NOT sanctioned list members → absent here.
+
+**Type:** `Record<string, MetaColumnUomKind>`
 
 ### `UUID_REGEX`
 
@@ -3645,7 +3886,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -3770,9 +4011,12 @@ column types — the single implementation behind `list.meta` derivation,
 also exported for service-side paths that run their own query (outside
 `makeEntityService`) yet must answer to the same contract:
 
- - `searchable`: `searchable`-flagged text-physical columns plus
-   `@Calculated` projections (they render to SQL and are ILIKE-safe) —
-   the `search_in` allowlist + default scope base (`uuid` and joined-name
+ - `searchable`: `searchableTextColumns` admits text-physical columns
+   plus `kind:"calculated"` projections whose served `pg_type` is
+   ILIKE-safe — the UI type is presentation, never a statement about
+   the rendered expression's searchability (a `type:"ref"` identity
+   column displays the very name the search matches). This is the
+   `search_in` allowlist + default scope base (`uuid` and joined-name
    keys are admitted on top by the caller).
  - `filterable`: `filterable`-flagged columns restricted to WHERE-
    resolvable keys (physical + calculated).
@@ -3784,6 +4028,19 @@ decorators express physical reality — the two cannot diverge.
 |-----------|------|-------------|
 | columns | `MetaColumn[]` |  |
 | entity | `EntityClass` |  |
+
+### `deriveVisibleKeyPrefs(visibleKeys, columns): VisibleKeyPrefs`
+
+Derive the persistable intent from the resolved set + served columns:
+ `shown` = visible keys that are not default-visible;
+ `hidden` = served columns absent from the visible set. A legacy v1
+ array migrates losslessly through the same derivation — identical
+ render, unlocked evolution.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| visibleKeys | `string[]` |  |
+| columns | `MetaColumn[]` |  |
 
 ### `Dict(opts): ClassDecorator`
 
@@ -3858,10 +4115,7 @@ caller owns the mapping).
 | entity | `EntityClass` |  |
 | deltas | `Record<string, unknown>[]` |  |
 
-### `Entity(tableName, schema): (ctor: T) => T`
-
-Maps the class to a DB table. Optional argument overrides the table name;
-if omitted, the table name equals the class name.
+### `Entity(tableName, schema): (ctor: Function) => void`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -3881,6 +4135,16 @@ if omitted, the table name equals the class name.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | value | `Date` |  |
+
+### `entityEventsEnabled(cfg, action): boolean`
+
+Resolve the meta flag into a runtime verdict: absent = emitting (the
+ default by design); `false` silences; `{except}` silences actions.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| cfg | `EntityEventsConfig \| undefined` |  |
+| action | `EntityWriteAction` |  |
 
 ### `eq(a, b): boolean`
 
@@ -4302,6 +4566,14 @@ Type guard — is `tag` one of the platform-supported language tags?
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | tag | `string` |  |
+
+### `isTextlikePgType(pgType): boolean`
+
+`pg_type` normalization — "varchar(200)" → "varchar".
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pgType | `string \| undefined` |  |
 
 ### `isUUID(v): v is UUID`
 
@@ -4958,6 +5230,17 @@ single function so the plane stays deterministic.
 |-----------|------|-------------|
 | specifier | `string` |  |
 
+### `resolveVisibleKeyPrefs(prefs, columns): string[]`
+
+Resolve stored prefs → concrete visible keys:
+ `(defaultVisible ∪ shown) − hidden`, then sanitized (unknown keys
+ dropped, `hideable === false` re-injected, empty → defaults).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| prefs | `Pick<VisibleKeyPrefs, "shown" \| "hidden">` |  |
+| columns | `MetaColumn[]` |  |
+
 ### `Retention(duration): PropertyDecorator`
 
 Declares how long rows live — the EXPIRY policy, orthogonal to
@@ -5067,8 +5350,13 @@ satisfies the hint; a bare `type:"string"` is a lie.
 
 ### `searchableTextColumns(columns): MetaColumn[]`
 
-Text-physical searchable columns — the scope selector + default
- "all fields" search set.
+Text-searchable columns — the scope selector + default "all fields"
+ search set: physical `type:"text"` columns plus `kind:"calculated"`
+ projections whose served `pg_type` is ILIKE-safe. The UI type is
+ presentation, never a statement about the rendered expression's
+ searchability — a calc `type:"ref"` identity column displays the
+ very name the search matches. Mirrors the wire `search_in`
+ allowlist derivation in dal-pg (`deriveListWireSets`).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

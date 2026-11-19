@@ -40,12 +40,17 @@
  *      none is declared, the `display_field` column derives the pin;
  *      display_field absent, naming no served column, naming the uid, or
  *      explicitly un-pinned (`hideable:true`/`sticky:false`) → throw.
+ *   7. the display_field column resolves to a writable physical column
+ *      whose `nullable` was never declared in `@Column` — decorator-imposed
+ *      values and the implicit `?? false` fallback are not a declaration;
+ *      the write contract forces required on the wire while the physical
+ *      fact stays the author's responsibility (either value is legal).
  *   ≥4 `sticky` columns emit a construction WARNING — allowed,
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { numericKindOf } from "@primebrick/core";
-import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
+import { isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -56,6 +61,14 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
 const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
+
+/** Intl-sanctioned unit identifiers — the same vocabulary the cell
+ *  formatter feeds `style:"unit"` (`Intl.supportedValuesOf("unit")`,
+ *  ~45 entries: millisecond, kilogram, byte, …). `uom.unit` must be a
+ *  member; arbitrary codes belong in `uom.symbol` (suffix fallback).
+ *  Empty set when the runtime lacks the API — any `unit` declaration
+ *  then fails membership loudly rather than drifting. */
+const INTL_SANCTIONED_UNITS = new Set(Intl.supportedValuesOf?.("unit") ?? []);
 
 export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?: string; translation_key?: string; entities_ns?: string; uid?: string; display_field?: string }>(
   meta: T,
@@ -212,20 +225,55 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
                 `percent is a pure display transform (×100/÷100) and persists no code`,
             );
           }
-        } else if (uom.kind === "currency" || uom.kind === "custom") {
+        } else if (uom.kind === "currency") {
           if (!persistence.columns[uom.field] || hiddenKeys.has(uom.field)) {
             throw new Error(
               `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
                 `the UoM code is persisted per row on that sibling column`,
             );
           }
-          if (uom.kind === "currency" && uom.source !== undefined && uom.source !== "currencies") {
+          if (uom.source !== undefined && uom.source !== "currencies") {
             throw new Error(
               `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"currency" source "${String(uom.source)}" is not a declared vocabulary — ` +
                 `only "currencies" (the ISO 4217 list) is valid`,
             );
           }
-          if (uom.kind === "custom") {
+        } else if (uom.kind === "custom") {
+          // ── custom XOR — genuinely non-standard UoM only:            */
+          //    `field`+`source` (per-row code from a custom vocabulary, */
+          //    `symbol` optional adornment override) OR standalone      */
+          //    `symbol` (fixed arbitrary suffix). `unit` moved to the   */
+          //    category kinds — a sanctioned unit on custom is a        */
+          //    construction error, not a variant.                       */
+          const hasField = "field" in uom;
+          const hasUnit = "unit" in uom;
+          const hasSymbol = "symbol" in uom;
+          const hasSource = "source" in uom;
+          if (hasUnit) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares unit — ` +
+                `Intl-sanctioned units belong on a category kind (time | length | digital | …), custom is for non-standard vocabularies only`,
+            );
+          }
+          if (hasField !== hasSource) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares field without source (or vice versa) — ` +
+                `the per-row code path requires BOTH: the sibling column and the selector vocabulary`,
+            );
+          }
+          if (!hasField && !hasSymbol) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"custom" declares no unit source — ` +
+                `one of field+source | symbol is required`,
+            );
+          }
+          if (hasField) {
+            if (!persistence.columns[uom.field] || hiddenKeys.has(uom.field)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
+                  `the UoM code is persisted per row on that sibling column`,
+              );
+            }
             const src = uom.source;
             const ok =
               src === "currencies" ||
@@ -237,10 +285,45 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               );
             }
           }
+        } else if (uom.kind in UNIT_CATEGORIES) {
+          // ── category kind — Intl-sanctioned UoM grouped by           */
+          //    UNIT_CATEGORIES (CLDR census, hardcoded in core).        */
+          //    Exactly one of `unit` (fixed) | `field` (per-row code   */
+          //    on a physical sibling — the category IS the picker      */
+          //    vocabulary, no `source` prop exists here).              */
+          const kind = uom.kind as MetaColumnUomKind;
+          const hasField = "field" in uom;
+          const hasUnit = "unit" in uom;
+          if (hasField === hasUnit) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"${kind}" must declare exactly one of unit | field — ` +
+                `got ${hasUnit && hasField ? "both" : "neither"}`,
+            );
+          }
+          if (hasUnit) {
+            if (!INTL_SANCTIONED_UNITS.has(uom.unit)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.unit "${uom.unit}" is not an Intl-sanctioned unit — ` +
+                  `valid identifiers come from Intl.supportedValuesOf("unit"); free-text units belong in uom:"custom" symbol`,
+              );
+            }
+            if (!UNIT_CATEGORIES[kind].includes(uom.unit)) {
+              throw new Error(
+                `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom:"${kind}" unit "${uom.unit}" is sanctioned but belongs to a different category — ` +
+                  `one of ${UNIT_CATEGORIES[kind].join(", ")}`,
+              );
+            }
+          }
+          if (hasField && (!persistence.columns[uom.field] || hiddenKeys.has(uom.field))) {
+            throw new Error(
+              `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.field "${uom.field}" must name a physical column on the entity class — ` +
+                `the per-row UoM code is persisted on that sibling column (category "${kind}" values)`,
+            );
+          }
         } else {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" uom.kind "${String((uom as { kind?: unknown }).kind)}" is not a declared vocabulary — ` +
-              `one of percent | currency | custom`,
+              `one of percent | currency | custom | ${Object.keys(UNIT_CATEGORIES).join(" | ")}`,
           );
         }
       }
@@ -280,10 +363,29 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    itself declared `type:"ref"` (its options carry the row).   */
       if (col.depends_on !== undefined) {
         const dep = col.depends_on;
-        if (!persistence.columns[dep.field] || hiddenKeys.has(dep.field)) {
+        // A `hidden` pivot stays legal for the record-reading facets —
+        // `disabled_when` (`set`/`equals`/`not`/`values`) evaluates the
+        // stored row value, which the served payload still carries even
+        // when the column is suppressed from meta (e.g. an internal
+        // reconcile anchor gating user-editable fields). The interactive
+        // facets instead need a served pivot: `filter_field` is the
+        // user's pick control, `control_prop`/`disabled_when.prop` fetch
+        // the pivot's picked ROW through its ref options delegate.
+        if (!persistence.columns[dep.field]) {
           throw new Error(
             `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on.field "${dep.field}" must name a physical column on the entity class — ` +
               `the pivot is a stored sibling value on the same record`,
+          );
+        }
+        if (
+          hiddenKeys.has(dep.field) &&
+          (dep.filter_field !== undefined ||
+            dep.control_prop !== undefined ||
+            dep.disabled_when?.prop !== undefined)
+        ) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" depends_on.field "${dep.field}" names a hidden column — ` +
+              `interactive facets (filter_field / control_prop / disabled_when.prop) require a served pivot; only record-reading gates (set/equals/not/values) may use one`,
           );
         }
         if (dep.filter_field !== undefined && col.type !== "ref") {
@@ -474,8 +576,9 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       //    the served meta states the real contract, not a misleading ON. */
       const physCol = persistence.columns[col.key];
       if (physCol && col.kind === undefined) {
+        const physPgType = physCol.pgType ?? physCol.inferredPgType;
         const restated = QUERY_FLAGS.filter(
-          (f) => col[f] !== undefined && col[f] === defaultQueryFlag(f, col.key, col.type),
+          (f) => col[f] !== undefined && col[f] === defaultQueryFlag(f, col.key, col.type, physPgType),
         );
         if (restated.length > 0) {
           throw new Error(
@@ -485,7 +588,17 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         }
         const flagDefaults: Record<string, boolean> = {};
         for (const f of QUERY_FLAGS)
-          if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type)) flagDefaults[f] = false;
+          if (col[f] === undefined && !defaultQueryFlag(f, col.key, col.type, physPgType)) flagDefaults[f] = false;
+        // An authored `searchable:true` that escapes restatement survives
+        // only because the derived default is FALSE — it declares scope
+        // the wire allowlist can never admit. Intent contradicting
+        // physics is authored drift, not a tunable: refuse the meta.
+        if (col.searchable === true) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors searchable:true on a non-ILIKE-safe column (pg type "${physPgType}") — ` +
+              `the wire search_in allowlist derives from the same physical types and would reject it; drop the flag`,
+          );
+        }
         return withAuditOrder(injectDerived({ ...col, ...flagDefaults }));
       }
       return withAuditOrder(injectDerived(col));
@@ -570,7 +683,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // never sorted, never text-searched (a numeric LIKE is noise); the
       // same applies to every date/datetime column — a timestamp matched
       // as text is noise, range filters are the query contract.
-      searchable: defaultQueryFlag("searchable", key, colType) ? undefined : false,
+      searchable: defaultQueryFlag("searchable", key, colType, phys.inferredPgType) ? undefined : false,
       sortable: defaultQueryFlag("sortable", key, colType) ? undefined : false,
       // Audit actor columns feed the governed multi-select: the
       // distinct vocab of THIS table's actors, label-resolved through
@@ -593,7 +706,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       kind: "calculated",
     });
   }
-  enforceIdentityColumnContract(columns, meta, persistence.entityClassName, relation);
+  enforceIdentityColumnContract(columns, meta, persistence, relation);
   return { ...meta, columns };
 }
 
@@ -629,9 +742,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
 function enforceIdentityColumnContract(
   columns: MetaColumn[],
   meta: { uid?: string; display_field?: string; display_name?: string },
-  entityClassName: string,
+  persistence: EntityPersistenceMeta,
   relation?: RelationFacet,
 ): void {
+  const entityClassName = persistence.entityClassName;
   // ── uid contract ───────────────────────────────────────────────────
   if (meta.uid !== undefined) {
     const uidIdx = columns.findIndex((c) => c.key === meta.uid);
@@ -730,6 +844,52 @@ function enforceIdentityColumnContract(
     }
     columns[dfIdx] = { ...dfCol, sticky: true, hideable: false };
   }
+
+  // ── display_field write-contract convention ────────────────────────
+  // The display name is the entity's user-authored identity — every
+  // display_field inherits the write contract by being the display_field:
+  // REQUIRED on the wire (served `nullable:false` — the physical column
+  // may stay nullable; required is a write contract, not a DB fact —
+  // `nullable` is NOT the override vote for it), `min_length` 5,
+  // `max_length` 255. Authored `min_length`/`max_length` win; the
+  // `@Column length` already fed `max_length` when declared. Non-writable
+  // display_fields (calculated/virtual projections, server-managed keys,
+  // the uid) are exempt — they never arrive on the wire.
+  //
+  // The DB fact is the AUTHOR'S responsibility and must be stated: a
+  // writable display_field whose physical `nullable` was never declared
+  // in `@Column` throws — omission resolves `?? false` (NOT NULL) and
+  // decorator side-effects (@Key/@Unique/@Partition/@DeletableField/
+  // @CloneField) inject a value nobody chose. `nullable:true` and
+  // `nullable:false` are both legal — explicitly owned either way.
+  if (meta.display_field !== undefined) {
+    const wIdx = columns.findIndex((c) => c.key === meta.display_field);
+    if (wIdx !== -1) {
+      const wCol = columns[wIdx]!;
+      const writable =
+        wCol.kind !== "calculated" &&
+        wCol.kind !== "virtual" &&
+        wCol.managed !== true &&
+        wCol.audited !== true &&
+        wCol.key !== meta.uid;
+      const phys = persistence.columns[meta.display_field];
+      if (writable && phys && phys.nullableAuthored !== true) {
+        throw new Error(
+          `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" does not declare nullability — ` +
+            `the write contract forces required on the wire, but physical nullability is the column author's choice: ` +
+            `declare @Column({ nullable: false }) (NOT NULL — aligned) or @Column({ nullable: true }) (accepted divergence)`,
+        );
+      }
+      if (writable) {
+        columns[wIdx] = {
+          ...wCol,
+          nullable: false,
+          min_length: wCol.min_length ?? 5,
+          max_length: wCol.max_length ?? 255,
+        };
+      }
+    }
+  }
   }
 
   // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
@@ -793,17 +953,23 @@ function isAuditActorColumn(phys: {
  *  at runtime, but their authored type is the contract). An authored flag
  *  equal to this value is a restatement (rejected); a different value is a
  *  real override (allowed). `filterable` is ON for every column; `sortable`
- *  is OFF only on `version`; `searchable` is OFF on `version` and every
- *  date/datetime column — a timestamp matched as text is noise, range
- *  filters are the query contract. */
+ *  is OFF only on `version`; `searchable` is OFF on `version`, every
+ *  date/datetime column, and every column whose PHYSICAL pg type is not
+ *  ILIKE-safe (`TEXTLIKE_PG_TYPES` — the same set the wire `search_in`
+ *  allowlist derives from). Serving `searchable` on a non-textlike
+ *  column would advertise scope the backend then rejects — the derived
+ *  default resolves intent against physics so the two cannot diverge. */
 function defaultQueryFlag(
   flag: (typeof QUERY_FLAGS)[number],
   key: string,
   metaType: MetaColumn["type"],
+  physPgType?: string,
 ): boolean {
   if (flag === "filterable") return true;
   if (flag === "sortable") return key !== "version";
-  return key !== "version" && metaType !== "date" && metaType !== "datetime";
+  if (key === "version" || metaType === "date" || metaType === "datetime") return false;
+  if (physPgType === undefined) return true;
+  return isTextlikePgType(physPgType);
 }
 
 /** Served-meta ref target for a physical column: `@Ref` wins; a

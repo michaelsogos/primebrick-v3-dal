@@ -11,6 +11,7 @@ class CcRuleEntity {
   @Column({ length: 200, nullable: false }) name!: string;
   @Column({ nullable: false }) event_subject!: string;
   @Column({ nullable: true }) filter?: unknown;
+  @Column({ pgType: "jsonb", nullable: true }) payload_map?: unknown;
   @Column({ length: 10, nullable: false, defaultSql: "'user'" }) execution_context!: string;
   @Column({ nullable: false }) enabled!: boolean;
 }
@@ -24,6 +25,7 @@ const baseMeta = (): EntityMeta => ({
     { key: "name", label_key: "x.name", type: "text", order: 10 },
     { key: "event_subject", label_key: "x.event_subject", type: "text", order: 20 },
     { key: "filter", label_key: "x.filter", type: "text", order: 30 },
+    { key: "payload_map", label_key: "x.payload_map", type: "text", order: 35 },
     { key: "execution_context", label_key: "x.lane", type: "badge", order: 40 },
     { key: "enabled", label_key: "x.enabled", type: "boolean", order: 50 },
   ],
@@ -45,6 +47,155 @@ describe("withColumnConstraints", () => {
     const meta = baseMeta();
     meta.columns[0] = { ...meta.columns[0]!, max_length: 999 } as never;
     expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/restates derived prop/);
+  });
+
+  it("display_field convention — required + min_length 5 + max_length 255 on a nullable text column", () => {
+    @Entity("cc_customer", "crm")
+    class CcCustomerEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: true }) display_name?: string;
+      @Column({ nullable: false }) code!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_customer",
+      translation_key: "cc_customer",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [
+        { key: "display_name", label_key: "x.display_name", type: "text", order: 10 },
+        { key: "code", label_key: "x.code", type: "text", order: 20 },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcCustomerEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    // nullable:true is a PHYSICAL fact, not a vote on requiredness — the
+    // display_field write contract is required regardless.
+    expect(byKey.display_name).toMatchObject({ nullable: false, min_length: 5, max_length: 255 });
+    // Siblings are untouched.
+    expect(byKey.code?.min_length).toBeUndefined();
+    expect(byKey.code?.max_length).toBeUndefined();
+  });
+
+  it("display_field convention — @Column length wins over the 255 default; authored min_length wins over 5", () => {
+    const meta = baseMeta();
+    meta.columns[0] = { ...meta.columns[0]!, min_length: 10 } as never;
+    const out = withColumnConstraints(meta, CcRuleEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    expect(byKey.name).toMatchObject({ nullable: false, min_length: 10, max_length: 200 });
+  });
+
+  it("display_field convention — calculated display_fields are exempt (never on the wire)", () => {
+    @Entity("cc_run", "job")
+    class CcRunEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ pgType: "uuid", nullable: false }) trigger_uuid!: UUID;
+      @Calculated(`COALESCE((SELECT jt.name FROM job.cc_triggers jt WHERE jt.uuid = {self}.trigger_uuid), {self}.trigger_uuid::text)`, {
+        pgType: "text",
+        nullable: true,
+      })
+      trigger?: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_run",
+      translation_key: "cc_run",
+      uid: "uuid",
+      display_field: "trigger",
+      columns: [
+        { key: "trigger", label_key: "x.trigger", type: "ref", kind: "calculated", order: 10 },
+        { key: "trigger_uuid", label_key: "x.trigger_uuid", type: "text", order: 20 },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcRunEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    expect(byKey.trigger).toMatchObject({ kind: "calculated", nullable: true });
+    expect(byKey.trigger?.min_length).toBeUndefined();
+    expect(byKey.trigger?.max_length).toBeUndefined();
+  });
+
+  it("display_field convention — throws when @Column omits `nullable` (the default is not a declaration)", () => {
+    @Entity("cc_df_default", "crm")
+    class CcDfDefaultEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ length: 200 }) display_name!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_default",
+      translation_key: "cc_df_default",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [{ key: "display_name", label_key: "x.display_name", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfDefaultEntity)).toThrow(
+      /CcDfDefaultEntity.*display_field "display_name" does not declare nullability/s,
+    );
+  });
+
+  it("display_field convention — throws on an implicit (undecorated) display_field column", () => {
+    @Entity("cc_df_implicit", "crm")
+    class CcDfImplicitEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      display_name!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_implicit",
+      translation_key: "cc_df_implicit",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [{ key: "display_name", label_key: "x.display_name", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfImplicitEntity)).toThrow(
+      /does not declare nullability/,
+    );
+  });
+
+  it("display_field convention — @Unique-injected nullable is not a declaration", () => {
+    @Entity("cc_df_unique", "crm")
+    class CcDfUniqueEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Unique() @Column({ length: 60 }) code!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_unique",
+      translation_key: "cc_df_unique",
+      uid: "uuid",
+      display_field: "code",
+      columns: [{ key: "code", label_key: "x.code", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfUniqueEntity)).toThrow(
+      /does not declare nullability/,
+    );
+  });
+
+  it("display_field convention — explicit nullable:false and nullable:true both pass", () => {
+    @Entity("cc_df_explicit", "crm")
+    class CcDfExplicitEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ length: 100, nullable: false }) code!: string;
+      @Column({ nullable: true }) display_name?: string;
+    }
+    for (const display_field of ["code", "display_name"] as const) {
+      const meta: EntityMeta = {
+        entity: "cc_df_explicit",
+        translation_key: "cc_df_explicit",
+        uid: "uuid",
+        display_field,
+        columns: [
+          { key: "code", label_key: "x.code", type: "text", order: 10 },
+          { key: "display_name", label_key: "x.display_name", type: "text", order: 20 },
+        ],
+      };
+      const out = withColumnConstraints(meta, CcDfExplicitEntity);
+      const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+      // served write contract is identical either way — the authored
+      // physical fact is respected, not silently rewritten.
+      expect(byKey[display_field]).toMatchObject({ nullable: false, min_length: 5 });
+    }
   });
 
   it("throws on a non-virtual column key missing from the entity class", () => {
@@ -434,8 +585,74 @@ describe("uom + unsigned constraints", () => {
 		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
 	});
 
-	it("unknown uom kind throws", () => {
+	it("category kind fixed unit needs no sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "millisecond" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("category kind unit outside the Intl-sanctioned list throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "parsec" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not an Intl-sanctioned unit/);
+	});
+
+	it("category kind unit from a different category throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "kilogram" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/belongs to a different category/);
+	});
+
+	it("category kind with neither unit nor field throws", () => {
 		const meta = pricedMeta([{ uom: { kind: "volume" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/exactly one of unit \| field/);
+	});
+
+	it("category kind with both unit and field throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "time", unit: "millisecond", field: "qty_uom" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/exactly one of unit \| field/);
+	});
+
+	it("category kind per-row field must name a physical sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "length", field: "nope_uom" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/must name a physical column/);
+		const ok = pricedMeta([{ uom: { kind: "length", field: "qty_uom" } }]);
+		expect(() => withColumnConstraints(ok, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom unit (fixed Intl unit) now throws — category kinds own it", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", unit: "millisecond" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/uom:"custom" declares unit/);
+	});
+
+	it("custom symbol-only (fixed arbitrary suffix) needs no sibling", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom", symbol: "pz" } }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom field+source may carry symbol as adornment override", () => {
+		const meta = pricedMeta([
+			{ uom: { kind: "custom", field: "qty_uom", source: { entity: "uom" }, symbol: "pz" } },
+		]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).not.toThrow();
+	});
+
+	it("custom field without source (or source without field) throws", () => {
+		expect(() =>
+			withColumnConstraints(pricedMeta([{ uom: { kind: "custom", field: "qty_uom" } as never }]), CcPricedEntity),
+		).toThrow(/field without source/);
+		expect(() =>
+			withColumnConstraints(
+				pricedMeta([{ uom: { kind: "custom", source: { entity: "uom" } } as never }]),
+				CcPricedEntity,
+			),
+		).toThrow(/field without source/);
+	});
+
+	it("custom with neither field nor symbol throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "custom" } as never }]);
+		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/declares no unit source/);
+	});
+
+	it("unknown uom kind throws", () => {
+		const meta = pricedMeta([{ uom: { kind: "bogus" } as never }]);
 		expect(() => withColumnConstraints(meta, CcPricedEntity)).toThrow(/not a declared vocabulary/);
 	});
 
@@ -544,6 +761,75 @@ describe("uom + unsigned constraints", () => {
 			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "private" } },
 		} as never;
 		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	it("a hidden pivot is legal for record-reading gates (set/equals)", () => {
+		const meta = baseMeta();
+		meta.columns[1] = { ...meta.columns[1]!, hidden: true } as never; // event_subject
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { set: true } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+		meta.columns[0] = {
+			...meta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { equals: "x" } },
+		} as never;
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).not.toThrow();
+	});
+
+	it("a hidden pivot still rejects interactive facets (filter_field/control_prop/prop)", () => {
+		const mkMeta = (): EntityMeta => {
+			const meta = baseMeta();
+			meta.columns[1] = { ...meta.columns[1]!, hidden: true } as never; // event_subject
+			return meta;
+		};
+		const depMeta = mkMeta();
+		depMeta.columns[0] = {
+			...depMeta.columns[0]!,
+			type: "ref",
+			ref: { entity: "legal_form" },
+			depends_on: { field: "event_subject", filter_field: "event_subject" },
+		} as never;
+		expect(() => withColumnConstraints(depMeta, CcRuleEntity)).toThrow(/names a hidden column/);
+		const propMeta = mkMeta();
+		propMeta.columns[0] = {
+			...propMeta.columns[0]!,
+			depends_on: { field: "event_subject", disabled_when: { prop: "code", equals: "x" } },
+		} as never;
+		expect(() => withColumnConstraints(propMeta, CcRuleEntity)).toThrow(/names a hidden column/);
+	});
+
+	// ── searchable — the served flag resolves against the PHYSICAL pg
+	//    type (the same TEXTLIKE set the wire search_in allowlist derives
+	//    from) — intent and physics can never diverge ──────────────────
+	it("an undeclared searchable flag on a jsonb column emits searchable:false", () => {
+		// `payload_map` persists as jsonb — ILIKE-incapable, so the served
+		// flag is forced off and the column never enters search_in.
+		const out = withColumnConstraints(baseMeta(), CcRuleEntity);
+		const mapCol = out.columns.find((c) => c.key === "payload_map");
+		expect(mapCol?.searchable).toBe(false);
+		// …while the textlike sibling keeps the searchable default.
+		expect(out.columns.find((c) => c.key === "event_subject")?.searchable).not.toBe(false);
+	});
+
+	it("authored searchable:false on a jsonb column is restatement drift and throws", () => {
+		const meta = baseMeta();
+		meta.columns[3] = { ...meta.columns[3]!, searchable: false } as never; // payload_map — jsonb
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/the derived default/);
+	});
+
+	it("authored searchable:true on a jsonb column is a construction error", () => {
+		const meta = baseMeta();
+		meta.columns[3] = { ...meta.columns[3]!, searchable: true } as never; // payload_map — jsonb
+		expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/non-ILIKE-safe/);
+	});
+
+	it("authored searchable:false on a textlike column remains a legal narrowing", () => {
+		const meta = baseMeta();
+		meta.columns[1] = { ...meta.columns[1]!, searchable: false } as never; // event_subject — varchar
+		const out = withColumnConstraints(meta, CcRuleEntity);
+		expect(out.columns.find((c) => c.key === "event_subject")?.searchable).toBe(false);
 	});
 
 	// ── ref.value_field — non-uid stored values can't detail-link ──────

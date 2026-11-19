@@ -65,14 +65,24 @@ import {
   Repository,
   REPO_INTERNAL,
   buildReturningClause,
+  eventSafeRecord,
   pickReturningRow,
   type Queryable,
 } from "../repository/repository.js";
+import { entityApiName } from "../entity/entity-registry.js";
+import {
+  entityEventsEnabled,
+  type EntityEventDraft,
+  type EntityEventPort,
+  type EntityWriteAction,
+} from "../entity/events.js";
+import { newUuidV7 } from "../types/uuid.js";
 import type {
   AuditableWriteOptions,
   FindByIdOptions,
   FindByUUIDOptions,
   FindOptions,
+  LoggerPort,
   MatchByOptions,
   PaginatedEntity,
   VectorSearchOptions,
@@ -193,6 +203,19 @@ interface DeferredOp {
   kind: DeferredOpKind;
   entity: EntityClass;
   entityName: string;
+  meta: EntityPersistenceMeta;
+  propToSql: Map<string, string>;
+  /** Write options as passed at buffer time — `actor`/`eventActor` stamp
+   *  `emitted_by`, an explicit `events` port overrides the tx-level one. */
+  options?: {
+    audit?: unknown;
+    returning?: FieldProjector[] | null;
+    onConflict?: string;
+    events?: EntityEventPort;
+    actor?: string;
+    eventActor?: string;
+    logger?: LoggerPort;
+  } | undefined;
   /** Resolves to the captured statement; rejects on build-time errors. */
   captured: Promise<CapturedSql>;
   deferred: Deferred<unknown>;
@@ -418,6 +441,9 @@ export class DeferredTransaction {
   constructor(
     private readonly run: StatementExecutor,
     bulkTimeoutMs?: number,
+    /** Domain-event sink drained post-commit — `dal.beginTransaction`
+     *  injects `dal.eventPort`; per-op `options.events` overrides. */
+    private readonly eventPort?: EntityEventPort,
   ) {
     const captureQueryable = {
       query: (text: string, values?: unknown[]): Promise<never> =>
@@ -744,6 +770,18 @@ export class DeferredTransaction {
           op.deferred._reject(err);
         }
       });
+      // Entity events drain HERE, never at buffer time: the merged
+      // statement IS the atomic unit — reaching this line proves every
+      // branch wrote, so no phantom event can precede its row. A failed
+      // statement never gets here; there is no rollback path to gate.
+      // The drain can NEVER fail the commit: the write already happened —
+      // a drain error must surface as a log line, not a rejected commit
+      // that invites a duplicating retry.
+      try {
+        this.drainEntityEvents(payload);
+      } catch (err) {
+        for (const op of this.ops) op.options?.logger?.error("[DAL Entity Event Drain Error]", err);
+      }
     } catch (err) {
       for (const op of this.ops) op.deferred._reject(err);
       throw err;
@@ -768,11 +806,7 @@ export class DeferredTransaction {
   private register<TEntity extends object, TResult>(args: {
     kind: DeferredOpKind;
     entity: EntityClass & { new (): TEntity };
-    options?: {
-      audit?: unknown;
-      returning?: FieldProjector[] | null;
-      onConflict?: string;
-    };
+    options?: DeferredOp["options"];
     readFields?: readonly FieldProjector[] | null;
     invoke: (exec: RepoExec) => Promise<unknown>;
     abort: DeferredOp["abort"];
@@ -845,6 +879,9 @@ export class DeferredTransaction {
       kind,
       entity,
       entityName: meta.entityClassName,
+      meta,
+      propToSql,
+      options,
       captured,
       deferred: deferred as Deferred<unknown>,
       emittedKeys,
@@ -857,6 +894,89 @@ export class DeferredTransaction {
       abort,
     });
     return deferred;
+  }
+
+  /**
+   * Post-commit entity-event drain — one event per buffered WRITE op.
+   * `before`/`delta` are unknowable by construction (single statement, no
+   * pre-read — the same constraint that makes `options.audit` undeferrable);
+   * `after` is the rehydrated RETURNING row, so these events are richer
+   * than bulk thin-events (which carry `after:null`). Every drained event
+   * carries `entities` — `batch` correlates the ops of the commit (the
+   * deferred tx IS the atomic multi-write unit it exists for) and `uuids`
+   * is the commit's full row outcome, so each event is self-contained.
+   * Actions stay PLAIN (`create`/`update`/…) — these are N individual
+   * writes atomically committed, not a bulk op. Per-op `options.events`
+   * wins over the tx-level port; entity `events:false|{except}` gates
+   * apply as usual.
+   */
+  private drainEntityEvents(
+    payload: Record<string, Array<Record<string, unknown>> | null>,
+  ): void {
+    const ACTION: Partial<Record<DeferredOpKind, EntityWriteAction>> = {
+      add: "create",
+      update: "update",
+      delete: "delete",
+      restore: "restore",
+      hardDelete: "purge",
+    };
+    // Pass 1 — resolve the emittable ops (gates + row resolution) so the
+    // shared `entities` container knows the commit's full uuid outcome
+    // before any event is stamped.
+    const emittable: Array<{
+      op: DeferredOp;
+      action: EntityWriteAction;
+      port: EntityEventPort;
+      after: Record<string, unknown>;
+      uuid: string;
+    }> = [];
+    for (const op of this.ops) {
+      const action = ACTION[op.kind];
+      if (!action) continue;
+      const port = op.options?.events ?? this.eventPort;
+      if (!port) continue;
+      if (op.meta.isAuditTrailEntity) continue;
+      if (!entityEventsEnabled(op.meta.events, action)) continue;
+      const raw = (payload[`__r${op.index}`] ?? [])[0];
+      // Zero-row write (add onConflict:"ignore" skipping a conflict) —
+      // no durable row, no event.
+      if (!raw) continue;
+      try {
+        const after = eventSafeRecord(rehydrateRow(op.meta, op.propToSql, null, raw));
+        const uuid = after["uuid"];
+        if (typeof uuid !== "string" || uuid.length === 0) continue;
+        emittable.push({ op, action, port, after, uuid });
+      } catch (err) {
+        op.options?.logger?.error("[DAL Entity Event Drain Error]", err);
+      }
+    }
+    if (emittable.length === 0) return;
+    const entities = { batch: newUuidV7(), uuids: emittable.map((e) => e.uuid) };
+    const emittedAt = new Date().toISOString();
+    for (const { op, action, port, after, uuid } of emittable) {
+      try {
+        const draft: EntityEventDraft = {
+          event: {
+            schema: 2,
+            entity: entityApiName(op.entity),
+            action,
+            uuid,
+            version: after["version"] as number | undefined,
+            emitted_by: op.options?.actor ?? op.options?.eventActor ?? "system",
+            emitted_at: emittedAt,
+          },
+          entity: { before: null, after, delta: null },
+          entities,
+        };
+        void port
+          .emit(draft)
+          .catch((err) => op.options?.logger?.error("[DAL Entity Event Error]", err));
+      } catch (err) {
+        // One bad op must never starve the rest of the drain — the rows
+        // are already committed; a dropped event logs, it doesn't abort.
+        op.options?.logger?.error("[DAL Entity Event Drain Error]", err);
+      }
+    }
   }
 
   /**

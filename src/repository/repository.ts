@@ -48,6 +48,8 @@ import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { isUuidV7, newUuidV7 } from "../types/uuid.js";
 import { calculateDelta, calculateDeltaWithForcedFields } from "../audit/delta-calculator.js";
+import { entityApiName } from "../entity/entity-registry.js";
+import { entityEventsEnabled, type EntityEventDraft, type EntityWriteAction } from "../entity/events.js";
 
 /** @internal — structural client/pool surface used by Repository; also used by the deferred-transaction capture layer. */
 export type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
@@ -64,6 +66,18 @@ export const REPO_INTERNAL: unique symbol = Symbol("dal-pg:repo-internal");
 /** Escape a JS string as a single-quoted SQL literal. */
 function escapeLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** Wire-sanitize a record for the entity-event payload/delta — BigInt
+ *  values cannot cross JSON.stringify (throws) or the event wire, so they
+ *  degrade to Number the same way the audit hardDelete delta does.
+ *  @internal — shared with the deferred-transaction commit-time drain. */
+export function eventSafeRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(record)) {
+    out[k] = typeof v === "bigint" ? Number(v) : v;
+  }
+  return out;
 }
 
 /** No-op logger — used when no LoggerPort is injected. */
@@ -345,6 +359,105 @@ export class Repository {
   }
 
   /**
+   * @internal Entity-event buffer — set by `dal.transaction` on the
+   *  tx-scoped Repository. When present, `emitEntityEvent` appends drafts
+   *  here instead of publishing: the tx drains them post-COMMIT through
+   *  `dal.eventPort`, drops them on ROLLBACK — an event never precedes
+   *  its durable write.
+   */
+  eventBuffer?: EntityEventDraft[];
+
+  /**
+   * Emit one entity-domain event for a row that was just written —
+   * fire-and-forget (a failing port NEVER fails the write), gated by the
+   * entity's `events` meta (`@Entity(..., {events:false|{except}})`).
+   * Inside a `dal.transaction` the draft buffers on this repo and is
+   * drained by the tx wrapper after COMMIT.
+   */
+  private emitEntityEvent(
+    entity: EntityClass,
+    meta: EntityPersistenceMeta,
+    options: WriteOptions<any>,
+    evt: {
+      action: EntityWriteAction;
+      uuid: string;
+      version?: number;
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+      delta: Record<string, { old: unknown; new: unknown }> | null;
+      entities?: EntityEventDraft["entities"];
+    },
+  ): void {
+    if (!entityEventsEnabled(meta.events, evt.action)) return;
+    // Audit-trail INSERTs are internal bookkeeping, not domain writes —
+    // without this gate every audited write would emit a shadow event.
+    if (meta.isAuditTrailEntity) return;
+    if (!this.eventBuffer && !options.events) return;
+    const actor = (options as AuditableWriteOptions).actor ?? options.eventActor ?? "system";
+    const draft: EntityEventDraft = {
+      event: {
+        schema: 2,
+        entity: entityApiName(entity),
+        action: evt.action,
+        uuid: evt.uuid,
+        version: evt.version,
+        emitted_by: actor,
+        emitted_at: new Date().toISOString(),
+      },
+      entity: {
+        before: evt.before ? eventSafeRecord(evt.before) : null,
+        after: evt.after ? eventSafeRecord(evt.after) : null,
+        delta: evt.delta,
+      },
+      ...(evt.entities ? { entities: evt.entities } : {}),
+    };
+    if (this.eventBuffer) {
+      this.eventBuffer.push(draft);
+      return;
+    }
+    void options.events!.emit(draft).catch((err) =>
+      (options.logger ?? noopLogger).error("[DAL Entity Event Error]", err),
+    );
+  }
+
+  /**
+   * Emit THIN per-item events for a bulk op — TEMP-TABLE bulk paths have
+   * no RETURNING/oldRecord by contract, so `before`/`after`/`delta` are
+   * null; every resolvable `uuid` in the match/row set gets its own event
+   * so per-uuid trigger bindings keep working inside a bulk. The grouped
+   * op rides `entities` on every member event: `batch` correlates them,
+   * `uuids` carries the op's full outcome — each thin event is
+   * self-contained. Items without a `uuid` value emit nothing.
+   */
+  private emitBulkEntityEvents(
+    entity: EntityClass,
+    meta: EntityPersistenceMeta,
+    options: WriteOptions<any>,
+    action: EntityWriteAction,
+    items: Array<Record<string, unknown>>,
+    affected: number,
+  ): void {
+    if (affected === 0) return;
+    if (!entityEventsEnabled(meta.events, action)) return;
+    if (!this.eventBuffer && !options.events) return;
+    const uuids = items
+      .map((item) => item["uuid"])
+      .filter((u): u is string => typeof u === "string" && u.length > 0);
+    if (uuids.length === 0) return;
+    const entities = { batch: newUuidV7(), uuids };
+    for (const uuid of uuids) {
+      this.emitEntityEvent(entity, meta, options, {
+        action,
+        uuid,
+        before: null,
+        after: null,
+        delta: null,
+        entities,
+      });
+    }
+  }
+
+  /**
    * Opens a dedicated-client transaction for a bulk operation and applies the
    * operation time budget. Budget is enforced twice: `SET LOCAL
    * statement_timeout` bounds each statement (PG-side kill → 57014), and the
@@ -464,6 +577,32 @@ export class Repository {
       return null;
     }
     return rows[0];
+  }
+
+  /**
+   * `exists` — boolean existence probe: `SELECT EXISTS(SELECT 1 …)`. Honors
+   * the same `FindOptions` doors that shape a read (`filters`, `joins`,
+   * `deletedRecords`, `tableName`, `groupBy`/`having`); sorting/projection
+   * are meaningless on a boolean and ignored. Short-circuits at the first
+   * matching row — strictly cheaper than `COUNT(*)` or fetching a row to
+   * truthiness-check it.
+   */
+  async exists<TEntity extends object>(
+    entity: EntityClass,
+    options?: FindOptions
+  ): Promise<boolean> {
+    const q = buildSelectQuery({
+      entity,
+      joins: options?.joins,
+      filters: options?.filters,
+      deletedRecords: options?.deletedRecords,
+      tableName: options?.tableName,
+      groupBy: options?.groupBy,
+      having: options?.having,
+      exists: true,
+    });
+    const r = await this.db.query(q.text, q.values);
+    return (r.rows?.[0] as Record<string, unknown> | undefined)?.exists === true;
   }
 
   async findAll<TEntity extends object, TResult = TEntity>(
@@ -886,9 +1025,10 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       );
     }
 
+    const insertedRecord = inserted ? remapReturningRow(inserted, ret.rowKeyToSqlName) : undefined;
+
     // Write audit if port is injected (skipped when the row was a no-op conflict)
-    if (inserted && auditable && options.audit && pk && actor !== undefined) {
-      const insertedRecord = remapReturningRow(inserted, ret.rowKeyToSqlName);
+    if (insertedRecord && auditable && options.audit && pk && actor !== undefined) {
       const entityId = auditEntityId(insertedRecord);
       const entityUuid = (insertedRecord["uuid"] ?? "") as string;
       // Use the full inserted record (RETURNING) as the delta source —
@@ -905,6 +1045,18 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
+    }
+
+    if (insertedRecord && pk) {
+      const safe = eventSafeRecord(insertedRecord);
+      this.emitEntityEvent(entity, meta, options, {
+        action: "create",
+        uuid: (insertedRecord["uuid"] as string) ?? "",
+        version: (insertedRecord["version"] as number) ?? 1,
+        before: null,
+        after: insertedRecord,
+        delta: calculateDelta({}, safe),
+      });
     }
 
     // May be undefined when onConflict === "ignore" and the row was skipped.
@@ -2006,6 +2158,22 @@ SELECT * FROM upd`;
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
+    {
+      const before = oldRecord ? eventSafeRecord(oldRecord) : null;
+      const merged = eventSafeRecord({ ...oldRecord, ...updated });
+      const evtForced = Object.values(meta.columns)
+        .filter((c) => c.auditableType === AuditableFieldType.UPDATED_AT || c.auditableType === AuditableFieldType.UPDATED_BY)
+        .map((c) => c.sqlName);
+      this.emitEntityEvent(entity, meta, options, {
+        action: "update",
+        uuid: (updated["uuid"] as string | undefined) ?? "",
+        version: versionCol ? (updated[versionCol.sqlName] as number) : undefined,
+        before: oldRecord ?? null,
+        after: merged,
+        delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
+      });
+    }
+
     return pickReturningRow<TResult>(updatedRaw, ret.visibleKeys);
   }
 
@@ -2146,6 +2314,22 @@ SELECT * FROM w`;
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
+    }
+
+    {
+      const before = oldRecord ? eventSafeRecord(oldRecord) : null;
+      const merged = eventSafeRecord({ ...oldRecord, ...deleted });
+      const evtForced = [deletedAtCol, deletedByCol, updatedAtCol, updatedByCol]
+        .filter((c) => c !== undefined)
+        .map((c) => c.sqlName);
+      this.emitEntityEvent(entity, meta, options, {
+        action: "delete",
+        uuid: (deleted["uuid"] as string | undefined) ?? "",
+        version: versionCol ? (deleted[versionCol.sqlName] as number) : undefined,
+        before: oldRecord ?? null,
+        after: merged,
+        delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
+      });
     }
 
     return pickReturningRow<TResult>(deletedRaw, ret.visibleKeys);
@@ -2289,6 +2473,22 @@ SELECT * FROM w`;
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
 
+    {
+      const before = oldRecord ? eventSafeRecord(oldRecord) : null;
+      const merged = eventSafeRecord({ ...oldRecord, ...restored });
+      const evtForced = [deletedAtCol, deletedByCol, updatedAtCol, updatedByCol]
+        .filter((c) => c !== undefined)
+        .map((c) => c.sqlName);
+      this.emitEntityEvent(entity, meta, options, {
+        action: "restore",
+        uuid: (restored["uuid"] as string | undefined) ?? "",
+        version: versionCol ? (restored[versionCol.sqlName] as number) : undefined,
+        before: oldRecord ?? null,
+        after: merged,
+        delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
+      });
+    }
+
     return pickReturningRow<TResult>(restoredRaw, ret.visibleKeys);
   }
 
@@ -2389,6 +2589,22 @@ SELECT * FROM w`;
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
+    }
+
+    {
+      const purgedRow = remapReturningRow(result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
+      const before = oldRecord ? eventSafeRecord(oldRecord) : null;
+      const evtDelta: Record<string, { old: unknown; new: unknown }> | null = before
+        ? Object.fromEntries(Object.keys(before).map((k) => [k, { old: before[k], new: null }]))
+        : null;
+      this.emitEntityEvent(entity, meta, options, {
+        action: "purge",
+        uuid: (purgedRow["uuid"] as string | undefined) ?? (oldRecord?.["uuid"] as string | undefined) ?? "",
+        version: versionCol ? (purgedRow[versionCol.sqlName] as number | undefined) ?? (oldRecord?.[versionCol.sqlName] as number | undefined) : undefined,
+        before: oldRecord ?? null,
+        after: purgedRow,
+        delta: evtDelta,
+      });
     }
 
     // RETURNING yields the row as it was before the physical delete.
@@ -2527,6 +2743,15 @@ SELECT * FROM w`;
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
     }
+
+    this.emitEntityEvent(entity, meta, options, {
+      action: "duplicate",
+      uuid: newUuid,
+      version: 1,
+      before: null,
+      after: remapReturningRow(insertedRow, ret.rowKeyToSqlName),
+      delta: calculateDelta({}, remapReturningRow(insertedRow, ret.rowKeyToSqlName)),
+    });
 
     return pickReturningRow<TEntity>(insertedRow, ret.visibleKeys);
   }
@@ -2734,6 +2959,7 @@ WHERE agg.n > 0`;
       const affected = insertRes.rowCount ?? 0;
 
       await client.query("COMMIT");
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_create", rows as Array<Record<string, unknown>>, affected);
       return { received: rows.length, affected };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3121,6 +3347,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_delete", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3273,6 +3500,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_purge", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3453,6 +3681,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_restore", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);
@@ -3717,6 +3946,7 @@ WHERE agg.n > 0`;
       }
 
       await client.query("COMMIT");
+      this.emitBulkEntityEvents(entity, meta, options, "bulk_update", updates as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: updates.length, affected: result.rowCount ?? 0 };
     } catch (err) {
       await this.bulkAbort(client);

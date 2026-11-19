@@ -1,0 +1,292 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import "reflect-metadata";
+import { Dal } from "../src/dal/dal.js";
+import { REPO_INTERNAL, Repository } from "../src/repository/repository.js";
+import {
+  Entity,
+  Column,
+  Key,
+  Unique,
+  AuditableField,
+  DeletableField,
+  AuditableFieldType,
+  DeletableFieldType,
+  type UUID,
+} from "../src/index.js";
+import type { EntityEventDraft, EntityEventPort } from "../src/entity/events.js";
+import { SimpleTestEntity } from "./entities/simple-test-entity.js";
+import {
+  getTestPool,
+  closeTestPool,
+  setupTestSchema,
+  truncateTestTables,
+} from "./helpers/setup.js";
+
+/** Entity-event emission silenced entirely. */
+@Entity("dal_test_simple", { events: false })
+class SilentEntity {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ pgType: "varchar", length: 255 }) name!: string;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
+}
+
+/** Only `update` silenced — other actions still emit. */
+@Entity("dal_test_simple", { events: { except: ["update"] } })
+class ExceptUpdateEntity {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @Column({ pgType: "varchar", length: 255 }) name!: string;
+  @AuditableField(AuditableFieldType.CREATED_AT) created_at!: Date;
+  @AuditableField(AuditableFieldType.CREATED_BY) created_by!: string;
+  @AuditableField(AuditableFieldType.UPDATED_AT) updated_at!: Date;
+  @AuditableField(AuditableFieldType.UPDATED_BY) updated_by!: string;
+  @AuditableField(AuditableFieldType.VERSION) version!: number;
+}
+
+function capturePort() {
+  const emitted: EntityEventDraft[] = [];
+  const port: EntityEventPort = { emit: async (e) => { emitted.push(e); } };
+  return { emitted, port };
+}
+
+const actorOpts = { actor: "test-actor" };
+/** Audit stub — injectable so the repo loads oldRecord (before/delta)
+ *  the same way production auditable writes do. */
+const auditStub = { writeAudit: async () => {} };
+
+describe("entity events — repo write path emission", () => {
+  let repo: Repository;
+  beforeAll(async () => {
+    await setupTestSchema();
+    repo = new Repository(getTestPool(), REPO_INTERNAL);
+  });
+  afterAll(async () => { await closeTestPool(); });
+  beforeEach(async () => { await truncateTestTables(); });
+
+  it("add emits create with after+delta, before null", async () => {
+    const { emitted, port } = capturePort();
+    const row = await repo.add(SimpleTestEntity, { name: "evt-a" } as any, { ...actorOpts, events: port });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(1);
+    const e = emitted[0];
+    expect(e.event.action).toBe("create");
+    expect(e.event.entity).toBe("simple_test");
+    expect(e.event.uuid).toBe(row.uuid);
+    expect(e.event.emitted_by).toBe("test-actor");
+    expect(e.entity.before).toBeNull();
+    expect(e.entity.after?.["name"]).toBe("evt-a");
+    expect(e.entity.delta?.["name"]).toEqual({ old: undefined, new: "evt-a" });
+  });
+
+  it("update emits before+after+delta", async () => {
+    const { emitted, port } = capturePort();
+    const row = await repo.add(SimpleTestEntity, { name: "evt-b" } as any, { ...actorOpts, events: port });
+    emitted.length = 0;
+    await repo.update(
+      SimpleTestEntity,
+      { uuid: row.uuid, version: row.version, name: "evt-b2" } as any,
+      { ...actorOpts, audit: auditStub, events: port },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(1);
+    const e = emitted[0];
+    expect(e.event.action).toBe("update");
+    expect(e.entity.before?.["name"]).toBe("evt-b");
+    expect(e.entity.after?.["name"]).toBe("evt-b2");
+    expect(e.entity.delta?.["name"]).toEqual({ old: "evt-b", new: "evt-b2" });
+  });
+
+  it("delete emits action delete", async () => {
+    const { emitted, port } = capturePort();
+    const row = await repo.add(SimpleTestEntity, { name: "evt-c" } as any, { ...actorOpts, events: port });
+    emitted.length = 0;
+    await repo.delete(SimpleTestEntity, { uuid: row.uuid, version: row.version } as any, {
+      ...actorOpts, events: port, matchBy: "uuid" as never,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted[0]?.event.action).toBe("delete");
+    expect(emitted[0]?.event.uuid).toBe(row.uuid);
+  });
+
+  it("events:false silences the entity entirely", async () => {
+    const { emitted, port } = capturePort();
+    await repo.add(SilentEntity, { name: "silent" } as any, { ...actorOpts, events: port });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("events:{except} silences only listed actions", async () => {
+    const { emitted, port } = capturePort();
+    const row = await repo.add(ExceptUpdateEntity, { name: "except" } as any, { ...actorOpts, events: port });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(1); // create still emitted
+    emitted.length = 0;
+    await repo.update(ExceptUpdateEntity, { uuid: row.uuid, version: row.version, name: "except2" } as any, { ...actorOpts, events: port });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(0); // update silenced
+  });
+
+  it("bulk updateMany emits thin per-item events sharing entities{batch,uuids}", async () => {
+    const { emitted, port } = capturePort();
+    const a = await repo.add(SimpleTestEntity, { name: "bulk-a" } as any, actorOpts);
+    const b = await repo.add(SimpleTestEntity, { name: "bulk-b" } as any, actorOpts);
+    await repo.updateMany(
+      SimpleTestEntity,
+      [
+        { uuid: a.uuid, version: a.version, name: "bulk-a2" },
+        { uuid: b.uuid, version: b.version, name: "bulk-b2" },
+      ] as any,
+      { ...actorOpts, events: port, matchBy: "uuid" as never },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    // Bulk ops use the DISJOINT `bulk_*` vocabulary — never the plain
+    // single-write action — so action filters can't confuse the two.
+    const bulk = emitted.filter((e) => e.event.action === "bulk_update");
+    expect(bulk).toHaveLength(2);
+    expect(bulk.map((e) => e.event.uuid).sort()).toEqual([a.uuid, b.uuid].sort());
+    for (const e of bulk) {
+      expect(e.entity.before).toBeNull();
+      expect(e.entity.after).toBeNull();
+      expect(e.entity.delta).toBeNull();
+      expect(e.entities?.batch).toBe(bulk[0].entities?.batch);
+      // Every member event is self-contained — the full op outcome rides
+      // `entities.uuids` on each one.
+      expect(e.entities?.uuids?.sort()).toEqual([a.uuid, b.uuid].sort());
+    }
+  });
+});
+
+describe("entity events — transaction commit safety", () => {
+  let dal: Dal;
+  beforeAll(async () => {
+    await setupTestSchema();
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      applicationName: "dal-events-test",
+    });
+  });
+  afterAll(async () => { await dal.close(); });
+  beforeEach(async () => { await truncateTestTables(); });
+
+  it("tx write emits only AFTER commit", async () => {
+    const { emitted, port } = capturePort();
+    dal.eventPort = port;
+    await dal.transaction(async (tx) => {
+      await tx.add(SimpleTestEntity, { name: "tx-ok" } as any, { ...actorOpts, events: port });
+      expect(emitted).toHaveLength(0); // buffered, not yet published
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].event.action).toBe("create");
+  });
+
+  it("tx rollback discards buffered events", async () => {
+    const { emitted, port } = capturePort();
+    dal.eventPort = port;
+    await expect(
+      dal.transaction(async (tx) => {
+        await tx.add(SimpleTestEntity, { name: "tx-ko" } as any, { ...actorOpts, events: port });
+        throw new Error("force-rollback");
+      }),
+    ).rejects.toThrow("force-rollback");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(0);
+  });
+});
+
+describe("entity events — deferred tx (beginTransaction) drain", () => {
+  let dal: Dal;
+  beforeAll(async () => {
+    await setupTestSchema();
+    dal = new Dal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 5,
+      applicationName: "dal-events-deferred-test",
+    });
+  });
+  afterAll(async () => { await dal.close(); });
+  beforeEach(async () => { await truncateTestTables(); });
+
+  it("commit emits one thin-with-after event per write op, entities shared", async () => {
+    const { emitted, port } = capturePort();
+    dal.eventPort = port;
+    const seed = await dal.add(SimpleTestEntity, { name: "seed" } as any, actorOpts);
+
+    const tx = dal.beginTransaction();
+    const added = tx.add(SimpleTestEntity, { name: "deferred-a" } as any, actorOpts);
+    tx.update(
+      SimpleTestEntity,
+      { uuid: seed.uuid, version: seed.version, name: "deferred-b" } as any,
+      actorOpts,
+    );
+    expect(emitted).toHaveLength(0); // nothing at buffer time — by construction
+    await tx.commit();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(emitted).toHaveLength(2);
+    const created = emitted.find((e) => e.event.action === "create")!;
+    const updated = emitted.find((e) => e.event.action === "update")!;
+    expect(created.event.uuid).toBe(added.value.uuid);
+    expect(updated.event.uuid).toBe(seed.uuid);
+    // thin-WITH-after: before/delta unknowable (no pre-read by design),
+    // after is the rehydrated RETURNING row — richer than bulk thin events.
+    for (const e of emitted) {
+      expect(e.event.schema).toBe(2);
+      expect(e.event.emitted_by).toBe("test-actor");
+      expect(e.entity.before).toBeNull();
+      expect(e.entity.delta).toBeNull();
+      expect(e.entity.after).not.toBeNull();
+      // Deferred-tx ops keep PLAIN actions — they are N individual writes
+      // in one commit, correlated via `entities` (batch + full uuid
+      // outcome), never the `bulk_*` vocabulary.
+      expect(e.entities?.batch).toBe(emitted[0].entities?.batch);
+      expect(e.entities?.uuids?.sort()).toEqual(
+        [added.value.uuid, seed.uuid].sort(),
+      );
+    }
+    expect(created.entity.after?.["name"]).toBe("deferred-a");
+    expect(updated.entity.after?.["name"]).toBe("deferred-b");
+  });
+
+  it("a failing commit emits nothing — phantom-free by construction", async () => {
+    const { emitted, port } = capturePort();
+    dal.eventPort = port;
+    const seed = await dal.add(SimpleTestEntity, { name: "guard" } as any, actorOpts);
+
+    const tx = dal.beginTransaction();
+    tx.add(SimpleTestEntity, { name: "never-visible" } as any, actorOpts);
+    // stale version → ERR01 abort branch → whole statement fails
+    tx.update(
+      SimpleTestEntity,
+      { uuid: seed.uuid, version: seed.version + 999, name: "nope" } as any,
+      actorOpts,
+    );
+    await expect(tx.commit()).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("discard emits nothing and write ops on a silent entity stay silent", async () => {
+    const { emitted, port } = capturePort();
+    dal.eventPort = port;
+
+    const discarded = dal.beginTransaction();
+    discarded.add(SimpleTestEntity, { name: "discarded" } as any, actorOpts);
+    discarded.discard();
+    await new Promise((r) => setTimeout(r, 10));
+
+    const tx = dal.beginTransaction();
+    tx.add(SilentEntity, { name: "silent" } as any, actorOpts);
+    await tx.commit();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(emitted).toHaveLength(0);
+  });
+});

@@ -71,6 +71,7 @@ import type {
   BulkResult,
   VectorSearchOptions,
   AuditPort,
+  TimeoutOverrideOptions,
 } from "../types/types.js";
 import type { IAuditableEntity, IDeletableEntity } from "../types/entities.js";
 import type { FieldProjector, FieldRef } from "../query/dsl.js";
@@ -144,14 +145,7 @@ export interface DalConfig {
   repoDecorator?: (repo: Repository) => Repository;
 }
 
-/** Per-operation timeout override for dedicated-client work
- *  (`transaction`, `partitionMaintenance`). */
-export interface TimeoutOverrideOptions {
-  /** Override statement_timeout (ms). Transaction-scoped for `transaction`
-   *  (SET LOCAL, auto-resets at COMMIT/ROLLBACK); connection-scoped with
-   *  session-default restore for `partitionMaintenance`. */
-  timeoutMs?: number;
-}
+export type { TimeoutOverrideOptions } from "../types/types.js";
 
 /** Default values for DalConfig. */
 const DEFAULTS = {
@@ -585,10 +579,26 @@ export class Dal {
    * consumer never sees it. `cfg.repo` exists only as a decorator seam
    * (e.g. BE `withCache`): leave it unset for the standard wiring.
    */
+  /**
+   * Domain-event transport port — assigned ONCE at service boot
+   * (`dal.eventPort = makeNatsEntityEventPort(code)`). From that point
+   * every `entityService(cfg)` emits one `EntityEvent` per affected row
+   * by construction (gated only by the entity's `events` meta), and
+   * `dal.transaction` drains tx-buffered drafts post-COMMIT. Unset →
+   * writes emit nothing (fire-and-forget silent skip).
+   */
+  eventPort?: import("../entity/events.js").EntityEventPort;
+
   entityService<TEntity extends Record<string, unknown>>(
     cfg: EntityServiceConfig<TEntity>,
   ): EntityService<TEntity> {
-    return makeEntityService({ ...cfg, repo: cfg.repo ?? this.repo });
+    return makeEntityService({
+      ...cfg,
+      repo: cfg.repo ?? this.repo,
+      events: cfg.events ?? this.eventPort,
+      txRunner: cfg.txRunner ?? ((fn, options) => this.transaction(fn, options)),
+      txBeginner: cfg.txBeginner ?? ((options) => this.beginTransaction(options)),
+    });
   }
 
   /**
@@ -656,8 +666,19 @@ export class Dal {
           await client.query(`SET LOCAL statement_timeout TO ${options.timeoutMs}`);
         }
         const txRepo = new Repository(client, REPO_INTERNAL, this.config.bulkTimeoutMs);
+        // Entity events must never precede their durable write — drafts
+        // buffer on the tx-scoped repo, drain post-COMMIT through
+        // `eventPort`, and die silently on ROLLBACK.
+        txRepo.eventBuffer = [];
         const result = await fn(withAuditDefaults(txRepo));
         await client.query("COMMIT");
+        const buffered = txRepo.eventBuffer;
+        txRepo.eventBuffer = undefined;
+        for (const draft of buffered) {
+          void this.eventPort
+            ?.emit(draft)
+            .catch((err) => console.error("[DAL Entity Event Error]", err));
+        }
         return result;
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
@@ -678,6 +699,7 @@ export class Dal {
     return new DeferredTransaction(
       (text, values) => this.withClient((c) => c.query(text, values), options),
       this.config.bulkTimeoutMs,
+      this.eventPort,
     );
   }
 

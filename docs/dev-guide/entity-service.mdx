@@ -56,7 +56,7 @@ export class CustomersService extends DomainService<CustomerEntity> {
   // domain queries are methods on the service itself — no *Dal/*Repo
   // wrapper layer, no separate DTO:
   async findByVat(vat: string) {
-    return this.dal.find(CustomerEntity, null, {
+    return this.svc.find(null, {
       filters: [Filter.fieldValue(field(CustomerEntity, "vat"), "=", vat)],
     });
   }
@@ -78,12 +78,15 @@ Three design guarantees make it the only legal shape:
 
 Collaborator services may still be constructor-injected for tests; the DAL
 never is. Per-entity `*Dal`/`*Repo` wrapper classes are banned — custom
-queries are methods on the owning service, using the `this.dal.*` proxies
-(`find`, `findAll`, `findByPage`, `transaction`, `entityService`, …).
-`this.dal.<write>` is lint-banned (`dal-member-write`): entity writes go
-through `this.svc` for the own entity or the owning `DomainService` for
-foreign ones, so hooks, actor resolution, audit and marker publish cannot
-be skipped.
+queries are methods on the owning service, using the `this.svc` doors
+(`get`/`exists`/`find`/`query`/`list`, `transaction`/`beginTransaction`).
+`this.dal`/`this._dal` member access (and aliases like
+`const dal = this.dal`) is lint-banned outright (`dal-member-access`,
+unsuppressible): entity access goes through `this.svc` for the own entity
+or `this.svcFor(OtherEntity)` for foreign ones, so hooks, actor
+resolution, audit and marker publish cannot be skipped. Infra seams
+(health probes, config adapters) use `dalInfra()` — the named infra door
+exported by the consumer's `db/dal.ts`.
 
 ## The EntityService contract
 
@@ -92,7 +95,12 @@ The returned object covers the full `EntityAction` surface:
 | Method | Action | What it guarantees |
 |---|---|---|
 | `list(q)` | list | paged rows; search, declared filters, sort, aggregates |
-| `get(uuid)` | get | full row (pk excluded); `NotFoundError` if absent |
+| `get(uuid, options?)` | get | full row (pk excluded) + display-name joins; `NotFoundError` if absent. `EntityGetOptions`: `throwIfNotFound:false` → `null`, `deletedRecords:"INCLUDED"` → soft-deleted rows, `displayJoins:false` → lean entity-only read |
+| `exists(options?)` | — | boolean `SELECT EXISTS(SELECT 1 …)` probe — filters/joins/deletedRecords/tableName/groupBy/having, no row materialized |
+| `find(fields?, options?)` | — | ONE row, code-authored `FindOptions` — `LIMIT 1` + `NotFoundError` unless `throwIfNotFound:false`; projections via `Project.field`/`Project.expr` |
+| `query(fields?, options?)` | — | multi-row code-authored `FindOptions` — aggregates, `groupBy`/`having`, joins, `IN`, `Filter.expr`; internal reads only, never wire input |
+| `transaction(fn, options?)` | — | atomic multi-statement work — `fn` receives a tx-scoped `Repository`; COMMIT on return, ROLLBACK on throw |
+| `beginTransaction(options?)` | — | deferred tx for CTE/callable workflows — `Deferred.ref()` placeholder binding |
 | `create(body, tx?)` | create | `RETURNING` row, caller `uuid` respected, `beforeCreate` hook |
 | `update(uuid, body, tx?)` | update | `version` in body = optimistic lock; `beforeUpdate` hook |
 | `delete` / `restore` / `purge` | delete / restore / purge | matched by `{uuid, version}`; the row is returned |
@@ -125,10 +133,14 @@ no code path that yields `{uuid}` or `{success: true}`.
 ## Transactions and hooks
 
 `create`/`update` accept an optional tx-scoped `Repository` — pass the one
-`dal.transaction(txRepo => …)` gives the callback (the BE's `runEntityWrite`
-envelope does exactly this when the write body carries
-`{entity, translations}` piggyback rows). Raw `PoolClient` is never part
-of the contract.
+`svc.transaction(txRepo => …)` gives the callback (it delegates to
+`dal.transaction`; the BE's `runEntityWrite` envelope does exactly this
+when the write body carries `{entity, translations}` piggyback rows).
+Deferred transaction/CTE workflows go through `svc.beginTransaction` —
+its buffered ops emit the same entity lifecycle events as direct writes,
+drained after the merged statement commits (never at buffer time; a
+failed commit emits nothing).
+Raw `PoolClient` is never part of the contract.
 `afterWrite` hooks fire **only outside a tx** — inside one, commit is
 the caller's job, so notifications can't precede the durable write.
 `beforeCreate(body, ctx)`/`beforeUpdate(uuid, body, ctx)` receive a

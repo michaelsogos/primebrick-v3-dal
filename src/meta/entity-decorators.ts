@@ -107,6 +107,11 @@ type ColumnRegistration = {
   /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
   uniqueNullsNotDistinct?: boolean;
   nullable?: boolean;
+  /** `nullable` was explicitly declared via `@Column({ nullable })`.
+   *  Decorator-imposed values (@Key/@Unique/@Partition/@DeletableField/
+   *  @CloneField) and the implicit `?? false` fallback do NOT set this —
+   *  it records authored intent, not the resolved value. */
+  nullableAuthored?: boolean;
   pgType?: string;
   /** For varchar/char/bit varying etc. */
   length?: number;
@@ -247,6 +252,10 @@ type ClassEntityMeta = {
    *  column, viewpoint display) and the persistence meta derives the
    *  unordered-pair+type unique index atomically. */
   relation?: RelationFacet;
+  /** `@Entity(..., {events})` — domain-event emission control.
+   *  `false` silences the entity entirely; `{except:[...]}` silences the
+   *  listed write actions. Absent = emitting (the default by design). */
+  events?: import("../entity/events.js").EntityEventsConfig;
 };
 
 /** Options for `@Partition()` — the RANGE partition key declaration.
@@ -404,11 +413,26 @@ function hasInheritedCalculatedRegistration(ctor: Function, key: PropertyKey): b
  * Maps the class to a DB table. Optional argument overrides the table name;
  * if omitted, the table name equals the class name.
  */
-export function Entity(tableName?: string, schema?: string) {
+/** `@Entity` second argument — a schema name (existing form) or an
+ *  options object: `{schema?, events?}` where `events:false` opts the
+ *  entity out of domain-event emission entirely and
+ *  `events:{except:[...]}` silences only the listed write actions. */
+export type EntityOptions = {
+  schema?: string;
+  events?: import("../entity/events.js").EntityEventsConfig;
+};
+
+export function Entity(tableName?: string, schema?: string): (ctor: Function) => void;
+export function Entity(tableName?: string, options?: EntityOptions): (ctor: Function) => void;
+export function Entity(tableName?: string, schemaOrOptions?: string | EntityOptions) {
   return function <T extends Function>(ctor: T): T {
     const m = ensureMeta(ctor);
     m.tableName = tableName ?? ctor.name;
+    const schema = typeof schemaOrOptions === "string" ? schemaOrOptions : schemaOrOptions?.schema;
     if (schema) m.tableSchema = schema;
+    if (typeof schemaOrOptions === "object" && schemaOrOptions.events !== undefined) {
+      m.events = schemaOrOptions.events;
+    }
     // Expose table name via standard Reflect API for external consumers (no import needed).
     // Used by the SDK's CacheKeyBuilder and any other tooling that needs the table name
     // without importing @primebrick/dal-pg.
@@ -453,7 +477,10 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
       if (sqlNameOrOpts.length !== undefined) col.length = sqlNameOrOpts.length;
       if (sqlNameOrOpts.precision !== undefined) col.precision = sqlNameOrOpts.precision;
       if (sqlNameOrOpts.scale !== undefined) col.scale = sqlNameOrOpts.scale;
-      if (sqlNameOrOpts.nullable !== undefined) col.nullable = sqlNameOrOpts.nullable;
+      if (sqlNameOrOpts.nullable !== undefined) {
+        col.nullable = sqlNameOrOpts.nullable;
+        col.nullableAuthored = true;
+      }
       if (
         sqlNameOrOpts.default !== undefined &&
         sqlNameOrOpts.defaultSql !== undefined
@@ -985,6 +1012,10 @@ export type EntityPersistenceMeta = {
   isAuditTrailEntity?: boolean;
   /** Column name used for the `changed_by` field in audit trail entities */
   auditTrailChangedByColumn?: string;
+  /** `@Entity(..., {events})` — domain-event emission control.
+   *  `false` silences the entity; `{except:[...]}` silences actions.
+   *  Absent = emitting (the default by design). */
+  events?: import("../entity/events.js").EntityEventsConfig;
   columns: Record<
     string,
     {
@@ -999,6 +1030,10 @@ export type EntityPersistenceMeta = {
       /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
       uniqueNullsNotDistinct?: boolean;
       nullable?: boolean;
+      /** `nullable` was explicitly declared via `@Column({ nullable })` —
+       *  decorator-imposed values and the implicit `?? false` fallback are
+       *  not a declaration (see `ColumnRegistration.nullableAuthored`). */
+      nullableAuthored?: boolean;
       pgType?: string;
       jsType?: JsType;
       defaultSql?: string;
@@ -1180,6 +1215,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     // decorator that implies it (@DeletableField / @CloneField). Keys and
     // uniques already set nullable=false in their decorators.
     entry.nullable = reg.nullable ?? false;
+    if (reg.nullableAuthored !== undefined) entry.nullableAuthored = reg.nullableAuthored;
     if (reg.defaultSql !== undefined) entry.defaultSql = reg.defaultSql;
     if (reg.length !== undefined) entry.length = reg.length;
     if (reg.precision !== undefined) entry.precision = reg.precision;
@@ -1443,6 +1479,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     partition,
     retention,
     auditRetention: inherited((m) => m.auditRetention),
+    events: inherited((m) => m.events),
     partitionChildOf,
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,

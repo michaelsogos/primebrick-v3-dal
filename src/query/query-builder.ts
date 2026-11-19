@@ -341,6 +341,10 @@ export type SelectQueryInput = {
   deletedRecords?: WithDeletedRecords;
   limit?: number;
   offset?: number;
+  /** `SELECT EXISTS(SELECT 1 FROM …)` — boolean existence probe. Projection,
+   * sorting, limit and offset are meaningless and skipped; joins stay (a
+   * filter may reference a joined table), as do GROUP BY/HAVING. */
+  exists?: boolean;
   includeTotalRecordsWindow?: boolean;
   /** Override the table name (e.g., for audit trail tables: "customers_audit"). */
   tableName?: string;
@@ -445,6 +449,19 @@ function renderHaving(w: ParamWriter, input: SelectQueryInput): string | null {
 export function buildSelectQuery(input: SelectQueryInput): SqlQuery {
   const w = new ParamWriter();
   const baseTable = qTable(input.entity, input.tableName);
+
+  if (input.exists) {
+    const existsJoins = renderJoins(input.joins, input.entity, input.tableName);
+    const existsWhere = renderWhere(w, input.entity, input.deletedRecords, input.filters, input.tableName);
+    const existsGroupBy = renderGroupBy(input, w);
+    const existsHaving = renderHaving(w, input);
+    const existsParts = [`SELECT 1 FROM ${baseTable}`];
+    if (existsJoins.length) existsParts.push(existsJoins.join(" "));
+    if (existsWhere.length) existsParts.push(`WHERE ${existsWhere.join(" AND ")}`);
+    if (existsGroupBy.length) existsParts.push(`GROUP BY ${existsGroupBy.join(", ")}`);
+    if (existsHaving) existsParts.push(`HAVING ${existsHaving}`);
+    return { text: `SELECT EXISTS(${existsParts.join(" ")})`, values: w.values };
+  }
 
   // The vector param is bound first so the score projection and the ORDER
   // BY share the same `$n::vector` placeholder.
