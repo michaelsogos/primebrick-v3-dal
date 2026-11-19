@@ -49,6 +49,71 @@ describe("withColumnConstraints", () => {
     expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/restates derived prop/);
   });
 
+  it("display_field convention — required + min_length 5 + max_length 255 on a nullable text column", () => {
+    @Entity("cc_customer", "crm")
+    class CcCustomerEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: true }) display_name?: string;
+      @Column({ nullable: false }) code!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_customer",
+      translation_key: "cc_customer",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [
+        { key: "display_name", label_key: "x.display_name", type: "text", order: 10 },
+        { key: "code", label_key: "x.code", type: "text", order: 20 },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcCustomerEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    // nullable:true is a PHYSICAL fact, not a vote on requiredness — the
+    // display_field write contract is required regardless.
+    expect(byKey.display_name).toMatchObject({ nullable: false, min_length: 5, max_length: 255 });
+    // Siblings are untouched.
+    expect(byKey.code?.min_length).toBeUndefined();
+    expect(byKey.code?.max_length).toBeUndefined();
+  });
+
+  it("display_field convention — @Column length wins over the 255 default; authored min_length wins over 5", () => {
+    const meta = baseMeta();
+    meta.columns[0] = { ...meta.columns[0]!, min_length: 10 } as never;
+    const out = withColumnConstraints(meta, CcRuleEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    expect(byKey.name).toMatchObject({ nullable: false, min_length: 10, max_length: 200 });
+  });
+
+  it("display_field convention — calculated display_fields are exempt (never on the wire)", () => {
+    @Entity("cc_run", "job")
+    class CcRunEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ pgType: "uuid", nullable: false }) trigger_uuid!: UUID;
+      @Calculated(`COALESCE((SELECT jt.name FROM job.cc_triggers jt WHERE jt.uuid = {self}.trigger_uuid), {self}.trigger_uuid::text)`, {
+        pgType: "text",
+        nullable: true,
+      })
+      trigger?: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_run",
+      translation_key: "cc_run",
+      uid: "uuid",
+      display_field: "trigger",
+      columns: [
+        { key: "trigger", label_key: "x.trigger", type: "ref", kind: "calculated", order: 10 },
+        { key: "trigger_uuid", label_key: "x.trigger_uuid", type: "text", order: 20 },
+      ],
+    };
+    const out = withColumnConstraints(meta, CcRunEntity);
+    const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+    expect(byKey.trigger).toMatchObject({ kind: "calculated", nullable: true });
+    expect(byKey.trigger?.min_length).toBeUndefined();
+    expect(byKey.trigger?.max_length).toBeUndefined();
+  });
+
   it("throws on a non-virtual column key missing from the entity class", () => {
     const meta = baseMeta();
     meta.columns.push({ key: "ghost_field", label_key: "x.ghost", type: "text", order: 60 });

@@ -838,6 +838,37 @@ function enforceIdentityColumnContract(
     }
     columns[dfIdx] = { ...dfCol, sticky: true, hideable: false };
   }
+
+  // ── display_field write-contract convention ────────────────────────
+  // The display name is the entity's user-authored identity — every
+  // display_field inherits the write contract by being the display_field:
+  // REQUIRED on the wire (served `nullable:false` — the physical column
+  // may stay nullable; required is a write contract, not a DB fact —
+  // `nullable` is NOT the override vote for it), `min_length` 5,
+  // `max_length` 255. Authored `min_length`/`max_length` win; the
+  // `@Column length` already fed `max_length` when declared. Non-writable
+  // display_fields (calculated/virtual projections, server-managed keys,
+  // the uid) are exempt — they never arrive on the wire.
+  if (meta.display_field !== undefined) {
+    const wIdx = columns.findIndex((c) => c.key === meta.display_field);
+    if (wIdx !== -1) {
+      const wCol = columns[wIdx]!;
+      const writable =
+        wCol.kind !== "calculated" &&
+        wCol.kind !== "virtual" &&
+        wCol.managed !== true &&
+        wCol.audited !== true &&
+        wCol.key !== meta.uid;
+      if (writable) {
+        columns[wIdx] = {
+          ...wCol,
+          nullable: false,
+          min_length: wCol.min_length ?? 5,
+          max_length: wCol.max_length ?? 255,
+        };
+      }
+    }
+  }
   }
 
   // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
