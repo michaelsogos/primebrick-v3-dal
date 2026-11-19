@@ -3354,6 +3354,15 @@ CHECK constraints — a deliberate release-scoped change, never data.
 
 **Type:** `Decimal`
 
+### `TEXTLIKE_PG_TYPES`
+
+Physical PG types safe for `ILIKE` — `uuid` is searched via the
+ `CAST(col AS text)` the query-builder already applies. The single
+ vocabulary both the wire `search_in` allowlist (dal-pg
+ `deriveListWireSets`) and the FE scope derivations resolve against.
+
+**Type:** `Set<string>`
+
 ### `TRANSLATION_KEY_GRAMMAR`
 
 The ONE key grammar — `[a-z0-9_]+` dot-separated segments, ≥2 segments.
@@ -3990,9 +3999,12 @@ column types — the single implementation behind `list.meta` derivation,
 also exported for service-side paths that run their own query (outside
 `makeEntityService`) yet must answer to the same contract:
 
- - `searchable`: `searchable`-flagged text-physical columns plus
-   `@Calculated` projections (they render to SQL and are ILIKE-safe) —
-   the `search_in` allowlist + default scope base (`uuid` and joined-name
+ - `searchable`: `searchableTextColumns` admits text-physical columns
+   plus `kind:"calculated"` projections whose served `pg_type` is
+   ILIKE-safe — the UI type is presentation, never a statement about
+   the rendered expression's searchability (a `type:"ref"` identity
+   column displays the very name the search matches). This is the
+   `search_in` allowlist + default scope base (`uuid` and joined-name
    keys are admitted on top by the caller).
  - `filterable`: `filterable`-flagged columns restricted to WHERE-
    resolvable keys (physical + calculated).
@@ -4542,6 +4554,14 @@ Type guard — is `tag` one of the platform-supported language tags?
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | tag | `string` |  |
+
+### `isTextlikePgType(pgType): boolean`
+
+`pg_type` normalization — "varchar(200)" → "varchar".
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pgType | `string \| undefined` |  |
 
 ### `isUUID(v): v is UUID`
 
@@ -5318,8 +5338,13 @@ satisfies the hint; a bare `type:"string"` is a lie.
 
 ### `searchableTextColumns(columns): MetaColumn[]`
 
-Text-physical searchable columns — the scope selector + default
- "all fields" search set.
+Text-searchable columns — the scope selector + default "all fields"
+ search set: physical `type:"text"` columns plus `kind:"calculated"`
+ projections whose served `pg_type` is ILIKE-safe. The UI type is
+ presentation, never a statement about the rendered expression's
+ searchability — a calc `type:"ref"` identity column displays the
+ very name the search matches. Mirrors the wire `search_in`
+ allowlist derivation in dal-pg (`deriveListWireSets`).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

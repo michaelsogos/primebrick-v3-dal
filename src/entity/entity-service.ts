@@ -83,6 +83,7 @@ import {
   extJsonStringify,
   isColumnFilterable,
   searchableTextColumns,
+  TEXTLIKE_PG_TYPES,
   type EntityMeta,
   type MetaColumn,
 } from "@primebrick/core";
@@ -436,14 +437,10 @@ function projectAllExceptSurrogateId(entity: EntityClass): FieldProjector[] {
     .map((c) => Project.field(field(entity, c.propertyKey as never)));
 }
 
-/** Physical PG types safe for `ILIKE` — `uuid` is searched via the
- *  `CAST(col AS text)` the query-builder already applies. Shared with
- *  `withColumnConstraints`: the served `searchable` flag resolves against
- *  this same set, so meta intent and the wire allowlist cannot diverge. */
-export const TEXTLIKE_PG_TYPES = new Set([
-  "character varying", "varchar", "character", "char",
-  "text", "citext", "name", "uuid",
-]);
+/** Physical PG types safe for `ILIKE` — the canonical vocabulary lives
+ *  in `@primebrick/core` (shared with `withColumnConstraints` and the FE
+ *  scope derivations): re-exported here for existing internal imports. */
+export { TEXTLIKE_PG_TYPES };
 
 /**
  * Wire sets derived from the RESOLVED `meta.columns` × the entity's physical
@@ -451,9 +448,12 @@ export const TEXTLIKE_PG_TYPES = new Set([
  * also exported for service-side paths that run their own query (outside
  * `makeEntityService`) yet must answer to the same contract:
  *
- *  - `searchable`: `searchable`-flagged text-physical columns plus
- *    `@Calculated` projections (they render to SQL and are ILIKE-safe) —
- *    the `search_in` allowlist + default scope base (`uuid` and joined-name
+ *  - `searchable`: `searchableTextColumns` admits text-physical columns
+ *    plus `kind:"calculated"` projections whose served `pg_type` is
+ *    ILIKE-safe — the UI type is presentation, never a statement about
+ *    the rendered expression's searchability (a `type:"ref"` identity
+ *    column displays the very name the search matches). This is the
+ *    `search_in` allowlist + default scope base (`uuid` and joined-name
  *    keys are admitted on top by the caller).
  *  - `filterable`: `filterable`-flagged columns restricted to WHERE-
  *    resolvable keys (physical + calculated).

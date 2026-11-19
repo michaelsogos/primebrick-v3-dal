@@ -44,9 +44,8 @@
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
-import { TEXTLIKE_PG_TYPES } from "../entity/entity-service.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -918,7 +917,7 @@ function defaultQueryFlag(
   if (flag === "sortable") return key !== "version";
   if (key === "version" || metaType === "date" || metaType === "datetime") return false;
   if (physPgType === undefined) return true;
-  return TEXTLIKE_PG_TYPES.has(physPgType.toLowerCase().replace(/\(.*\)/, ""));
+  return isTextlikePgType(physPgType);
 }
 
 /** Served-meta ref target for a physical column: `@Ref` wins; a
