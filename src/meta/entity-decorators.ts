@@ -107,6 +107,11 @@ type ColumnRegistration = {
   /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
   uniqueNullsNotDistinct?: boolean;
   nullable?: boolean;
+  /** `nullable` was explicitly declared via `@Column({ nullable })`.
+   *  Decorator-imposed values (@Key/@Unique/@Partition/@DeletableField/
+   *  @CloneField) and the implicit `?? false` fallback do NOT set this —
+   *  it records authored intent, not the resolved value. */
+  nullableAuthored?: boolean;
   pgType?: string;
   /** For varchar/char/bit varying etc. */
   length?: number;
@@ -472,7 +477,10 @@ export function Column(sqlNameOrOpts: string | ColumnOptions): PropertyDecorator
       if (sqlNameOrOpts.length !== undefined) col.length = sqlNameOrOpts.length;
       if (sqlNameOrOpts.precision !== undefined) col.precision = sqlNameOrOpts.precision;
       if (sqlNameOrOpts.scale !== undefined) col.scale = sqlNameOrOpts.scale;
-      if (sqlNameOrOpts.nullable !== undefined) col.nullable = sqlNameOrOpts.nullable;
+      if (sqlNameOrOpts.nullable !== undefined) {
+        col.nullable = sqlNameOrOpts.nullable;
+        col.nullableAuthored = true;
+      }
       if (
         sqlNameOrOpts.default !== undefined &&
         sqlNameOrOpts.defaultSql !== undefined
@@ -1022,6 +1030,10 @@ export type EntityPersistenceMeta = {
       /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
       uniqueNullsNotDistinct?: boolean;
       nullable?: boolean;
+      /** `nullable` was explicitly declared via `@Column({ nullable })` —
+       *  decorator-imposed values and the implicit `?? false` fallback are
+       *  not a declaration (see `ColumnRegistration.nullableAuthored`). */
+      nullableAuthored?: boolean;
       pgType?: string;
       jsType?: JsType;
       defaultSql?: string;
@@ -1203,6 +1215,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     // decorator that implies it (@DeletableField / @CloneField). Keys and
     // uniques already set nullable=false in their decorators.
     entry.nullable = reg.nullable ?? false;
+    if (reg.nullableAuthored !== undefined) entry.nullableAuthored = reg.nullableAuthored;
     if (reg.defaultSql !== undefined) entry.defaultSql = reg.defaultSql;
     if (reg.length !== undefined) entry.length = reg.length;
     if (reg.precision !== undefined) entry.precision = reg.precision;

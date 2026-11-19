@@ -114,6 +114,90 @@ describe("withColumnConstraints", () => {
     expect(byKey.trigger?.max_length).toBeUndefined();
   });
 
+  it("display_field convention — throws when @Column omits `nullable` (the default is not a declaration)", () => {
+    @Entity("cc_df_default", "crm")
+    class CcDfDefaultEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ length: 200 }) display_name!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_default",
+      translation_key: "cc_df_default",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [{ key: "display_name", label_key: "x.display_name", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfDefaultEntity)).toThrow(
+      /CcDfDefaultEntity.*display_field "display_name" does not declare nullability/s,
+    );
+  });
+
+  it("display_field convention — throws on an implicit (undecorated) display_field column", () => {
+    @Entity("cc_df_implicit", "crm")
+    class CcDfImplicitEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      display_name!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_implicit",
+      translation_key: "cc_df_implicit",
+      uid: "uuid",
+      display_field: "display_name",
+      columns: [{ key: "display_name", label_key: "x.display_name", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfImplicitEntity)).toThrow(
+      /does not declare nullability/,
+    );
+  });
+
+  it("display_field convention — @Unique-injected nullable is not a declaration", () => {
+    @Entity("cc_df_unique", "crm")
+    class CcDfUniqueEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Unique() @Column({ length: 60 }) code!: string;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_df_unique",
+      translation_key: "cc_df_unique",
+      uid: "uuid",
+      display_field: "code",
+      columns: [{ key: "code", label_key: "x.code", type: "text", order: 10 }],
+    };
+    expect(() => withColumnConstraints(meta, CcDfUniqueEntity)).toThrow(
+      /does not declare nullability/,
+    );
+  });
+
+  it("display_field convention — explicit nullable:false and nullable:true both pass", () => {
+    @Entity("cc_df_explicit", "crm")
+    class CcDfExplicitEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ length: 100, nullable: false }) code!: string;
+      @Column({ nullable: true }) display_name?: string;
+    }
+    for (const display_field of ["code", "display_name"] as const) {
+      const meta: EntityMeta = {
+        entity: "cc_df_explicit",
+        translation_key: "cc_df_explicit",
+        uid: "uuid",
+        display_field,
+        columns: [
+          { key: "code", label_key: "x.code", type: "text", order: 10 },
+          { key: "display_name", label_key: "x.display_name", type: "text", order: 20 },
+        ],
+      };
+      const out = withColumnConstraints(meta, CcDfExplicitEntity);
+      const byKey = Object.fromEntries(out.columns.map((c) => [c.key, c]));
+      // served write contract is identical either way — the authored
+      // physical fact is respected, not silently rewritten.
+      expect(byKey[display_field]).toMatchObject({ nullable: false, min_length: 5 });
+    }
+  });
+
   it("throws on a non-virtual column key missing from the entity class", () => {
     const meta = baseMeta();
     meta.columns.push({ key: "ghost_field", label_key: "x.ghost", type: "text", order: 60 });

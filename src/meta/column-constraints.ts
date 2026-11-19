@@ -40,12 +40,17 @@
  *      none is declared, the `display_field` column derives the pin;
  *      display_field absent, naming no served column, naming the uid, or
  *      explicitly un-pinned (`hideable:true`/`sticky:false`) → throw.
+ *   7. the display_field column resolves to a writable physical column
+ *      whose `nullable` was never declared in `@Column` — decorator-imposed
+ *      values and the implicit `?? false` fallback are not a declaration;
+ *      the write contract forces required on the wire while the physical
+ *      fact stays the author's responsibility (either value is legal).
  *   ≥4 `sticky` columns emit a construction WARNING — allowed,
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
 import { isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
-import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass } from "./entity-decorators.js";
+import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
 const DERIVED_PROPS = ["nullable", "max_length", "pg_type"] as const;
@@ -701,7 +706,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       kind: "calculated",
     });
   }
-  enforceIdentityColumnContract(columns, meta, persistence.entityClassName, relation);
+  enforceIdentityColumnContract(columns, meta, persistence, relation);
   return { ...meta, columns };
 }
 
@@ -737,9 +742,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
 function enforceIdentityColumnContract(
   columns: MetaColumn[],
   meta: { uid?: string; display_field?: string; display_name?: string },
-  entityClassName: string,
+  persistence: EntityPersistenceMeta,
   relation?: RelationFacet,
 ): void {
+  const entityClassName = persistence.entityClassName;
   // ── uid contract ───────────────────────────────────────────────────
   if (meta.uid !== undefined) {
     const uidIdx = columns.findIndex((c) => c.key === meta.uid);
@@ -849,6 +855,13 @@ function enforceIdentityColumnContract(
   // `@Column length` already fed `max_length` when declared. Non-writable
   // display_fields (calculated/virtual projections, server-managed keys,
   // the uid) are exempt — they never arrive on the wire.
+  //
+  // The DB fact is the AUTHOR'S responsibility and must be stated: a
+  // writable display_field whose physical `nullable` was never declared
+  // in `@Column` throws — omission resolves `?? false` (NOT NULL) and
+  // decorator side-effects (@Key/@Unique/@Partition/@DeletableField/
+  // @CloneField) inject a value nobody chose. `nullable:true` and
+  // `nullable:false` are both legal — explicitly owned either way.
   if (meta.display_field !== undefined) {
     const wIdx = columns.findIndex((c) => c.key === meta.display_field);
     if (wIdx !== -1) {
@@ -859,6 +872,14 @@ function enforceIdentityColumnContract(
         wCol.managed !== true &&
         wCol.audited !== true &&
         wCol.key !== meta.uid;
+      const phys = persistence.columns[meta.display_field];
+      if (writable && phys && phys.nullableAuthored !== true) {
+        throw new Error(
+          `withColumnConstraints[${entityClassName}]: display_field "${meta.display_field}" does not declare nullability — ` +
+            `the write contract forces required on the wire, but physical nullability is the column author's choice: ` +
+            `declare @Column({ nullable: false }) (NOT NULL — aligned) or @Column({ nullable: true }) (accepted divergence)`,
+        );
+      }
       if (writable) {
         columns[wIdx] = {
           ...wCol,
