@@ -121,6 +121,18 @@ throwaway probe deleted after it passes.
 - Exploratory checks run inside the final spec while it is developed,
   never in scratch files; assertions sharpen as evidence arrives.
 
+## Gitflow gate — every turn that touches a repo
+
+The governed lifecycle in `docs/gitflow.md` is operational, not advisory:
+
+- **Session start / before any branch or merge op** — run
+  `bun ../primebrick-v3-sdk/tools/gitflow.ts audit` in the repo you are
+  about to touch. An orphan (merged-but-unclosed work branch) or an
+  unexpected open work branch is a **STOP**: report and ask the user.
+- **Every commit is pushed immediately** — origin is always aligned.
+- **Closing is only via `gitflow finish`** — raw merge/delete commands
+  on feature/release/hotfix branches are forbidden.
+
 ## Per-turn operating discipline — pinned, every turn
 
 These obligations apply to EVERY turn — analysis, plan, or code — not
