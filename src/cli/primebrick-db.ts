@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// standards-exempt-file: ext-json — CLI dev tool: prints/writes plain-JSON output and db-meta artifacts (dal-pg has no @primebrick/sdk dependency)
 /**
  * primebrick-db — one-shot CLI over the dal-pg migration engine + schema-diff.
  *

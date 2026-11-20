@@ -111,7 +111,6 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
   }
   if (stor === "jsonb" || stor === "json") {
     if (typeof value === "object") {
-      // standards-exempt: ext-json — jsonb storage format is plain JSON by contract; bigint→number is the deliberate coercion (no @primebrick/sdk dep)
       return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
     }
     if (typeof value === "bigint") return Number(value);
