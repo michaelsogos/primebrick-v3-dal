@@ -49,7 +49,7 @@
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { extJsonStringify, isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
@@ -616,25 +616,60 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   //    Auto-derivation already emits every standard audit stamp audited +
   //    canonical band order (2000+rank). A declaration is justified only when
   //    it carries semantics the derivation cannot express (hidden, relabel
-  //    like job_run's finished_at, a widget). Since `order` is REQUIRED in
-  //    the column type, declaring for visibility alone forces an authored
-  //    order — and any order <2000 ejects the column from the audit band, so
-  //    the record-sheet accordion misorders it. Warn at composition so the
-  //    author consciously owns the exception instead of inheriting
-  //    pre-refactoring cruft.
+  //    like job_run's finished_at, a widget, in-band visibility). Since
+  //    `order` is REQUIRED in the column type, declaring for visibility
+  //    alone forces an authored order — and any order <2000 ejects the
+  //    column from the audit band, so the record-sheet accordion misorders
+  //    it. Warn at composition listing the authored deltas vs the derived
+  //    column, so the log itself shows whether the declaration is owned
+  //    semantics or inherited cruft — the author consciously owns the
+  //    exception.
+  const entityRef = `${meta.entity ?? persistence.entityClassName} (${persistence.entityClassName})`;
+  // Keys an author may legitimately carry on an audit-column override —
+  // everything else the derivation already emits identically.
+  const AUDIT_AUTHORABLE: ReadonlyArray<keyof MetaColumn> = [
+    "format", "pattern", "sticky", "hideable", "widget", "options_source",
+    "allow_create", "icon", "audited", "searchable", "sortable", "filterable",
+    "datetime_iana_toggle", "null_label", "immutable", "color", "tooltip",
+    "tooltip_title", "tooltip_priority", "show_form_tooltip", "show_list_tooltip",
+    "depends_on", "json_schema", "min_length", "max_length", "min", "max",
+  ];
   for (const c of meta.columns) {
     const rank = STANDARD_AUDIT_RANK[c.key];
     if (rank === undefined || c.hidden === true) continue;
-    const relabeled = c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`;
-    const outOfBand = c.order !== undefined && c.order < AUDIT_ORDER_BASE;
+    const derivedOrder = AUDIT_ORDER_BASE + rank;
+    const owned: string[] = [];
+    // `type` restating the pg-derived column type is not an owned delta.
+    const auditPhys = persistence.columns[c.key];
+    if (
+      c.type !== undefined &&
+      auditPhys !== undefined &&
+      c.type !== columnTypeForPg(auditPhys.inferredPgType)
+    ) {
+      owned.push(`type:"${c.type}" (derived "${columnTypeForPg(auditPhys.inferredPgType)}")`);
+    }
+    if (c.order !== undefined && c.order !== derivedOrder) {
+      owned.push(
+        c.order < AUDIT_ORDER_BASE
+          ? `order:${c.order} (derived ${derivedOrder} — OUTSIDE the audit band, the record-sheet audit accordion sorts it away from its pair)`
+          : `order:${c.order} (derived ${derivedOrder})`,
+      );
+    }
+    if (c.default_visible === true) owned.push("default_visible:true (derived false)");
+    if (c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`) {
+      owned.push(`label_key:"${c.label_key}"`);
+    }
+    for (const k of AUDIT_AUTHORABLE) {
+      const v = c[k];
+      // Restated query flags never reach this point (the anti-restatement
+      // check above throws), so every authored value here is a real delta.
+      if (v !== undefined) owned.push(`${k}:${extJsonStringify(v)}`);
+    }
     console.warn(
-      `withColumnConstraints[${persistence.entityClassName}]: standard audit column "${c.key}" is declared ` +
-        `(order:${c.order === undefined ? "auto→canonical band" : c.order}` +
-        `${outOfBand ? " — OUTSIDE the audit band 2000+, the record-sheet audit accordion will sort it away from its pair" : ""}` +
-        `${relabeled ? `, relabeled via label_key "${c.label_key}"` : ""}` +
-        `${c.default_visible === true ? ", default_visible:true" : ""}) — ` +
-        `auto-derivation already emits it audited at order ${AUDIT_ORDER_BASE + rank}; ` +
-        `keep the declaration only if it adds semantics the derivation cannot express (hidden, relabel, widget), otherwise drop it`,
+      `withColumnConstraints[${entityRef}]: standard audit column "${c.key}" is declared — ` +
+        (owned.length === 0
+          ? `it restates the derived column exactly (audited, order ${derivedOrder}, default_visible:false); drop the declaration`
+          : `the declaration owns ${owned.join(", ")} — auto-derivation cannot express those, so keep it if deliberate and drop it if inherited cruft`),
     );
   }
 

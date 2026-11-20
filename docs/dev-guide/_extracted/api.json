@@ -12800,6 +12800,10 @@
 							},
 							{
 								"type": "literal",
+								"value": "immutable"
+							},
+							{
+								"type": "literal",
 								"value": "invalid_type"
 							},
 							{
@@ -12825,10 +12829,6 @@
 							{
 								"type": "literal",
 								"value": "not_in_vocab"
-							},
-							{
-								"type": "literal",
-								"value": "immutable"
 							}
 						]
 					}
@@ -32713,9 +32713,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/audit/delta-calculator.ts",
-					"line": 46,
+					"line": 45,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L46"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L45"
 				}
 			],
 			"signatures": [
@@ -32736,9 +32736,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/audit/delta-calculator.ts",
-							"line": 46,
+							"line": 45,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L46"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L45"
 						}
 					],
 					"parameters": [
@@ -32841,9 +32841,9 @@
 											"sources": [
 												{
 													"fileName": "primebrick-dal-v3/src/audit/delta-calculator.ts",
-													"line": 50,
+													"line": 49,
 													"character": 20,
-													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L50"
+													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L49"
 												}
 											],
 											"type": {
@@ -32860,9 +32860,9 @@
 											"sources": [
 												{
 													"fileName": "primebrick-dal-v3/src/audit/delta-calculator.ts",
-													"line": 50,
+													"line": 49,
 													"character": 34,
-													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L50"
+													"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/audit/delta-calculator.ts#L49"
 												}
 											],
 											"type": {
@@ -71938,9 +71938,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-					"line": 128,
+					"line": 127,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L128"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L127"
 				}
 			],
 			"signatures": [
@@ -72001,9 +72001,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-							"line": 128,
+							"line": 127,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L128"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L127"
 						}
 					],
 					"parameters": [
@@ -72048,9 +72048,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-					"line": 160,
+					"line": 159,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L160"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L159"
 				}
 			],
 			"signatures": [
@@ -72063,9 +72063,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-							"line": 160,
+							"line": 159,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L160"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L159"
 						}
 					],
 					"parameters": [
@@ -72103,9 +72103,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-					"line": 169,
+					"line": 168,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L169"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L168"
 				}
 			],
 			"signatures": [
@@ -72190,9 +72190,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/meta/column-pg-io.ts",
-							"line": 169,
+							"line": 168,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L169"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/meta/column-pg-io.ts#L168"
 						}
 					],
 					"typeParameters": [
@@ -84527,9 +84527,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 22,
+					"line": 21,
 					"character": 13,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L22"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L21"
 				}
 			],
 			"type": {
@@ -84549,9 +84549,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 23,
+					"line": 22,
 					"character": 13,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L23"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L22"
 				}
 			],
 			"type": {
@@ -84576,9 +84576,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 26,
+							"line": 25,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L26"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L25"
 						}
 					],
 					"type": {
@@ -84595,9 +84595,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 27,
+							"line": 26,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L27"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L26"
 						}
 					],
 					"type": {
@@ -84622,9 +84622,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 29,
+							"line": 28,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L29"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L28"
 						}
 					],
 					"type": {
@@ -84641,9 +84641,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 30,
+							"line": 29,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L30"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L29"
 						}
 					],
 					"type": {
@@ -84675,9 +84675,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 25,
+					"line": 24,
 					"character": 12,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L25"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L24"
 				}
 			]
 		},
@@ -84697,9 +84697,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 34,
+							"line": 33,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L34"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L33"
 						}
 					],
 					"type": {
@@ -84710,6 +84710,25 @@
 				{
 					"id": 4451,
 					"name": "key_id",
+					"variant": "declaration",
+					"kind": 1024,
+					"flags": {},
+					"sources": [
+						{
+							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
+							"line": 34,
+							"character": 2,
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L34"
+						}
+					],
+					"type": {
+						"type": "intrinsic",
+						"name": "string"
+					}
+				},
+				{
+					"id": 4452,
+					"name": "issued_at",
 					"variant": "declaration",
 					"kind": 1024,
 					"flags": {},
@@ -84727,8 +84746,8 @@
 					}
 				},
 				{
-					"id": 4452,
-					"name": "issued_at",
+					"id": 4453,
+					"name": "patches",
 					"variant": "declaration",
 					"kind": 1024,
 					"flags": {},
@@ -84738,25 +84757,6 @@
 							"line": 36,
 							"character": 2,
 							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L36"
-						}
-					],
-					"type": {
-						"type": "intrinsic",
-						"name": "string"
-					}
-				},
-				{
-					"id": 4453,
-					"name": "patches",
-					"variant": "declaration",
-					"kind": 1024,
-					"flags": {},
-					"sources": [
-						{
-							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 37,
-							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L37"
 						}
 					],
 					"type": {
@@ -84789,9 +84789,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 38,
+							"line": 37,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L38"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L37"
 						}
 					],
 					"type": {
@@ -84815,9 +84815,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 33,
+					"line": 32,
 					"character": 12,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L33"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L32"
 				}
 			]
 		},
@@ -84839,9 +84839,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 42,
+							"line": 41,
 							"character": 11,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L42"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L41"
 						}
 					],
 					"type": {
@@ -84858,9 +84858,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 43,
+							"line": 42,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L43"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L42"
 						}
 					],
 					"signatures": [
@@ -84873,9 +84873,9 @@
 							"sources": [
 								{
 									"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-									"line": 43,
+									"line": 42,
 									"character": 2,
-									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L43"
+									"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L42"
 								}
 							],
 							"parameters": [
@@ -85405,9 +85405,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 41,
+					"line": 40,
 					"character": 13,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L41"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L40"
 				}
 			],
 			"extendedTypes": [
@@ -85432,9 +85432,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 51,
+					"line": 50,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L51"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L50"
 				}
 			],
 			"signatures": [
@@ -85455,9 +85455,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 51,
+							"line": 50,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L51"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L50"
 						}
 					],
 					"parameters": [
@@ -85489,9 +85489,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 59,
+					"line": 58,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L59"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L58"
 				}
 			],
 			"signatures": [
@@ -85504,9 +85504,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 59,
+							"line": 58,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L59"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L58"
 						}
 					],
 					"parameters": [
@@ -85543,9 +85543,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 66,
+					"line": 65,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L66"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L65"
 				}
 			],
 			"signatures": [
@@ -85558,9 +85558,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 66,
+							"line": 65,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L66"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L65"
 						}
 					],
 					"parameters": [
@@ -85603,9 +85603,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 72,
+					"line": 71,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L72"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L71"
 				}
 			],
 			"signatures": [
@@ -85626,9 +85626,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 72,
+							"line": 71,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L72"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L71"
 						}
 					],
 					"parameters": [
@@ -85707,9 +85707,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 94,
+					"line": 93,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L94"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L93"
 				}
 			],
 			"signatures": [
@@ -85730,9 +85730,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 94,
+							"line": 93,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L94"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L93"
 						}
 					],
 					"parameters": [
@@ -85795,9 +85795,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 104,
+					"line": 103,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L104"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L103"
 				}
 			],
 			"signatures": [
@@ -85818,9 +85818,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 104,
+							"line": 103,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L104"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L103"
 						}
 					],
 					"parameters": [
@@ -85854,9 +85854,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-											"line": 104,
+											"line": 103,
 											"character": 52,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L104"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L103"
 										}
 									],
 									"type": {
@@ -85873,9 +85873,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-											"line": 104,
+											"line": 103,
 											"character": 74,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L104"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L103"
 										}
 									],
 									"type": {
@@ -85907,9 +85907,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-					"line": 112,
+					"line": 111,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L112"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L111"
 				}
 			],
 			"signatures": [
@@ -85930,9 +85930,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/migrations/manifest.ts",
-							"line": 112,
+							"line": 111,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L112"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/migrations/manifest.ts#L111"
 						}
 					],
 					"parameters": [
@@ -91857,9 +91857,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-					"line": 18,
+					"line": 17,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L18"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L17"
 				}
 			],
 			"signatures": [
@@ -91872,9 +91872,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 18,
+							"line": 17,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L18"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L17"
 						}
 					],
 					"parameters": [
@@ -91913,9 +91913,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 336,
+							"line": 335,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L336"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L335"
 						}
 					],
 					"type": {
@@ -91936,9 +91936,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 337,
+							"line": 336,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L337"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L336"
 						}
 					],
 					"type": {
@@ -91962,9 +91962,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 338,
+							"line": 337,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L338"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L337"
 						}
 					],
 					"type": {
@@ -91988,9 +91988,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 339,
+							"line": 338,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L339"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L338"
 						}
 					],
 					"type": {
@@ -92014,9 +92014,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 340,
+							"line": 339,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L340"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L339"
 						}
 					],
 					"type": {
@@ -92040,9 +92040,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 341,
+							"line": 340,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L341"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L340"
 						}
 					],
 					"type": {
@@ -92063,9 +92063,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 342,
+							"line": 341,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L342"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L341"
 						}
 					],
 					"type": {
@@ -92084,9 +92084,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 343,
+							"line": 342,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L343"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L342"
 						}
 					],
 					"type": {
@@ -92117,9 +92117,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 347,
+							"line": 346,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L347"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L346"
 						}
 					],
 					"type": {
@@ -92138,9 +92138,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 348,
+							"line": 347,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L348"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L347"
 						}
 					],
 					"type": {
@@ -92167,9 +92167,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 350,
+							"line": 349,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L350"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L349"
 						}
 					],
 					"type": {
@@ -92204,9 +92204,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 359,
+							"line": 358,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L359"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L358"
 						}
 					],
 					"type": {
@@ -92278,9 +92278,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 369,
+							"line": 368,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L369"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L368"
 						}
 					],
 					"type": {
@@ -92301,9 +92301,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 370,
+											"line": 369,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L370"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L369"
 										}
 									],
 									"type": {
@@ -92332,9 +92332,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 371,
+											"line": 370,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L371"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L370"
 										}
 									],
 									"type": {
@@ -92384,9 +92384,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 373,
+											"line": 372,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L373"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L372"
 										}
 									],
 									"type": {
@@ -92405,9 +92405,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 374,
+											"line": 373,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L374"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L373"
 										}
 									],
 									"type": {
@@ -92465,9 +92465,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 382,
+							"line": 381,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L382"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L381"
 						}
 					],
 					"type": {
@@ -92505,9 +92505,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-					"line": 335,
+					"line": 334,
 					"character": 12,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L335"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L334"
 				}
 			]
 		},
@@ -92520,9 +92520,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-					"line": 449,
+					"line": 448,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L449"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L448"
 				}
 			],
 			"signatures": [
@@ -92535,9 +92535,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 449,
+							"line": 448,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L449"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L448"
 						}
 					],
 					"parameters": [
@@ -92580,9 +92580,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 519,
+							"line": 518,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L519"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L518"
 						}
 					],
 					"type": {
@@ -92609,9 +92609,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 521,
+							"line": 520,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L521"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L520"
 						}
 					],
 					"type": {
@@ -92640,9 +92640,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 522,
+							"line": 521,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L522"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L521"
 						}
 					],
 					"type": {
@@ -92676,9 +92676,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 523,
+							"line": 522,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L523"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L522"
 						}
 					],
 					"type": {
@@ -92695,9 +92695,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 524,
+							"line": 523,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L524"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L523"
 						}
 					],
 					"type": {
@@ -92724,9 +92724,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 526,
+							"line": 525,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L526"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L525"
 						}
 					],
 					"type": {
@@ -92745,9 +92745,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 527,
+							"line": 526,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L527"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L526"
 						}
 					],
 					"type": {
@@ -92771,9 +92771,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 528,
+							"line": 527,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L528"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L527"
 						}
 					],
 					"type": {
@@ -92797,9 +92797,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 529,
+							"line": 528,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L529"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L528"
 						}
 					],
 					"type": {
@@ -92828,9 +92828,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 531,
+							"line": 530,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L531"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L530"
 						}
 					],
 					"type": {
@@ -92857,9 +92857,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 533,
+							"line": 532,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L533"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L532"
 						}
 					],
 					"type": {
@@ -92904,9 +92904,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 535,
+											"line": 534,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L535"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L534"
 										}
 									],
 									"type": {
@@ -92951,9 +92951,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 537,
+											"line": 536,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L537"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L536"
 										}
 									],
 									"type": {
@@ -92988,9 +92988,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 539,
+											"line": 538,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L539"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L538"
 										}
 									],
 									"type": {
@@ -93025,9 +93025,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 541,
+											"line": 540,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L541"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L540"
 										}
 									],
 									"type": {
@@ -93062,9 +93062,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 543,
+											"line": 542,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L543"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L542"
 										}
 									],
 									"type": {
@@ -93107,9 +93107,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 546,
+							"line": 545,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L546"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L545"
 						}
 					],
 					"type": {
@@ -93130,9 +93130,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 547,
+											"line": 546,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L547"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L546"
 										}
 									],
 									"type": {
@@ -93160,9 +93160,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 549,
+											"line": 548,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L549"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L548"
 										}
 									],
 									"type": {
@@ -93212,9 +93212,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 551,
+											"line": 550,
 											"character": 4,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L551"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L550"
 										}
 									],
 									"type": {
@@ -93263,9 +93263,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 555,
+							"line": 554,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L555"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L554"
 						}
 					],
 					"type": {
@@ -93286,9 +93286,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 555,
+											"line": 554,
 											"character": 18,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L555"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L554"
 										}
 									],
 									"type": {
@@ -93305,9 +93305,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 555,
+											"line": 554,
 											"character": 32,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L555"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L554"
 										}
 									],
 									"type": {
@@ -93342,9 +93342,9 @@
 									"sources": [
 										{
 											"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-											"line": 555,
+											"line": 554,
 											"character": 61,
-											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L555"
+											"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L554"
 										}
 									],
 									"type": {
@@ -93390,9 +93390,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-					"line": 518,
+					"line": 517,
 					"character": 12,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L518"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L517"
 				}
 			]
 		},
@@ -93405,9 +93405,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-					"line": 558,
+					"line": 557,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L558"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L557"
 				}
 			],
 			"signatures": [
@@ -93420,9 +93420,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/query/query-builder.ts",
-							"line": 558,
+							"line": 557,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L558"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/query/query-builder.ts#L557"
 						}
 					],
 					"parameters": [
@@ -123347,7 +123347,7 @@
 		}
 	],
 	"packageName": "@primebrick/dal-pg",
-	"packageVersion": "3.6.2",
+	"packageVersion": "3.6.3",
 	"symbolIdMap": {
 		"0": {
 			"packageName": "@primebrick/dal-pg",
