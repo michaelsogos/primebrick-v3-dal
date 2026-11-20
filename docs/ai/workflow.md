@@ -156,3 +156,17 @@ once per session. A turn that skips any of them is a protocol violation.
   evidence contradicting the model halts the turn and is explained to
   the user before continuing. An anomaly absorbed silently is a bug
   shipped silently.
+
+## Plan status — update obligation, every turn
+
+A turn that completes work governed by a plan file MUST update that
+plan's status table before the turn ends — the plan is the ledger of
+record; a stale ⏳ on a shipped task is a doc-vs-code divergence.
+
+- Mark each completed task ✅ with the commit hash(es) that shipped it.
+- Propagate to parent/linked plans: when a task satisfies a
+  prerequisite declared in another plan (e.g. "migrated everywhere"),
+  record the fulfillment there too — gates are re-evaluated, not
+  re-discovered.
+- A plan whose table disagrees with repo state blocks new TOC work on
+  that plan until reconciled.
