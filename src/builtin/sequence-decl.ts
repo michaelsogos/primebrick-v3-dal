@@ -72,7 +72,11 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "label_key", label_key: F("label_key"), type: "text", order: 5 },
     { key: "description_key", label_key: F("description_key"), type: "text", order: 6 },
   ];
-  return raw.map((c) => ({ ...c, sticky: STICKY_KEYS.has(c.key), audited: true }));
+  // `audited` is NOT authored on data columns — it marks the audit section
+  // (created/deleted stamps), which arrives derived from the entity class.
+  // Authoring it here would both double-emit a `sticky`+`audited` column in
+  // the ELT groups and exclude the column from physical-writable checks.
+  return raw.map((c) => ({ ...c, sticky: STICKY_KEYS.has(c.key) }));
 }
 
 function sequenceMeta(ns: string): EntityMeta {
