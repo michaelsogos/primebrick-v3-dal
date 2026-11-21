@@ -182,6 +182,23 @@ export interface BuiltinDeclCtx {
   actor: () => string;
 }
 
+/** Nav contribution — the `sequences` leaf under the module's "settings"
+ *  sibling, appended LAST by createMicroservice (arrays carry the order
+ *  at every level). label keys derive from the module's own schema
+ *  namespace — never authored. */
+export function builtinSequenceNav() {
+  const ns = ownedNamespace();
+  return {
+    sibling_id: "settings",
+    sibling_label_key: `${ns}.settings.nav.label`,
+    sibling_icon: "settings",
+    leaf_id: "sequences",
+    label_key: `${ns}.settings.nav.sequences`,
+    icon: "list-ordered",
+    entity: "sequence",
+  };
+}
+
 /** Build the `sequence` EntityRouteDecl for the calling module. The
  *  return type is structural — dal cannot import the SDK's
  *  EntityRouteDecl; makeServiceRoutes consumes the shape. */

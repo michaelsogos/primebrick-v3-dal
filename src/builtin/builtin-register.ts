@@ -14,13 +14,35 @@
  * the boundary either.
  */
 
-import { builtinSequenceEntityDecl, type BuiltinDeclCtx } from "./sequence-decl.js";
+import { builtinSequenceEntityDecl, builtinSequenceNav, type BuiltinDeclCtx } from "./sequence-decl.js";
 
 export const BUILTIN_DECL_REGISTRY_KEY = Symbol.for("primebrick.builtin-entity-decl-factories");
 
 export interface BuiltinDeclFactory {
   id: string;
   make: (ctx: BuiltinDeclCtx) => Record<string, unknown>[];
+  /** Nav contribution — appended LAST inside the named sibling's nav/routes
+   *  by createMicroservice (array position IS the order at every level;
+   *  builtins always sort after every module-authored leaf). The sibling
+   *  is auto-created when the module declares none. */
+  nav?: () => BuiltinNavContribution;
+}
+
+export interface BuiltinNavContribution {
+  /** Sibling slug the leaf lives under (always "settings" today). */
+  sibling_id: string;
+  /** i18n key of the auto-created sibling node. */
+  sibling_label_key: string;
+  /** Lucide icon of the auto-created sibling node. */
+  sibling_icon: string;
+  /** Leaf slug inside the sibling (`<ns>/settings/<leaf_id>`). */
+  leaf_id: string;
+  /** i18n key of the leaf label. */
+  label_key: string;
+  /** Lucide icon of the leaf. */
+  icon: string;
+  /** Wire entity the leaf's dict page binds to. */
+  entity: string;
 }
 
 type RegistryMap = Map<string, BuiltinDeclFactory>;
@@ -35,4 +57,5 @@ export function registerBuiltinEntityDeclFactory(factory: BuiltinDeclFactory): v
 registerBuiltinEntityDeclFactory({
   id: "dal.sequences",
   make: (ctx) => [builtinSequenceEntityDecl(ctx)],
+  nav: () => builtinSequenceNav(),
 });
