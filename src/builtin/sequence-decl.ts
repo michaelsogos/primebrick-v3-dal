@@ -194,7 +194,7 @@ export function builtinSequenceNav() {
     sibling_icon: "settings",
     leaf_id: "sequences",
     label_key: `${ns}.settings.nav.sequences`,
-    icon: "list-ordered",
+    icon: "sequence-numeric-right",
     entity: "sequence",
   };
 }
