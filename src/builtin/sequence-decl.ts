@@ -18,13 +18,26 @@
  *     decl type is readonly string[], no static enum is needed.
  */
 
-import { parseSequencePattern, listColumnKeys, type EntityMeta, type MetaColumn } from "@primebrick/core";
+import {
+  parseSequencePattern,
+  validateSequencePartitions,
+  sequencePartitionKey,
+  derivePeriodKey,
+  renderSequenceValue,
+  listColumnKeys,
+  type EntityMeta,
+  type MetaColumn,
+  type SequencePartitions,
+} from "@primebrick/core";
 
 import { DomainService } from "../entity/domain-service.js";
+import type { EntityGetOptions, EntityListQuery, EntityListResult } from "../entity/entity-service.js";
 import { SequenceEntity } from "../entities/sequence-entity.js";
+import { SequenceCounterEntity } from "../entities/sequence-counter-entity.js";
 import { withColumnConstraints } from "../meta/column-constraints.js";
 import { getSchemaDomain } from "../meta/schema-domain.js";
-import { ValidationError } from "../errors/errors.js";
+import { SequenceNotFoundError, ValidationError } from "../errors/errors.js";
+import { Filter, field } from "../query/dsl.js";
 
 /** The module's owned schema — domain when configured, else the
  *  `DATABASE_SCHEMA` env contract (same source initDal feeds). Throws
@@ -91,6 +104,152 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
       actor,
       list: { meta: sequenceMeta(ownedNamespace()), defaultSort: SEQUENCE_DEFAULT_SORT },
     });
+  }
+
+  /** Counter rows are machine state — reachable ONLY through the governed
+   *  entity-service door (audit cols stamped from cfg.actor), never routed. */
+  private counterSvc() {
+    return this.svcFor(SequenceCounterEntity);
+  }
+
+  /** `sez`-slot → partition context (absent slots are undefined, never ""). */
+  private sezCtx(spec: { sez?: string; sez2?: string; sez3?: string }): SequencePartitions {
+    return {
+      ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+      ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+      ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+    } as SequencePartitions;
+  }
+
+  private counterBy(
+    sequence_uuid: string,
+    period_key: string,
+    partition_key: string,
+  ): Promise<SequenceCounterEntity | null> {
+    return this.counterSvc().find<SequenceCounterEntity>(null, {
+      throwIfNotFound: false,
+      filters: [
+        Filter.fieldValue(field(SequenceCounterEntity, "sequence_uuid"), "=", sequence_uuid),
+        Filter.fieldValue(field(SequenceCounterEntity, "period_key"), "=", period_key),
+        Filter.fieldValue(field(SequenceCounterEntity, "partition_key"), "=", partition_key),
+      ],
+    });
+  }
+
+  /** Read-only forecast — the value the next claim WOULD emit. Never
+   *  creates/updates the counter row, never allocates. */
+  private async forecastRow(row: {
+    uuid: string; pattern: string; start: bigint; tz: string | null;
+  }, parts: SequencePartitions, at: Date): Promise<{
+    period_key: string; partition_key: string; counter: bigint | null; next: string;
+  }> {
+    const pattern = parseSequencePattern(row.pattern);
+    const partition_key = sequencePartitionKey(pattern, parts);
+    const period_key = derivePeriodKey(pattern.period_kind, at, row.tz ?? undefined);
+    const counter = await this.counterBy(row.uuid, period_key, partition_key);
+    const n = counter ? counter.counter : row.start;
+    return {
+      period_key,
+      partition_key,
+      counter: counter?.counter ?? null,
+      next: renderSequenceValue(pattern, n, at, { tz: row.tz ?? undefined, partitions: parts }),
+    };
+  }
+
+  /** Batch default-context forecast for served rows: `next` = value the
+   *  next claim emits on the default partition at now; `null` when the
+   *  pattern needs sezionale context (the forecast RPC covers that). */
+  private async attachForecast(rows: Array<Record<string, unknown>>): Promise<void> {
+    if (rows.length === 0) return;
+    const now = new Date();
+    const EMPTY_PARTITION = "\x1f\x1f";
+    const counters = await this.counterSvc().query<SequenceCounterEntity>(null, {
+      filters: [
+        Filter.fieldValue(
+          field(SequenceCounterEntity, "sequence_uuid"), "IN",
+          rows.map((r) => r.uuid as string),
+        ),
+        Filter.fieldValue(field(SequenceCounterEntity, "partition_key"), "=", EMPTY_PARTITION),
+      ],
+    });
+    const byKey = new Map(counters.map((c) => [`${c.sequence_uuid}|${c.period_key}`, c.counter]));
+    for (const row of rows) {
+      const pattern = parseSequencePattern(row.pattern as string);
+      row.next = pattern.sez_slots.length > 0
+        ? null
+        : renderSequenceValue(
+            pattern,
+            byKey.get(`${row.uuid}|${derivePeriodKey(pattern.period_kind, now, (row.tz as string | null) ?? undefined)}`)
+              ?? (row.start as bigint),
+            now,
+            { tz: (row.tz as string | null) ?? undefined, partitions: {} },
+          );
+    }
+  }
+
+  override async list(query: EntityListQuery): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>> {
+    const res = await super.list(query);
+    await this.attachForecast(res.rows as unknown as Record<string, unknown>[]);
+    return res;
+  }
+
+  override async get(uuid: string, options?: EntityGetOptions & { throwIfNotFound?: true }): Promise<SequenceEntity & Record<string, unknown>>;
+  override async get(uuid: string, options: EntityGetOptions & { throwIfNotFound: false }): Promise<(SequenceEntity & Record<string, unknown>) | null>;
+  override async get(uuid: string, options?: EntityGetOptions): Promise<(SequenceEntity & Record<string, unknown>) | null> {
+    const row = await super.get(uuid, options as never);
+    if (row) await this.attachForecast([row as unknown as Record<string, unknown>]);
+    return row;
+  }
+
+  /** `sequence-forecast` RPC — explicit-context (sez and at) forecast.
+   *  READ-ONLY by construction: identity resolution + counter SELECT +
+   *  render. `{uuid|code}` — uuid for the registry page, code for the
+   *  field-binding widget. */
+  async forecast(spec: {
+    uuid?: string; code?: string;
+    sez?: string; sez2?: string; sez3?: string;
+    at?: Date;
+  }) {
+    const row = spec.uuid !== undefined
+      ? await this.get(spec.uuid, { throwIfNotFound: true })
+      : await this.svc.find<SequenceEntity & Record<string, unknown>>(null, {
+          throwIfNotFound: false,
+          filters: [Filter.fieldValue(field(SequenceEntity, "code"), "=", spec.code)],
+        });
+    if (!row) throw new SequenceNotFoundError(spec.uuid ?? spec.code ?? "?");
+    const parts = validateSequencePartitions(parseSequencePattern(row.pattern as string), this.sezCtx(spec));
+    const f = await this.forecastRow(
+      { uuid: row.uuid as string, pattern: row.pattern as string, start: row.start as bigint, tz: row.tz as string | null },
+      parts,
+      spec.at ?? new Date(),
+    );
+    return { uuid: row.uuid, code: row.code, ...f };
+  }
+
+  /** `sequence-set` RPC — governed counter re-seed: writes the explicit
+   *  next-to-emit value for (uuid, period derived from `at`, partition
+   *  from `sez*`). Never allocates, never emits a value. The counter row
+   *  is created when the period/partition was never claimed. */
+  async setCounter(spec: {
+    uuid: string; next: bigint;
+    sez?: string; sez2?: string; sez3?: string;
+    at?: Date;
+  }) {
+    const row = await this.get(spec.uuid, { throwIfNotFound: true });
+    const pattern = parseSequencePattern(row.pattern as string);
+    const parts = validateSequencePartitions(pattern, this.sezCtx(spec));
+    const partition_key = sequencePartitionKey(pattern, parts);
+    const period_key = derivePeriodKey(pattern.period_kind, spec.at ?? new Date(), (row.tz as string | null) ?? undefined);
+    const existing = await this.counterBy(spec.uuid, period_key, partition_key);
+    const saved = existing
+      ? await this.counterSvc().update(existing.uuid, { counter: spec.next, version: existing.version })
+      : await this.counterSvc().create({
+          sequence_uuid: spec.uuid,
+          period_key,
+          partition_key,
+          counter: spec.next,
+        });
+    return { uuid: spec.uuid, period_key, partition_key, counter: saved.counter };
   }
 }
 
@@ -241,4 +400,154 @@ export function builtinSequenceEntityDecl(ctx: BuiltinDeclCtx): Record<string, u
       },
     },
   };
+}
+
+// ─── governed RPC routes (sequence.set / sequence.forecast) ──────────────
+
+/** sez/at wire context shared by the two RPC bodies. */
+function vSezCtx(rec: Record<string, unknown>): {
+  sez?: string; sez2?: string; sez3?: string; at?: Date;
+} {
+  const out: { sez?: string; sez2?: string; sez3?: string; at?: Date } = {};
+  for (const k of ["sez", "sez2", "sez3"] as const) {
+    if (rec[k] !== undefined && rec[k] !== null && rec[k] !== "") {
+      out[k] = vString(rec[k], k, 200);
+    }
+  }
+  if (rec.at !== undefined && rec.at !== null) {
+    const d = new Date(rec.at as string | number);
+    if (Number.isNaN(d.getTime())) bad("at", "must be a date");
+    out.at = d;
+  }
+  return out;
+}
+
+function vObjectBody(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) bad("body", "object required");
+  return raw as Record<string, unknown>;
+}
+
+function vSetBody(raw: unknown): {
+  uuid: string; next: bigint;
+  sez?: string; sez2?: string; sez3?: string; at?: Date;
+} {
+  const rec = vObjectBody(raw);
+  return {
+    uuid: vString(rec.uuid, "uuid", 40),
+    next: vBigint(rec.next, "next"),
+    ...vSezCtx(rec),
+  };
+}
+
+function vForecastBody(raw: unknown): {
+  uuid?: string; code?: string;
+  sez?: string; sez2?: string; sez3?: string; at?: Date;
+} {
+  const rec = vObjectBody(raw);
+  const uuid = rec.uuid === undefined || rec.uuid === null ? undefined : vString(rec.uuid, "uuid", 40);
+  const code = rec.code === undefined || rec.code === null ? undefined : vString(rec.code, "code", 100);
+  if (uuid === undefined && code === undefined) bad("identity", "uuid or code is required");
+  return { ...(uuid !== undefined ? { uuid } : {}), ...(code !== undefined ? { code } : {}), ...vSezCtx(rec) };
+}
+
+/** Builtin RPC routes for the `sequence` entity — mounted by
+ *  makeServiceRoutes from the same globalThis factory registry as the
+ *  entity decl (a module-authored `/api/v1/actions/sequence-*` route is
+ *  the module's own name, but `entity_op:"sequence"` outside this
+ *  factory is the module reaching builtin governance — the decl already
+ *  rejects a module-authored `sequence` entity at boot).
+ *
+ *  `sequence-set` — governed counter re-seed: explicit permission
+ *  (`<ns>.sequence.set.single`), pre-dispatch confirm CTA on the sequence
+ *  row, MFA step-up. Never allocates — `next` is the next-to-emit value.
+ *  `sequence-forecast` — read-only `next` probe for explicit sez/at
+ *  context (the combobox/widget "what comes next" call).
+ *
+ *  The return type is structural — dal cannot import the SDK's RpcRoute;
+ *  makeServiceRoutes consumes the shape. */
+export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>[] {
+  const ns = ownedNamespace();
+  const svc = new SequencesService(ctx.actor);
+  const P = (op: string, scope: string) => `${ns}.sequence.${op}.${scope}`;
+  return [
+    {
+      method: "POST",
+      path: "/api/v1/actions/sequence-set",
+      permissions: [P("set", "single")],
+      auth: "user",
+      mfa: { action: "sequence.set", target_resource: "sequence" },
+      entity_op: {
+        entity: "sequence",
+        op: "sequence_set",
+        cta: {
+          icon: "sequence-numeric-right",
+          confirm_key: `${ns}.actions.sequence_set_confirm`,
+        },
+      },
+      openapi: {
+        summary: "Set a sequence counter",
+        description:
+          "Governed counter re-seed: writes the explicit next-to-emit value for a sequence " +
+          "period/partition (derived from `at`/`sez*`). Requires MFA step-up and " +
+          "pre-dispatch confirmation. Never allocates — allocation is write-path only.",
+        tags: ["sequences"],
+        requestSchema: {
+          type: "object",
+          required: ["uuid", "next"],
+          properties: {
+            uuid: { type: "string" },
+            next: { type: "integer", description: "bigint — ext-json encodes it natively" },
+            sez: { type: "string" }, sez2: { type: "string" }, sez3: { type: "string" },
+            at: { type: "string", format: "date-time" },
+          },
+        },
+        responseSchema: {
+          type: "object",
+          properties: {
+            uuid: { type: "string" },
+            period_key: { type: "string" },
+            partition_key: { type: "string" },
+            counter: { type: "integer" },
+          },
+        },
+      },
+      body: vSetBody,
+      handler: async (c: { body: Parameters<SequencesService["setCounter"]>[0] }) => svc.setCounter(c.body),
+    },
+    {
+      method: "POST",
+      path: "/api/v1/actions/sequence-forecast",
+      permissions: [P("read", "single")],
+      auth: "user",
+      openapi: {
+        summary: "Forecast a sequence's next value",
+        description:
+          "Read-only probe: renders the value the next claim would emit for the given " +
+          "sequence and sez*/at context. Never creates or mutates the counter.",
+        tags: ["sequences"],
+        requestSchema: {
+          type: "object",
+          properties: {
+            uuid: { type: "string" },
+            code: { type: "string" },
+            sez: { type: "string" }, sez2: { type: "string" }, sez3: { type: "string" },
+            at: { type: "string", format: "date-time" },
+          },
+        },
+        responseSchema: {
+          type: "object",
+          properties: {
+            uuid: { type: "string" },
+            code: { type: "string" },
+            period_key: { type: "string" },
+            partition_key: { type: "string" },
+            counter: { type: ["integer", "null"] },
+            next: { type: "string" },
+          },
+        },
+      },
+      body: vForecastBody,
+      handler: async (c: { body: Parameters<SequencesService["forecast"]>[0] }) => svc.forecast(c.body),
+    },
+  ];
 }

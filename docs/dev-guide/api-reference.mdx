@@ -843,6 +843,20 @@ interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
 |-----------|------|-------------|
 | spec | `{ sequence_uuid: string; period_key: string; partition_key: string; count: number; step: bigint; start: bigint; actor: string }` |  |
 
+#### `Repository.sequenceSet(spec): Promise<{ counter_uuid: string; period_key: string; partition_key: string; counter: bigint }>`
+
+Governed counter SET — writes an EXPLICIT next-to-emit value into
+ `sequence_counters`: the operator's re-seed after legacy imports or
+ drift. Never allocates, never emits a rendered value. A single
+ UPSERT is atomic on its own — on a tx-bound repo it joins the
+ caller's transaction like every other repo op. `actor` is required:
+ SET exists only behind the governed `sequence.set` RPC which always
+ has an authenticated operator.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ seq: { code: string } \| { uuid: string }; next: bigint; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date; actor: string }` |  |
+
 #### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
 
 distinctAuditActors — the governed vocabulary behind
@@ -1124,6 +1138,41 @@ The contract every entity service must satisfy — enforced on the router.
 |-----------|------|-------------|
 | actor | `() => string` |  |
 
+#### `SequencesService.list(query): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
+#### `SequencesService.get(uuid, options): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
+
+#### `SequencesService.forecast(spec): Promise<{ period_key: string; partition_key: string; counter: bigint \| null; next: string; uuid: string; code: string }>`
+
+`sequence-forecast` RPC — explicit-context (sez and at) forecast.
+ READ-ONLY by construction: identity resolution + counter SELECT +
+ render. `{uuid|code}` — uuid for the registry page, code for the
+ field-binding widget.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; code: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
+#### `SequencesService.setCounter(spec): Promise<{ uuid: string; period_key: string; partition_key: string; counter: unknown }>`
+
+`sequence-set` RPC — governed counter re-seed: writes the explicit
+ next-to-emit value for (uuid, period derived from `at`, partition
+ from `sez*`). Never allocates, never emits a value. The counter row
+ is created when the period/partition was never claimed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; next: bigint; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
 #### `SequencesService.svcFor(entity): EntityService<T2>`
 
 Governed `EntityService` handle for ANOTHER entity — memoized.
@@ -1154,19 +1203,6 @@ Ref-display registration sink — the route layer (which is DAL-free
 Subclass seam for config enrichment (auditPort / actor / userEntity
 injection). Runs once, inside the lazy `svc` resolution — `this.dal`
 is available here.
-
-#### `SequencesService.list(query): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| query | `EntityListQuery` |  |
-
-#### `SequencesService.get(uuid, options): Promise<SequenceEntity & Record<string, unknown>>`
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| uuid | `string` |  |
-| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
 
 #### `SequencesService.exists(options): Promise<boolean>`
 

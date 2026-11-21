@@ -262,3 +262,86 @@ describe("Repository — seq-bound write resolution", () => {
     }
   });
 });
+
+describe("Repository — sequenceSet governed primitive", () => {
+  let pool: Pool;
+  let repo: Repository;
+
+  beforeAll(async () => {
+    pool = getTestPool();
+    await setupTestSchema();
+    repo = new Repository(pool, REPO_INTERNAL);
+  });
+
+  afterAll(async () => {
+    await closeTestPool();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+    await seedSequence(SEQ_CODE);
+  });
+
+  it("set on an unclaimed period → creates the counter at `next`; allocation continues from it", async () => {
+    const res = await repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 42n, actor: ACTOR });
+    expect(res.counter).toBe(42n);
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-00042");
+    const counter = await counterRow();
+    expect(counter!.counter).toBe(43n);
+    expect(counter!.last_alloc_by).toBe(ACTOR);
+  });
+
+  it("set on an existing counter → next wins (operator re-seed, both directions)", async () => {
+    await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR }); // counter → 2
+    await repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 100n, actor: ACTOR });
+    expect((await counterRow())!.counter).toBe(100n);
+    await repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 7n, actor: ACTOR });
+    expect((await counterRow())!.counter).toBe(7n); // backward allowed — governed op
+    const row = await repo.add(SeqTestEntity, { label: "b" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-00007");
+  });
+
+  it("set never emits a value — the row stays unwritten until a real claim", async () => {
+    await repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 9n, actor: ACTOR });
+    expect((await getTestPool().query(`SELECT count(*)::int n FROM dal_test_seq`)).rows[0].n).toBe(0);
+    expect((await counterRow())!.last_alloc_by).toBeNull(); // SET is not a claim
+  });
+
+  it("missing sequence identity → SEQUENCE_NOT_FOUND carrying the identity", async () => {
+    await expect(
+      repo.sequenceSet({ seq: { code: "bogus.seq" }, next: 1n, actor: ACTOR }),
+    ).rejects.toThrow(SequenceNotFoundError);
+    await expect(
+      repo.sequenceSet({ seq: { code: "bogus.seq" }, next: 1n, actor: ACTOR }),
+    ).rejects.toMatchObject({ code: "SEQUENCE_NOT_FOUND" });
+  });
+
+  it("non-bigint next → ValidationError", async () => {
+    await expect(
+      repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 5 as unknown as bigint, actor: ACTOR }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("tx-bound repo: the SET rolls back with the caller transaction", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const txRepo = new Repository(client, REPO_INTERNAL);
+      await txRepo.sequenceSet({ seq: { code: SEQ_CODE }, next: 50n, actor: ACTOR });
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect(await counterRow()).toBeUndefined();
+  });
+
+  it("sez ctx partitions the counter row under the right partition_key", async () => {
+    await seedSequence("dal_test_seq.part", "PART-{sez}-{seq:3}");
+    const res = await repo.sequenceSet({ seq: { code: "dal_test_seq.part" }, next: 10n, sez: "A", actor: ACTOR });
+    expect(res.partition_key).toBe("A\x1f\x1f");
+    const counter = await counterRow();
+    expect(counter!.partition_key).toBe("A\x1f\x1f");
+    expect(counter!.counter).toBe(10n);
+  });
+});

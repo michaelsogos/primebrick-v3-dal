@@ -872,6 +872,55 @@ export class Repository {
     return { first: row.first, last: row.last };
   }
 
+  /** Governed counter SET — writes an EXPLICIT next-to-emit value into
+   *  `sequence_counters`: the operator's re-seed after legacy imports or
+   *  drift. Never allocates, never emits a rendered value. A single
+   *  UPSERT is atomic on its own — on a tx-bound repo it joins the
+   *  caller's transaction like every other repo op. `actor` is required:
+   *  SET exists only behind the governed `sequence.set` RPC which always
+   *  has an authenticated operator. */
+  async sequenceSet(spec: {
+    seq: { code: string } | { uuid: string };
+    next: bigint;
+    sez?: string | null;
+    sez2?: string | null;
+    sez3?: string | null;
+    at?: Date;
+    actor: string;
+  }): Promise<{ counter_uuid: string; period_key: string; partition_key: string; counter: bigint }> {
+    if (typeof spec.next !== "bigint") {
+      throw new ValidationError("sequenceSet: next must be a bigint");
+    }
+    const q = this.db as Queryable;
+    const s = await this.loadSequence(q, spec.seq);
+    const parts = validateSequencePartitions(s.pattern, {
+      ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+      ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+      ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+    } as SequencePartitions);
+    const partition_key = sequencePartitionKey(s.pattern, parts);
+    const period_key = derivePeriodKey(s.pattern.period_kind, spec.at ?? new Date(), s.tz ?? undefined);
+    const table = getQualifiedTableName(SequenceCounterEntity);
+    const r = await q.query<{ uuid: string; counter: bigint }>(
+      `INSERT INTO ${table}
+         (uuid, sequence_uuid, period_key, partition_key, counter,
+          last_alloc_at, last_alloc_by, last_alloc_count,
+          created_at, created_by, updated_at, updated_by, version)
+       VALUES (uuidv7(), $1, $2, $3, $4::bigint, NULL, NULL, NULL,
+               now(), $5, now(), $5, 1)
+       ON CONFLICT (sequence_uuid, period_key, partition_key) DO UPDATE
+         SET counter = $4::bigint,
+             updated_at = now(),
+             updated_by = $6,
+             version = ${table}.version + 1
+       RETURNING uuid, counter`,
+      [s.uuid, period_key, partition_key, spec.next, spec.actor, spec.actor],
+    );
+    const row = r.rows[0];
+    if (!row) throw new ValidationError("sequenceSet: upsert returned no row — identity constraint unreachable");
+    return { counter_uuid: row.uuid, period_key, partition_key, counter: row.counter };
+  }
+
   // ─── seq-bound column resolution ──────────────────────────────────────
   // A column bound via @SequenceField never stores a raw literal through
   // the Repository: on write the value is either a sequence directive —

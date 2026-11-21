@@ -84,12 +84,13 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   ): EntityService<T2> {
     let s = this._svcFor.get(entity);
     if (!s) {
-      const filterableKeys = new Set(
+      const columnKeys = new Set(
         Object.values(getEntityPersistenceMeta(entity).columns).map((c) => c.propertyKey),
       );
       s = this.dal.entityService({
         entity,
-        list: { filterableKeys },
+        list: { filterableKeys: columnKeys, searchableKeys: [...columnKeys] },
+        actor: this.cfg.actor,
       }) as EntityService<never>;
       this._svcFor.set(entity, s);
     }

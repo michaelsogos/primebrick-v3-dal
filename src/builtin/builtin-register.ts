@@ -14,13 +14,18 @@
  * the boundary either.
  */
 
-import { builtinSequenceEntityDecl, builtinSequenceNav, type BuiltinDeclCtx } from "./sequence-decl.js";
+import { builtinSequenceEntityDecl, builtinSequenceNav, builtinSequenceRpc, type BuiltinDeclCtx } from "./sequence-decl.js";
 
 export const BUILTIN_DECL_REGISTRY_KEY = Symbol.for("primebrick.builtin-entity-decl-factories");
 
 export interface BuiltinDeclFactory {
   id: string;
   make: (ctx: BuiltinDeclCtx) => Record<string, unknown>[];
+  /** RPC route contribution — the builtin's governed action surface
+   *  (e.g. `sequence-set`). Emitted under the same owned-namespace rules
+   *  as `make`: permissions/i18n keys derive inside the factory, the SDK
+   *  merges these into makeServiceRoutes' `rpc` input verbatim. */
+  rpc?: (ctx: BuiltinDeclCtx) => Record<string, unknown>[];
   /** Nav contribution — appended LAST inside the named sibling's nav/routes
    *  by createMicroservice (array position IS the order at every level;
    *  builtins always sort after every module-authored leaf). The sibling
@@ -57,5 +62,6 @@ export function registerBuiltinEntityDeclFactory(factory: BuiltinDeclFactory): v
 registerBuiltinEntityDeclFactory({
   id: "dal.sequences",
   make: (ctx) => [builtinSequenceEntityDecl(ctx)],
+  rpc: (ctx) => builtinSequenceRpc(ctx),
   nav: () => builtinSequenceNav(),
 });
