@@ -41647,9 +41647,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/builtin/sequence-decl.ts",
-							"line": 369,
+							"line": 371,
 							"character": 2,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L369"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L371"
 						}
 					],
 					"type": {
@@ -41688,9 +41688,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/builtin/sequence-decl.ts",
-					"line": 368,
+					"line": 370,
 					"character": 17,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L368"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L370"
 				}
 			]
 		},
@@ -41703,9 +41703,9 @@
 			"sources": [
 				{
 					"fileName": "primebrick-dal-v3/src/builtin/sequence-decl.ts",
-					"line": 392,
+					"line": 394,
 					"character": 16,
-					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L392"
+					"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L394"
 				}
 			],
 			"signatures": [
@@ -41734,9 +41734,9 @@
 					"sources": [
 						{
 							"fileName": "primebrick-dal-v3/src/builtin/sequence-decl.ts",
-							"line": 392,
+							"line": 394,
 							"character": 16,
-							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L392"
+							"url": "https://github.com/michaelsogos/primebrick-v3-dal/blob/main/src/builtin/sequence-decl.ts#L394"
 						}
 					],
 					"parameters": [

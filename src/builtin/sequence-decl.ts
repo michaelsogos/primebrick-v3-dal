@@ -355,10 +355,12 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
   if (opt("label_key")) out.label_key = vOptKey(rec.label_key, "label_key", 100);
   if (opt("description_key")) out.description_key = vOptKey(rec.description_key, "description_key", 200);
   if (partial) {
-    if (typeof rec.version !== "number" || !Number.isInteger(rec.version) || rec.version < 0) {
-      bad("version", "required non-negative integer");
-    }
-    out.version = rec.version;
+    // `version` rides int8 on the wire — ext-json decodes it as `bigint`,
+    // never `number`. Accept the full vBigint domain and down-cast
+    // (audit versions fit in the safe-integer range by construction).
+    const v = vBigint(rec.version, "version");
+    if (v < 0n) bad("version", "required non-negative integer");
+    out.version = Number(v);
   }
   return out;
 }
@@ -408,6 +410,8 @@ export function builtinSequenceEntityDecl(ctx: BuiltinDeclCtx): Record<string, u
       restore: [P("restore", "single")],
       export: [P("export", "all")],
       audit: [P("read", "audit")],
+      bulkDelete: [P("delete", "bulk")],
+      bulkRestore: [P("restore", "bulk")],
     },
     schemas: {
       listQuery: (q: Record<string, unknown>) => {
