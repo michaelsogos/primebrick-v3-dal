@@ -1092,6 +1092,214 @@ a subclass is useless the moment anything instantiates it).
 
 #### `SequenceEntity()`
 
+### `SequencesService`
+
+The contract every entity service must satisfy — enforced on the router.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| cfg | `EntityServiceConfig<SequenceEntity & Record<string, unknown>>` |  |
+
+#### `SequencesService(actor)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| actor | `() => string` |  |
+
+#### `SequencesService.svcFor(entity): EntityService<T2>`
+
+Governed `EntityService` handle for ANOTHER entity — memoized.
+ Rare: collaborator services are the norm for cross-entity work;
+ this exists for reads/lookups into a sibling entity where a full
+ collaborator would be ceremony (config refs, display joins).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => object` |  |
+
+#### `SequencesService.registerRefDisplay(display)`
+
+Ref-display registration sink — the route layer (which is DAL-free
+ and can't reach the registry directly) feeds the entity's
+ materialized display template, derived from the SAME authored
+ `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+ wiring — module-load time, so the registry is complete before any
+ `svc` builds and before the first request. Plain
+ `EntityServiceLike` facades simply don't carry it — duck-typed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| display | `string \| null` |  |
+
+#### `SequencesService.buildConfig(): EntityServiceConfig<SequenceEntity & Record<string, unknown>>`
+
+Subclass seam for config enrichment (auditPort / actor / userEntity
+injection). Runs once, inside the lazy `svc` resolution — `this.dal`
+is available here.
+
+#### `SequencesService.list(query): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
+#### `SequencesService.get(uuid, options): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
+
+#### `SequencesService.exists(options): Promise<boolean>`
+
+`exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+ the cheap "does it exist" door — no row materialized, no dto.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `FindOptions` |  |
+
+#### `SequencesService.query(fields, options): Promise<TResult[]>`
+
+`query` — the single named internal door for code-authored reads the
+ wire contract cannot express: `Project.field`/`Project.expr`
+ projections (`TResult` need not be `TEntity`), `Filter.expr`,
+ `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+ the raw `FindOptions` DSL — the SQL fragments are code-authored in
+ service source, NEVER request-authored over the wire (`svc.list`
+ stays the sanitizable `EntityListQuery` contract). Returns rows in
+ the caller's declared shape; no `toDto` mapping.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `SequencesService.find(fields, options): Promise<TResult \| null>`
+
+`find` — the single-row variant of `query` (`repo.find` pass-through):
+ `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+ Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+ governed replacement for `dal.find(entity, fields, opts)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `SequencesService.create(body, tx): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| body | `Record<string, unknown>` |  |
+| tx | `Repository` |  |
+
+#### `SequencesService.update(uuid, body, tx): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| body | `Record<string, unknown> & { version: number }` |  |
+| tx | `Repository` |  |
+
+#### `SequencesService.delete(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `SequencesService.restore(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `SequencesService.purge(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `number` |  |
+
+#### `SequencesService.duplicate(uuids): Promise<DuplicateResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuids | `string[]` |  |
+
+#### `SequencesService.bulkDelete(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.bulkRestore(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.bulkUpdate(items): Promise<unknown>`
+
+Internal bulk ops — NOT wire actions (no route registers on them):
+ atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+ (config batch writes, retention purges). The per-entity bulk gating
+ lives in the entity's declared actions and is untouched by these.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkUpdateItem[]` |  |
+
+#### `SequencesService.bulkPurge(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.transaction(fn, options): Promise<T>`
+
+`transaction` — atomic multi-op work through the governed surface:
+ the callback receives a tx-scoped `Repository`; pass it to the same
+ `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+ `svc.query(fields, opts)` does not take tx — query inside the
+ callback via `tx.findAll` if the row must join the tx). BEGIN /
+ COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+ (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fn | `(tx: Repository) => Promise<T>` |  |
+| options | `TimeoutOverrideOptions` |  |
+
+#### `SequencesService.beginTransaction(options): DeferredTransaction`
+
+`beginTransaction` — the deferred-tx door for ref()-bound
+ single-statement writes (`tx.add/update/...` return `Deferred`
+ handles whose `.ref()` binds one op's RETURNING into another — the
+ ONLY form that compiles a multi-write CTE). Repo ops inside carry
+ `{ actor }` explicitly by contract. Requires the gateway tx
+ beginner (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `TimeoutOverrideOptions` |  |
+
+#### `SequencesService.audit(uuid, page, limit): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| page | `number` |  |
+| limit | `number` |  |
+
+#### `SequencesService.stream(query): AsyncGenerator<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
 ### `ServiceRegistryRefEntity`
 
 `ServiceRegistryRefEntity` — read-only projection of the platform
@@ -1305,6 +1513,12 @@ markers); ports that do not persist a row may return `0n`.
 | changed_by_idp_code | `string \| null` |  |
 | version | `number` |  |
 | delta | `Record<string, unknown>` |  |
+
+### `BuiltinDeclCtx`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| actor | `() => string` |  |
 
 ### `BulkCustomAction`
 
@@ -3083,6 +3297,10 @@ the renderer).
 
 **Type:** `readonly ActionColor[]`
 
+### `BUILTIN_DECL_REGISTRY_KEY`
+
+**Type:** `typeof BUILTIN_DECL_REGISTRY_KEY`
+
 ### `BUILTIN_ENTITIES`
 
 BUILTIN_ENTITIES — the platform-owned entity classes mounted BY
@@ -3920,6 +4138,16 @@ Destructive changes (DROP) are never emitted — DB-only objects are WARN commen
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | input | `VectorHybridInput` |  |
+
+### `builtinSequenceEntityDecl(ctx): Record<string, unknown>`
+
+Build the `sequence` EntityRouteDecl for the calling module. The
+ return type is structural — dal cannot import the SDK's
+ EntityRouteDecl; makeServiceRoutes consumes the shape.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctx | `BuiltinDeclCtx` |  |
 
 ### `Calculated(expr, opts): PropertyDecorator`
 
@@ -5315,6 +5543,12 @@ Declares a served-meta reference: the column's value is the uid (uuid)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `string` |  |
+
+### `registerBuiltinEntityDeclFactory(factory): void`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| factory | `BuiltinDeclFactory` |  |
 
 ### `registerEntityService(cfg): void`
 

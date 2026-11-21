@@ -262,6 +262,12 @@ export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 export { SequenceEntity } from "./entities/sequence-entity.js";
 export { SequenceCounterEntity } from "./entities/sequence-counter-entity.js";
 export { BUILTIN_ENTITIES } from "./entities/builtin-entities.js";
+// Side-effect import — registers the builtin entity decl factories on
+// the cross-package Symbol.for registry so makeServiceRoutes can mount
+// them at construction (no module code, no imports across the boundary).
+import "./builtin/builtin-register.js";
+export { builtinSequenceEntityDecl, SequencesService, type BuiltinDeclCtx } from "./builtin/sequence-decl.js";
+export { registerBuiltinEntityDeclFactory, BUILTIN_DECL_REGISTRY_KEY } from "./builtin/builtin-register.js";
 
 // Dal gateway — high-level pool-owning singleton with best-practice defaults.
 // `Dal` is exported TYPE-ONLY: consumers may annotate (`private _dal: Dal`)
