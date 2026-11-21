@@ -15,7 +15,7 @@ import { ValidationError } from "../errors/errors.js";
  * listed — rows exist only to be claimed atomically inside a consumer's
  * transaction (`Repository.sequenceAllocate`).
  *
- * Identity = (sequence_id, period_key, partition_key):
+ * Identity = (sequence_uuid, period_key, partition_key):
  *   - `period_key` derives from the pattern's finest date token at the
  *     allocation business date (`''` for period-free patterns). Rows are
  *     append-only: an old period's row IS the immutable record of where
@@ -50,16 +50,16 @@ export class SequenceCounterEntity extends Auditable(EntityBase) {
   /** → `sequences.uuid` of the owning definition (same module schema). */
   @Unique("sequence_counters_identity", 0)
   @Column({ pgType: "uuid", nullable: false })
-  sequence_id!: string;
+  sequence_uuid!: string;
 
   /** Period identity from `derivePeriodKey` — `''` for period-free patterns. */
   @Unique("sequence_counters_identity", 1)
-  @Column({ length: 64, nullable: false, defaultSql: "''" })
+  @Column({ pgType: "varchar", length: 64, nullable: false, defaultSql: "''" })
   period_key!: string;
 
   /** Sezionale tuple `sez\x1fsez2\x1fsez3` — `''`…`''` when partition-free. */
   @Unique("sequence_counters_identity", 2)
-  @Column({ length: 255, nullable: false, defaultSql: "''" })
+  @Column({ pgType: "varchar", length: 255, nullable: false, defaultSql: "''" })
   partition_key!: string;
 
   /** NEXT-TO-EMIT counter — claimed ranges bump it atomically. */
@@ -71,7 +71,7 @@ export class SequenceCounterEntity extends Auditable(EntityBase) {
   last_alloc_at?: Date | null;
 
   /** Actor of the last claim (attribution, overwritten). */
-  @Column({ length: 100, nullable: true })
+  @Column({ pgType: "varchar", length: 100, nullable: true })
   last_alloc_by?: string | null;
 
   /** Codes taken by the last claim (attribution, overwritten). */

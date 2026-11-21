@@ -33,7 +33,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sequence_counters (
         uuid             uuid NOT NULL DEFAULT uuidv7() PRIMARY KEY,
-        sequence_id      uuid NOT NULL,
+        sequence_uuid      uuid NOT NULL,
         period_key       varchar(64)  NOT NULL DEFAULT '',
         partition_key    varchar(255) NOT NULL DEFAULT '',
         counter          bigint NOT NULL,
@@ -45,7 +45,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
         updated_at       timestamptz NOT NULL DEFAULT now(),
         updated_by       varchar(100) NOT NULL DEFAULT 'test',
         version          int NOT NULL DEFAULT 1,
-        UNIQUE (sequence_id, period_key, partition_key)
+        UNIQUE (sequence_uuid, period_key, partition_key)
       )
     `);
     repo = new Repository(pool, REPO_INTERNAL);
@@ -61,7 +61,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
 
   it("first claim INSERTs the counter — emits [start, start+(n-1)·step]", async () => {
     const r = await repo.sequenceAllocate({
-      sequence_id: SEQ_A,
+      sequence_uuid: SEQ_A,
       period_key: "",
       partition_key: "\x1f\x1f",
       count: 3,
@@ -72,7 +72,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
     expect(r).toEqual({ first: 10n, last: 20n }); // 10,15,20 emitted
 
     const row = await pool.query(
-      `SELECT counter, last_alloc_by, last_alloc_count FROM sequence_counters WHERE sequence_id=$1`,
+      `SELECT counter, last_alloc_by, last_alloc_count FROM sequence_counters WHERE sequence_uuid=$1`,
       [SEQ_A],
     );
     expect(row.rows[0].counter).toBe(25n); // next-to-emit
@@ -81,7 +81,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
   });
 
   it("next claim continues — disjoint range, no doubles", async () => {
-    const spec = { sequence_id: SEQ_A, period_key: "", partition_key: "\x1f\x1f", count: 2, step: 1n, start: 1n, actor: "t" };
+    const spec = { sequence_uuid: SEQ_A, period_key: "", partition_key: "\x1f\x1f", count: 2, step: 1n, start: 1n, actor: "t" };
     const a = await repo.sequenceAllocate(spec);
     const b = await repo.sequenceAllocate(spec);
     expect(a).toEqual({ first: 1n, last: 2n });
@@ -89,7 +89,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
   });
 
   it("concurrent claims serialize — 5×10 disjoint codes, counter lands at start+50·step", async () => {
-    const spec = { sequence_id: SEQ_A, period_key: "", partition_key: "\x1f\x1f", count: 10, step: 1n, start: 100n, actor: "t" };
+    const spec = { sequence_uuid: SEQ_A, period_key: "", partition_key: "\x1f\x1f", count: 10, step: 1n, start: 100n, actor: "t" };
     const ranges = await Promise.all([...Array(5)].map(() => repo.sequenceAllocate(spec)));
     const emitted = ranges.flatMap((r) => {
       const codes: bigint[] = [];
@@ -97,31 +97,31 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
       return codes;
     });
     expect(new Set(emitted).size).toBe(50); // zero doubles under concurrency
-    const row = await pool.query(`SELECT counter FROM sequence_counters WHERE sequence_id=$1`, [SEQ_A]);
+    const row = await pool.query(`SELECT counter FROM sequence_counters WHERE sequence_uuid=$1`, [SEQ_A]);
     expect(row.rows[0].counter).toBe(150n);
   });
 
   it("period + partition identity isolate counters", async () => {
-    const base = { sequence_id: SEQ_A, count: 1, step: 1n, start: 1n, actor: "t" };
+    const base = { sequence_uuid: SEQ_A, count: 1, step: 1n, start: 1n, actor: "t" };
     const a = await repo.sequenceAllocate({ ...base, period_key: "2026", partition_key: "\x1f\x1f" });
     const b = await repo.sequenceAllocate({ ...base, period_key: "2027", partition_key: "\x1f\x1f" });
     const c = await repo.sequenceAllocate({ ...base, period_key: "2026", partition_key: "IT\x1f\x1f" });
     expect(a.first).toBe(1n);
     expect(b.first).toBe(1n); // new period restarts at start
     expect(c.first).toBe(1n); // new partition restarts at start
-    const rows = await pool.query(`SELECT COUNT(*)::int AS n FROM sequence_counters WHERE sequence_id=$1`, [SEQ_A]);
+    const rows = await pool.query(`SELECT COUNT(*)::int AS n FROM sequence_counters WHERE sequence_uuid=$1`, [SEQ_A]);
     expect(rows.rows[0].n).toBe(3);
   });
 
   it("different sequences never share a counter", async () => {
     const spec = { period_key: "", partition_key: "\x1f\x1f", count: 1, step: 1n, start: 1n, actor: "t" };
-    expect((await repo.sequenceAllocate({ ...spec, sequence_id: SEQ_A })).first).toBe(1n);
-    expect((await repo.sequenceAllocate({ ...spec, sequence_id: SEQ_B })).first).toBe(1n);
+    expect((await repo.sequenceAllocate({ ...spec, sequence_uuid: SEQ_A })).first).toBe(1n);
+    expect((await repo.sequenceAllocate({ ...spec, sequence_uuid: SEQ_B })).first).toBe(1n);
   });
 
   it("negative step counts down", async () => {
     const r = await repo.sequenceAllocate({
-      sequence_id: SEQ_A, period_key: "", partition_key: "\x1f\x1f",
+      sequence_uuid: SEQ_A, period_key: "", partition_key: "\x1f\x1f",
       count: 3, step: -2n, start: 10n, actor: "t",
     });
     expect(r).toEqual({ first: 10n, last: 6n }); // 10,8,6 — next emit 4
@@ -135,7 +135,7 @@ describe("Repository.sequenceAllocate — atomic counter claim", () => {
   ])("fail-closed validation %s", async (bad, re) => {
     await expect(
       repo.sequenceAllocate({
-        sequence_id: SEQ_A, period_key: "", partition_key: "\x1f\x1f",
+        sequence_uuid: SEQ_A, period_key: "", partition_key: "\x1f\x1f",
         count: 1, step: 1n, start: 1n, actor: "t", ...bad,
       }),
     ).rejects.toThrow(re);

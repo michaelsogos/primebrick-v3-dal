@@ -261,6 +261,7 @@ export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 // subclassing throws — the counter namespace is one-per-module by contract)
 export { SequenceEntity } from "./entities/sequence-entity.js";
 export { SequenceCounterEntity } from "./entities/sequence-counter-entity.js";
+export { BUILTIN_ENTITIES } from "./entities/builtin-entities.js";
 
 // Dal gateway — high-level pool-owning singleton with best-practice defaults.
 // `Dal` is exported TYPE-ONLY: consumers may annotate (`private _dal: Dal`)

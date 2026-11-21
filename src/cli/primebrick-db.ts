@@ -7,12 +7,12 @@
  * src/schema-diff.
  *
  * Commands:
- *   primebrick-db compare --registry <module.ts> --url <pg-url> [--out db-meta]
+ *   primebrick-db compare --registry <module.ts> --url <pg-url> [--schema s] [--out db-meta]
  *       entity-snapshot vs catalog → snapshots JSON + unsigned .sql patch +
  *       refreshed (unsigned) MANIFEST.json entries
  *   primebrick-db apply   --schema <s> --url <pg-url> --patches <dir>
  *       run the engine once (same code path as service boot)
- *   primebrick-db check   --registry <module.ts> --url <pg-url>
+ *   primebrick-db check   --registry <module.ts> (--url <pg-url> | --snapshot <file>) [--schema s]
  *       drift gate — exit 1 when entity intent is not fully applied
  *   primebrick-db status  --schema <s> --url <pg-url>
  *       print the <schema>.primebrick_database_patches registry
@@ -62,6 +62,40 @@ import {
 import { getEntityPersistenceMeta, type EntityClass } from "../meta/entity-meta.js";
 import { extractEntityAnnotations, type EntityAnnotationMap } from "../meta/entity-annotation-extract.js";
 import { collectEntityTypeWarnings } from "../schema-diff/build-entity-snapshot.js";
+import { BUILTIN_ENTITIES } from "../entities/builtin-entities.js";
+import { configureSchemaDomain } from "../meta/schema-domain.js";
+
+/**
+ * The full entity set a module's schema contains: the module's declared
+ * registry PLUS the platform-owned builtins — mounted by the framework at
+ * boot, never authored per-module. A builtin appearing in a module
+ * registry is a construction violation (it forks the ownership model).
+ */
+function mergeBuiltinEntities(registry: readonly EntityClass[]): EntityClass[] {
+  const builtinSet = new Set<EntityClass>(BUILTIN_ENTITIES);
+  const leaked = registry.filter((c) => builtinSet.has(c));
+  if (leaked.length > 0) {
+    throw new Error(
+      `builtin entit${leaked.length > 1 ? "ies" : "y"} [${leaked.map((c) => c.name).join(", ")}] ` +
+        `must not be declared in a module ENTITY_REGISTRY — they are mounted by the framework`,
+    );
+  }
+  return [...registry, ...BUILTIN_ENTITIES];
+}
+
+/**
+ * `--schema` (comma list, first = primary) or `DATABASE_SCHEMA` env —
+ * the same contract modules declare at runtime. Configures the schema
+ * domain so un-pinned entities (builtins) resolve to the module's owned
+ * schema instead of the `public` fallback.
+ */
+function applyDomainFlag(flags: Record<string, string>): void {
+  const raw = flags["schema"] ?? process.env.DATABASE_SCHEMA;
+  if (!raw) return;
+  const schemas = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (schemas.length === 0) return;
+  configureSchemaDomain(schemas);
+}
 
 /**
  * Static annotation map for the registry — deterministic entity types under
@@ -146,7 +180,8 @@ async function loadRegistry(modulePath: string): Promise<readonly EntityClass[]>
 
 async function cmdCompare(flags: Record<string, string>): Promise<void> {
   const registryPath = need(flags, "registry");
-  const registry = await loadRegistry(registryPath);
+  applyDomainFlag(flags);
+  const registry = mergeBuiltinEntities(await loadRegistry(registryPath));
   const annotations = await loadAnnotations(registryPath);
   const url = need(flags, "url");
   const outDir = resolve(flags["out"] ?? "db-meta");
@@ -245,7 +280,8 @@ async function cmdApply(flags: Record<string, string>): Promise<void> {
 
 async function cmdCheck(flags: Record<string, string>): Promise<void> {
   const registryPath = need(flags, "registry");
-  const registry = await loadRegistry(registryPath);
+  applyDomainFlag(flags);
+  const registry = mergeBuiltinEntities(await loadRegistry(registryPath));
   const annotations = await loadAnnotations(registryPath);
   printEntityTypeWarnings(registry, annotations);
   const snapshotPath = flags["snapshot"];
@@ -382,9 +418,9 @@ async function cmdKeygen(flags: Record<string, string>): Promise<void> {
 const { cmd, flags } = parseArgs(process.argv.slice(2));
 
 const USAGE = `primebrick-db <command> [flags]
-  compare  --registry <module> --url <pg> [--out db-meta]
+  compare  --registry <module> --url <pg> [--schema s] [--out db-meta]
   apply    --schema <s> --url <pg> [--patches db-meta/patches] [--trust release,dev]
-  check    --registry <module> (--url <pg> | --snapshot <file>)
+  check    --registry <module> (--url <pg> | --snapshot <file>) [--schema s]
   status   --schema <s> --url <pg>
   sign     --db-meta <dir> --key-id <id> --key <b64|@file>
   keygen   --key-id <id> [--trust dev|release] [--out db-meta]

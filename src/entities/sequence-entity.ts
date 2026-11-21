@@ -49,11 +49,11 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
 
   /** Module-unique addressable code — directives reference this, never uuid. */
   @Unique()
-  @Column({ length: 100, nullable: false })
+  @Column({ pgType: "varchar", length: 100, nullable: false })
   code!: string;
 
   /** Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. */
-  @Column({ nullable: false })
+  @Column({ pgType: "text", nullable: false })
   pattern!: string;
 
   /** Signed increment per emitted code — non-zero by service validation. */
@@ -65,14 +65,14 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   start!: bigint;
 
   /** IANA zone for date tokens + period_key boundary — null → UTC. */
-  @Column({ length: 100, nullable: true })
+  @Column({ pgType: "varchar", length: 100, nullable: true })
   tz?: string | null;
 
   /** i18n key for the registry label. */
-  @Column({ length: 100, nullable: true })
+  @Column({ pgType: "varchar", length: 100, nullable: true })
   label_key?: string | null;
 
   /** i18n key for the explanatory description. */
-  @Column({ length: 200, nullable: true })
+  @Column({ pgType: "varchar", length: 200, nullable: true })
   description_key?: string | null;
 }

@@ -55,11 +55,14 @@ export type EntityColumnTypeHints = {
  */
 const AUDITABLE_TYPE_PINS: Record<string, string> = {
   CREATED_AT: "timestamptz",
+  CREATED_BY: "text",
   UPDATED_AT: "timestamptz",
+  UPDATED_BY: "text",
   VERSION: "int4",
 };
 const DELETABLE_TYPE_PINS: Record<string, string> = {
   DELETED_AT: "timestamptz",
+  DELETED_BY: "text",
 };
 const SYNCHRONIZABLE_TYPE_PINS: Record<string, string> = {
   LAST_SYNCED_AT: "timestamptz",

@@ -784,7 +784,7 @@ export class Repository {
    * interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
    */
   async sequenceAllocate(spec: {
-    sequence_id: string;
+    sequence_uuid: string;
     period_key: string;
     partition_key: string;
     count: number;
@@ -801,12 +801,12 @@ export class Repository {
     const table = getQualifiedTableName(SequenceCounterEntity);
     const r = await this.db.query<{ first: bigint; last: bigint }>(
       `INSERT INTO ${table}
-         (uuid, sequence_id, period_key, partition_key, counter,
+         (uuid, sequence_uuid, period_key, partition_key, counter,
           last_alloc_at, last_alloc_by, last_alloc_count,
           created_at, created_by, updated_at, updated_by, version)
        VALUES (uuidv7(), $1, $2, $3, $4::bigint + $5::bigint * $6::bigint,
                now(), $7, $5::bigint, now(), $7, now(), $7, 1)
-       ON CONFLICT (sequence_id, period_key, partition_key) DO UPDATE
+       ON CONFLICT (sequence_uuid, period_key, partition_key) DO UPDATE
          SET counter = ${table}.counter + $5::bigint * $6::bigint,
              last_alloc_at = now(),
              last_alloc_by = $7,
@@ -817,7 +817,7 @@ export class Repository {
        RETURNING counter - $5::bigint * $6::bigint AS first,
                  counter - $6::bigint AS last`,
       [
-        spec.sequence_id,
+        spec.sequence_uuid,
         spec.period_key,
         spec.partition_key,
         spec.start,

@@ -1181,7 +1181,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (
       reg.defaultSql === undefined &&
       inferredPgType === "uuid" &&
-      (reg.isKey || reg.isUnique)
+      (reg.isKey || (reg.isUnique && reg.uniqueIndexName === undefined))
     ) {
       // uuid key/unique columns always default to uuidv7() — the
       // canonical generated identity (PG18 native, time-ordered).
