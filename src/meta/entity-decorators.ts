@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import type { DictFacet, RelationFacet } from "@primebrick/core";
+import type { DictFacet, RelationFacet, SequenceDecl } from "@primebrick/core";
 import { parseSequencePattern } from "@primebrick/core";
 
 import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
@@ -699,17 +699,12 @@ export function Ref(entity: string): PropertyDecorator {
  *  default exists in the module's sequence registry before first use. A
  *  different sequence is still reachable per-write via the explicit
  *  `{seq:{code}}` directive — sequences are data, not declarations. */
-export type SequenceDecl = {
-  /** Authored pattern — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}` —
-   *  validated by `parseSequencePattern` at decoration time. */
-  pattern: string;
-  /** Signed increment per emitted code — bigint, non-zero. */
-  step: bigint;
-  /** First next-to-emit value for a fresh (period, partition) counter. */
-  start: bigint;
-  /** IANA zone for date tokens + period_key boundary — null → UTC. */
-  tz?: string | null;
-};
+/** The authored sequence definition — the canonical type lives in core
+ *  (`sequence.ts`) so the `@SequenceField` decl and the wire directive's
+ *  expr form are ONE shape: `{pattern, step, start, tz?}` — pattern
+ *  validated by `parseSequencePattern`, bigint-only `step`/`start`,
+ *  `tz` an IANA zone or null. */
+export type { SequenceDecl };
 
 /** The resolution-time shape: the authored decl plus the derived default
  *  sequence code (`<table>.<field>`). Carried on persistence column meta
