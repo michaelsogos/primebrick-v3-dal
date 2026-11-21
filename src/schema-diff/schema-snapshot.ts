@@ -164,6 +164,13 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     const entityKeySig = (ei: SchemaIndexMeta) =>
       ei.expressions?.length ? normKeys([...ei.expressions, ...ei.columns].join(",")) : null;
     const dbKeySig = (di: SchemaIndexMeta): string => {
+      // An entity snapshot carries `expressions` natively — db:check
+      // compares against it, not a live-catalog row, so `definition` is
+      // absent there. Mirror the entity-side signature instead of
+      // extracting from `definition`.
+      if (di.expressions?.length) {
+        return normKeys([...di.expressions, ...di.columns].join(","));
+      }
       const def = di.definition ?? "";
       const open = def.indexOf("(", def.search(/\busing\s+\w+/i));
       if (open < 0) return "";

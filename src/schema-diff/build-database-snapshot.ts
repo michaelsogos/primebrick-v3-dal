@@ -134,9 +134,12 @@ export async function buildDatabaseSnapshot(
     // secondary indexes (non-PK) — matched by constraint/index name downstream
     const { rows: idxRows } = await db.query<{
       name: string; using: string; is_unique: boolean; def: string;
+      key_defs: string[] | null;
     }>(
       `SELECT c.relname AS name, am.amname AS using, i.indisunique AS is_unique,
-              pg_get_indexdef(i.indexrelid) AS def
+              pg_get_indexdef(i.indexrelid) AS def,
+              (SELECT array_agg(pg_get_indexdef(i.indexrelid, k.n, false) ORDER BY k.n)
+                 FROM generate_series(1, i.indnkeyatts) AS k(n)) AS key_defs
        FROM pg_index i
        JOIN pg_class c  ON c.oid  = i.indexrelid
        JOIN pg_am am    ON am.oid = c.relam
@@ -145,16 +148,24 @@ export async function buildDatabaseSnapshot(
        WHERE n.nspname = $1 AND t.relname = $2 AND NOT i.indisprimary`,
       [schema, name]
     );
-    const indexes = idxRows.map((r) => ({
-      name: r.name,
-      using: r.using,
-      isUnique: r.is_unique,
-      // column list parsed from pg_get_indexdef's "( ... )" section — best effort,
-      // name-identity is the authoritative match anyway
-      columns: parseIndexColumns(r.def),
-      where: parseIndexPredicate(r.def),
-      definition: r.def,
-    }));
+    const indexes = idxRows.map((r) => {
+      // Canonical per-key definitions via `pg_get_indexdef(oid, col)` — a key
+      // that isn't a plain column of the table is an expression (e.g. the
+      // `@Relation` pair-unique `LEAST/GREATEST` keys); both sides of the
+      // snapshot then share the same expressions+columns shape.
+      const keys = r.key_defs ?? [];
+      const plain = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] !== undefined);
+      const exprs = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] === undefined);
+      return {
+        name: r.name,
+        using: r.using,
+        isUnique: r.is_unique,
+        columns: plain,
+        ...(exprs.length ? { expressions: exprs } : {}),
+        where: parseIndexPredicate(r.def),
+        definition: r.def,
+      };
+    });
 
     // foreign keys
     const { rows: fkRows } = await db.query<{
@@ -197,16 +208,6 @@ export async function buildDatabaseSnapshot(
   }
 
   return { version: 1, generatedAt, source: "database", tables: out };
-}
-
-/** Extract "(a, b)" column list from pg_get_indexdef output (best effort). */
-function parseIndexColumns(def: string): string[] {
-  const m = /\(([^)]*)\)/.exec(def);
-  if (!m) return [];
-  return m[1]!
-    .split(",")
-    .map((s) => s.trim().replace(/^"|"$/g, "").replace(/\s+(asc|desc|nulls\s+\w+|opclass.*)$/i, ""))
-    .filter(Boolean);
 }
 
 /** Extract WHERE predicate from a partial index definition. */
