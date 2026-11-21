@@ -857,6 +857,20 @@ Governed counter SET — writes an EXPLICIT next-to-emit value into
 |-----------|------|-------------|
 | spec | `{ seq: { code: string } \| { uuid: string }; next: bigint; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date; actor: string }` |  |
 
+#### `Repository.sequenceAnalyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
+
+Read-only column-usage analysis for a sequence pattern — the
+ operator's pre-check before `sequenceSet` (or a fresh bind): scans a
+ physical text column inside the module's own schema with a
+ pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
+ sequences sharing a prefix never pollute each other's report).
+ Target resolves from explicit `table`/`column`, else the bound code
+ `<table>.<field>`. Pure SELECTs — nothing is created or mutated.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ seq: { code: string } \| { uuid: string }; table: string; column: string; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date }` |  |
+
 #### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
 
 distinctAuditActors — the governed vocabulary behind
@@ -1172,6 +1186,17 @@ The contract every entity service must satisfy — enforced on the router.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | spec | `{ uuid: string; next: bigint; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
+#### `SequencesService.analyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
+
+`sequence-analyze` RPC — read-only column-usage scan for the
+ pattern (the operator's pre-check before `sequence-set` or a fresh
+ bind). Delegates to the repository primitive inside a governed tx —
+ pure SELECTs, nothing mutates.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; code: string; table: string; column: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
 
 #### `SequencesService.svcFor(entity): EntityService<T2>`
 

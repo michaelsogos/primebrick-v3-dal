@@ -251,6 +251,30 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
         });
     return { uuid: spec.uuid, period_key, partition_key, counter: saved.counter };
   }
+
+  /** `sequence-analyze` RPC — read-only column-usage scan for the
+   *  pattern (the operator's pre-check before `sequence-set` or a fresh
+   *  bind). Delegates to the repository primitive inside a governed tx —
+   *  pure SELECTs, nothing mutates. */
+  async analyze(spec: {
+    uuid?: string; code?: string;
+    table?: string; column?: string;
+    sez?: string; sez2?: string; sez3?: string;
+    at?: Date;
+  }) {
+    const seq = spec.uuid !== undefined ? { uuid: spec.uuid } : { code: spec.code! };
+    return this.svc.transaction((tx) =>
+      tx.sequenceAnalyze({
+        seq,
+        ...(spec.table !== undefined ? { table: spec.table } : {}),
+        ...(spec.column !== undefined ? { column: spec.column } : {}),
+        ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+        ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+        ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+        ...(spec.at !== undefined ? { at: spec.at } : {}),
+      }),
+    );
+  }
 }
 
 // ─── wire validators (zod-free — dal carries no zod) ─────────────────────
@@ -450,6 +474,27 @@ function vForecastBody(raw: unknown): {
   return { ...(uuid !== undefined ? { uuid } : {}), ...(code !== undefined ? { code } : {}), ...vSezCtx(rec) };
 }
 
+function vAnalyzeBody(raw: unknown): {
+  uuid?: string; code?: string;
+  table?: string; column?: string;
+  sez?: string; sez2?: string; sez3?: string; at?: Date;
+} {
+  const rec = vObjectBody(raw);
+  const uuid = rec.uuid === undefined || rec.uuid === null ? undefined : vString(rec.uuid, "uuid", 40);
+  const code = rec.code === undefined || rec.code === null ? undefined : vString(rec.code, "code", 100);
+  if (uuid === undefined && code === undefined) bad("identity", "uuid or code is required");
+  const table = rec.table === undefined || rec.table === null ? undefined : vString(rec.table, "table", 63);
+  const column = rec.column === undefined || rec.column === null ? undefined : vString(rec.column, "column", 63);
+  if ((table === undefined) !== (column === undefined)) bad("target", "table and column must come together");
+  return {
+    ...(uuid !== undefined ? { uuid } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(table !== undefined ? { table } : {}),
+    ...(column !== undefined ? { column } : {}),
+    ...vSezCtx(rec),
+  };
+}
+
 /** Builtin RPC routes for the `sequence` entity — mounted by
  *  makeServiceRoutes from the same globalThis factory registry as the
  *  entity decl (a module-authored `/api/v1/actions/sequence-*` route is
@@ -548,6 +593,49 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
       },
       body: vForecastBody,
       handler: async (c: { body: Parameters<SequencesService["forecast"]>[0] }) => svc.forecast(c.body),
+    },
+    {
+      method: "POST",
+      path: "/api/v1/actions/sequence-analyze",
+      permissions: [P("read", "single")],
+      auth: "user",
+      openapi: {
+        summary: "Analyze column usage for a sequence",
+        description:
+          "Read-only pre-check: scans a text column in the module's schema with the " +
+          "pattern-exact regex and reports in-use count, max numeric value, proposed " +
+          "next, collisions and ambiguous sibling sequences. Target derives from a " +
+          "<table>.<field> code or explicit table/column. Never mutates state.",
+        tags: ["sequences"],
+        requestSchema: {
+          type: "object",
+          properties: {
+            uuid: { type: "string" },
+            code: { type: "string" },
+            table: { type: "string" },
+            column: { type: "string" },
+            sez: { type: "string" }, sez2: { type: "string" }, sez3: { type: "string" },
+            at: { type: "string", format: "date-time" },
+          },
+        },
+        responseSchema: {
+          type: "object",
+          properties: {
+            table: { type: "string" },
+            column: { type: "string" },
+            in_use: { type: "integer" },
+            max_value: { type: ["integer", "null"] },
+            suggested_start: { type: "integer" },
+            next_proposed: { type: "string" },
+            next_in_use: { type: "boolean" },
+            conflicts_above: { type: "integer" },
+            partitions: { type: "array", items: { type: "object" } },
+            ambiguous: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      body: vAnalyzeBody,
+      handler: async (c: { body: Parameters<SequencesService["analyze"]>[0] }) => svc.analyze(c.body),
     },
   ];
 }

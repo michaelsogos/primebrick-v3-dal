@@ -44,6 +44,7 @@ import {
   type SequencePartitions,
 } from "@primebrick/core";
 import type { SequenceBound } from "../meta/entity-decorators.js";
+import { getSchemaDomain } from "../meta/schema-domain.js";
 import { sha256Hex } from "../schema-diff/patch-naming.js";
 import type {
   FindByIdOptions,
@@ -921,6 +922,193 @@ export class Repository {
     return { counter_uuid: row.uuid, period_key, partition_key, counter: row.counter };
   }
 
+  /** Read-only column-usage analysis for a sequence pattern — the
+   *  operator's pre-check before `sequenceSet` (or a fresh bind): scans a
+   *  physical text column inside the module's own schema with a
+   *  pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
+   *  sequences sharing a prefix never pollute each other's report).
+   *  Target resolves from explicit `table`/`column`, else the bound code
+   *  `<table>.<field>`. Pure SELECTs — nothing is created or mutated. */
+  async sequenceAnalyze(spec: {
+    seq: { code: string } | { uuid: string };
+    table?: string;
+    column?: string;
+    sez?: string | null;
+    sez2?: string | null;
+    sez3?: string | null;
+    at?: Date;
+  }): Promise<{
+    table: string; column: string;
+    in_use: bigint;
+    max_value: bigint | null;
+    suggested_start: bigint;
+    next_proposed: string | null;
+    next_in_use: boolean;
+    conflicts_above: bigint | null;
+    partitions: { partition_key: string; in_use: bigint; max_value: bigint | null }[];
+    ambiguous: string[];
+  }> {
+    const q = this.db as Queryable;
+    const s = await this.loadSequence(q, spec.seq);
+    const pattern = s.pattern;
+
+    // ── target column: explicit, else derived from a `<table>.<field>` code
+    const IDENT = /^[a-z_][a-z0-9_]*$/;
+    let table = spec.table;
+    let column = spec.column;
+    if (table === undefined && column === undefined) {
+      const parts = s.code.split(".");
+      if (parts.length === 2) { table = parts[0]; column = parts[1]; }
+    }
+    if (table === undefined || column === undefined) {
+      throw new ValidationError(
+        "sequenceAnalyze: table and column are required (the sequence code carries no derivable <table>.<field> binding)",
+      );
+    }
+    if (!IDENT.test(table) || !IDENT.test(column)) {
+      throw new ValidationError("sequenceAnalyze: table/column must be snake_case identifiers");
+    }
+    const schema = getSchemaDomain()?.primary ?? "public";
+    const colMeta = await q.query<{ data_type: string }>(
+      `SELECT data_type FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2 AND column_name = $3`,
+      [schema, table, column],
+    );
+    if (!colMeta.rows[0]) {
+      throw new ValidationError(`sequenceAnalyze: ${schema}.${table}.${column} does not exist`);
+    }
+    if (colMeta.rows[0].data_type !== "character varying" && colMeta.rows[0].data_type !== "text") {
+      throw new ValidationError(
+        `sequenceAnalyze: ${schema}.${table}.${column} is ${colMeta.rows[0].data_type}, expected text/varchar`,
+      );
+    }
+    const hasDeletedAt = (await q.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2 AND column_name = 'deleted_at'`,
+      [schema, table],
+    )).rows[0]!.n > 0;
+
+    // ── pattern → anchored POSIX regex; counter + given sez slots are capture groups
+    const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const DATE_W: Record<string, string> = { yyyy: "4", yy: "2", MM: "2", dd: "2", q: "1" };
+    let seqIdx = 0;
+    const sezIdx = new Map<string, number>();
+    let groups = 0;
+    const rx = "^" + pattern.segments.map((seg) => {
+      if (seg.kind === "literal") return esc(seg.text);
+      if (seg.kind === "counter") { seqIdx = ++groups; return `([0-9]{${seg.width > 0 ? `${seg.width},` : ""}})`; }
+      if (seg.kind === "date") return `[0-9]{${DATE_W[seg.token]}}`;
+      // sez: an explicit ctx value narrows to that partition, else a charset group
+      const v = spec[seg.slot];
+      if (v !== undefined && v !== null && v !== "") return esc(v);
+      sezIdx.set(seg.slot, ++groups);
+      return `([A-Za-z0-9][A-Za-z0-9_.\\-/]*)`;
+    }).join("") + "$";
+
+    // ── per-partition scan: GROUP BY the captured sez segments
+    const qualified = `"${schema}"."${table}"`;
+    const alive = hasDeletedAt ? ` AND t."deleted_at" IS NULL` : "";
+    const slots = [...pattern.sez_slots];
+    const scan = await q.query<{ m: string[] }>(
+      `SELECT m FROM (
+         SELECT (regexp_match(t."${column}", $1)) AS m
+           FROM ${qualified} t WHERE t."${column}" ~ $1${alive}
+       ) x`,
+      [rx],
+    );
+    const groups2 = new Map<string, { partition_key: string; in_use: bigint; max_value: bigint | null }>();
+    let in_use = 0n;
+    let max_value: bigint | null = null;
+    for (const r of scan.rows) {
+      const m = r.m as string[];
+      const n = BigInt(m[seqIdx - 1]);
+      in_use += 1n;
+      if (max_value === null || n > max_value) max_value = n;
+      const key = slots.map((slot, i) => String(m[(sezIdx.get(slot) ?? 0) - 1] ?? "")).join("\x1f");
+      const g = groups2.get(key) ?? { partition_key: key, in_use: 0n, max_value: null as bigint | null };
+      g.in_use += 1n;
+      if (g.max_value === null || n > g.max_value) g.max_value = n;
+      groups2.set(key, g);
+    }
+
+    // ── counter context for the CURRENT period + default partition —
+    //    meaningful only when the partition is fully determined: a
+    //    partitioned pattern scanned without sez ctx gets per-partition
+    //    stats in `partitions[]` and null counter-context fields.
+    const fullyPartitioned = pattern.sez_slots.every(
+      (slot) => spec[slot] !== undefined && spec[slot] !== null && spec[slot] !== "",
+    );
+    let next_proposed: string | null = null;
+    let next_in_use = false;
+    let conflicts_above: bigint | null = null;
+    if (pattern.sez_slots.length === 0 || fullyPartitioned) {
+      const parts = validateSequencePartitions(pattern, {
+        ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+        ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+        ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+      } as SequencePartitions);
+      const partition_key = sequencePartitionKey(pattern, parts);
+      const at = spec.at ?? new Date();
+      const period_key = derivePeriodKey(pattern.period_kind, at, s.tz ?? undefined);
+      const counterTable = getQualifiedTableName(SequenceCounterEntity);
+      const crow = await q.query<{ counter: bigint }>(
+        `SELECT counter FROM ${counterTable}
+          WHERE sequence_uuid = $1 AND period_key = $2 AND partition_key = $3`,
+        [s.uuid, period_key, partition_key],
+      );
+      const current = crow.rows[0] ? BigInt(crow.rows[0].counter) : s.start;
+      next_proposed = renderSequenceValue(pattern, current, at, { tz: s.tz ?? undefined, partitions: parts });
+      const [nextHit, conflicts] = await Promise.all([
+        q.query<{ n: number }>(`SELECT 1 AS n FROM ${qualified} t WHERE t."${column}" = $1${alive} LIMIT 1`, [next_proposed]),
+        q.query<{ n: bigint }>(
+          `SELECT count(*)::bigint AS n FROM (
+             SELECT (regexp_match(t."${column}", $1)) AS m
+               FROM ${qualified} t WHERE t."${column}" ~ $1${alive}
+           ) x WHERE (m)[${seqIdx}]::bigint >= $2`,
+          [rx, current],
+        ),
+      ]);
+      next_in_use = nextHit.rows.length > 0;
+      conflicts_above = BigInt(conflicts.rows[0]!.n);
+    }
+
+    // ── ambiguity: OTHER registry sequences whose pattern also matches
+    const seqTable = getQualifiedTableName(SequenceEntity);
+    const others = await q.query<{ code: string; pattern: string }>(
+      `SELECT code, pattern FROM ${seqTable} WHERE uuid <> $1 AND deleted_at IS NULL`,
+      [s.uuid],
+    );
+    const ambiguous: string[] = [];
+    for (const o of others.rows) {
+      let opattern: SequencePattern;
+      try {
+        opattern = parseSequencePattern(o.pattern);
+      } catch {
+        continue; // a corrupt registry pattern can match nothing — skip
+      }
+      const orx = "^" + opattern.segments.map((seg) => {
+        if (seg.kind === "literal") return esc(seg.text);
+        if (seg.kind === "counter") return `[0-9]{${seg.width > 0 ? `${seg.width},` : ""}}`;
+        if (seg.kind === "date") return `[0-9]{${DATE_W[seg.token]}}`;
+        return `[A-Za-z0-9][A-Za-z0-9_.\\-/]*`;
+      }).join("") + "$";
+      const hit = await q.query(`SELECT 1 FROM ${qualified} t WHERE t."${column}" ~ $1${alive} LIMIT 1`, [orx]);
+      if (hit.rows.length > 0) ambiguous.push(o.code);
+    }
+
+    return {
+      table, column,
+      in_use,
+      max_value,
+      suggested_start: (max_value ?? s.start - s.step) + s.step,
+      next_proposed,
+      next_in_use,
+      conflicts_above,
+      partitions: [...groups2.values()],
+      ambiguous,
+    };
+  }
+
   // ─── seq-bound column resolution ──────────────────────────────────────
   // A column bound via @SequenceField never stores a raw literal through
   // the Repository: on write the value is either a sequence directive —
@@ -979,11 +1167,11 @@ export class Repository {
   private async querySequence(
     q: Queryable,
     by: { code: string } | { uuid: string },
-  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null } | null> {
+  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null } | null> {
     const table = getQualifiedTableName(SequenceEntity);
     const col = "code" in by ? "code" : "uuid";
-    const r = await q.query<{ uuid: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
-      `SELECT "uuid","pattern","step","start","tz" FROM ${table}
+    const r = await q.query<{ uuid: string; code: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
+      `SELECT "uuid","code","pattern","step","start","tz" FROM ${table}
         WHERE ${quoteIdent(col)} = $1 AND "deleted_at" IS NULL`,
       ["code" in by ? by.code : by.uuid],
     );
@@ -991,9 +1179,13 @@ export class Repository {
     if (!row) return null;
     return {
       uuid: row.uuid,
+      code: row.code,
       pattern: parseSequencePattern(row.pattern),
-      step: row.step,
-      start: row.start,
+      // bigint columns arrive as strings on pools without the INT8 parser
+      // (bare probe pools, non-dal consumers) — coerce so JS arithmetic
+      // never silently degrades to string concat.
+      step: BigInt(row.step),
+      start: BigInt(row.start),
       tz: row.tz,
     };
   }
@@ -1003,7 +1195,7 @@ export class Repository {
   private async loadSequence(
     q: Queryable,
     by: { code: string } | { uuid: string },
-  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const spec = await this.querySequence(q, by);
     if (!spec) throw new SequenceNotFoundError("code" in by ? by.code : by.uuid);
     return spec;
@@ -1017,7 +1209,7 @@ export class Repository {
     code: string,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const table = getQualifiedTableName(SequenceEntity);
     await q.query(
       `INSERT INTO ${table}
@@ -1041,7 +1233,7 @@ export class Repository {
     boundCode: string,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const hash = sha256Hex(`${decl.pattern}|${decl.step}|${decl.start}|${decl.tz ?? ""}`).slice(0, 16);
     return this.materializeSequenceRow(q, `${boundCode}@expr_${hash}`.slice(0, 100), decl, actor);
   }
@@ -1053,7 +1245,7 @@ export class Repository {
     q: Queryable,
     bound: SequenceBound,
     actor: string,
-  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const found = await this.querySequence(q, { code: bound.code });
     return found ?? this.materializeSequenceRow(q, bound.code, bound, actor);
   }
@@ -1074,7 +1266,7 @@ export class Repository {
     at?: Date;
   }> {
     const base = (spec: {
-      uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
+      uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
     }, ctx: { partitions: SequencePartitions; at?: Date }) => ({ ...spec, ...ctx });
     if (dir === null) {
       return base(await this.loadOrMaterializeBound(q, bound, actor), { partitions: {} });

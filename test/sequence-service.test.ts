@@ -138,3 +138,53 @@ describe("SequencesService — governed setCounter + read-only forecast", () => 
     expect(await counters()).toHaveLength(1); // still read-only
   });
 });
+
+describe("SequencesService — analyze (governed read-only pre-check)", () => {
+  let svc: SequencesService;
+
+  beforeAll(async () => {
+    await setupTestSchema();
+    getDal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 2,
+      applicationName: "dal-test-seqs-analyze",
+    });
+    process.env.DATABASE_SCHEMA = "public";
+    svc = new SequencesService(() => ACTOR);
+  });
+
+  afterAll(async () => {
+    await resetDal();
+    await closeTestPool();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+  });
+
+  it("scans a physical column in the module schema — reports usage/collisions/ambiguity, writes nothing", async () => {
+    // scan target: the `sequences.code` column itself (text, same schema)
+    const uuid = await seedSequence("TST-001", "TST-{seq:3}");
+    await seedSequence("TST-002", "TST-{seq:3}");
+    await seedSequence("svc.wide", "TST-{seq:2}"); // \d{2,} also matches TST-001 → ambiguous
+    const a = await svc.analyze({ uuid, table: "sequences", column: "code" });
+    expect(a.table).toBe("sequences");
+    expect(a.in_use).toBe(2n);
+    expect(a.max_value).toBe(2n);
+    expect(a.suggested_start).toBe(3n);
+    expect(a.next_proposed).toBe("TST-001");
+    expect(a.next_in_use).toBe(true);
+    expect(a.ambiguous).toContain("svc.wide");
+    expect(await counters()).toHaveLength(0); // read-only
+  });
+
+  it("derives target from <table>.<field> code when table/column omitted", async () => {
+    const uuid = await seedSequence("sequences.code", "TST-{seq:3}");
+    await seedSequence("TST-001", "Q-{seq:4}");
+    const a = await svc.analyze({ uuid });
+    expect(a.table).toBe("sequences");
+    expect(a.column).toBe("code");
+    expect(a.in_use).toBe(1n);
+  });
+});

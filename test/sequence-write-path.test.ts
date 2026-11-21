@@ -345,3 +345,111 @@ describe("Repository — sequenceSet governed primitive", () => {
     expect(counter!.counter).toBe(10n);
   });
 });
+
+describe("Repository — sequenceAnalyze read-only pre-check", () => {
+  let pool: Pool;
+  let repo: Repository;
+
+  beforeAll(async () => {
+    pool = getTestPool();
+    await setupTestSchema();
+    repo = new Repository(pool, REPO_INTERNAL);
+  });
+
+  afterAll(async () => {
+    await closeTestPool();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+    await seedSequence(SEQ_CODE);
+  });
+
+  async function seedCodes(...codes: string[]) {
+    for (const c of codes) {
+      await getTestPool().query(`INSERT INTO dal_test_seq (uuid, code, label) VALUES (uuidv7(), $1, 'x')`, [c]);
+    }
+  }
+
+  it("derives the scan target from a <table>.<field> code — reports in_use/max/suggested", async () => {
+    await seedCodes("TST-00001", "TST-00137", "TST-00138");
+    const a = await repo.sequenceAnalyze({ seq: { code: SEQ_CODE } });
+    expect(a.table).toBe("dal_test_seq");
+    expect(a.column).toBe("code");
+    expect(a.in_use).toBe(3n);
+    expect(a.max_value).toBe(138n);
+    expect(a.suggested_start).toBe(139n);
+    expect(a.next_proposed).toBe("TST-00001"); // counter never claimed
+    expect(a.next_in_use).toBe(true);          // TST-00001 exists → next emit would collide
+    expect(a.conflicts_above).toBe(3n);        // all ≥ current (1)
+    expect(a.ambiguous).toEqual([]);
+    // read-only: no counter materialized
+    expect(await counterRow()).toBeUndefined();
+  });
+
+  it("after a SET past the max, next_in_use clears and conflicts drop", async () => {
+    await seedCodes("TST-00001", "TST-00042");
+    await repo.sequenceSet({ seq: { code: SEQ_CODE }, next: 100n, actor: ACTOR });
+    const a = await repo.sequenceAnalyze({ seq: { code: SEQ_CODE } });
+    expect(a.next_proposed).toBe("TST-00100");
+    expect(a.next_in_use).toBe(false);
+    expect(a.conflicts_above).toBe(0n);
+  });
+
+  it("explicit table/column works for codes without a <table>.<field> shape", async () => {
+    await seedSequence("custom.seq", "TST-{seq:5}");
+    await seedCodes("TST-00007");
+    const a = await repo.sequenceAnalyze({ seq: { code: "custom.seq" }, table: "dal_test_seq", column: "code" });
+    expect(a.in_use).toBe(1n);
+    expect(a.max_value).toBe(7n);
+  });
+
+  it("missing table/column on a non-derivable code → ValidationError", async () => {
+    await seedSequence("custom.seq");
+    await expect(repo.sequenceAnalyze({ seq: { code: "custom.seq" } })).rejects.toThrow(ValidationError);
+  });
+
+  it("nonexistent or non-text target → ValidationError", async () => {
+    await expect(
+      repo.sequenceAnalyze({ seq: { code: SEQ_CODE }, table: "dal_test_seq", column: "nope" }),
+    ).rejects.toThrow(ValidationError);
+    await expect(
+      repo.sequenceAnalyze({ seq: { code: SEQ_CODE }, table: "dal_test_seq", column: "label" }),
+    ).resolves.toBeDefined(); // label is text — legal
+    await getTestPool().query(`CREATE TABLE IF NOT EXISTS analyze_num (n int)`);
+    await expect(
+      repo.sequenceAnalyze({ seq: { code: SEQ_CODE }, table: "analyze_num", column: "n" }),
+    ).rejects.toThrow(/text\/varchar/);
+  });
+
+  it("pattern-exact: sibling prefixes never pollute (TST-… vs TSTX-…), width matches W-or-more", async () => {
+    await seedCodes("TST-00001", "TSTX-99999", "TST-ABC");
+    const a = await repo.sequenceAnalyze({ seq: { code: SEQ_CODE } });
+    expect(a.in_use).toBe(1n); // TSTX-99999 is NOT in this pattern's space
+    expect(a.max_value).toBe(1n);
+  });
+
+  it("partitions group by sez segments; sez ctx narrows to that partition", async () => {
+    await seedSequence("dal_test_seq.part", "P-{sez}-{seq:3}");
+    await seedCodes("P-A-001", "P-A-007", "P-B-003", "Q-X-999");
+    const g = await repo.sequenceAnalyze({ seq: { code: "dal_test_seq.part" }, table: "dal_test_seq", column: "code" });
+    expect(g.in_use).toBe(3n); // Q-X-999 is a different literal prefix
+    expect(g.partitions).toHaveLength(2);
+    const pa = g.partitions.find((p) => p.partition_key.startsWith("A"))!;
+    expect(pa.in_use).toBe(2n);
+    expect(pa.max_value).toBe(7n);
+    const scoped = await repo.sequenceAnalyze({ seq: { code: "dal_test_seq.part" }, table: "dal_test_seq", column: "code", sez: "B" });
+    expect(scoped.in_use).toBe(1n);
+    expect(scoped.partitions[0]!.max_value).toBe(3n);
+  });
+
+  it("ambiguous: a sibling sequence whose pattern also matches values is listed", async () => {
+    await seedSequence("dal_test_seq.wide", "TST-{seq:3}"); // \d{3,} matches TST-00042 too
+    await seedSequence("other.seq", "Q-{seq:4}");
+    await seedCodes("TST-00042");
+    const a = await repo.sequenceAnalyze({ seq: { code: SEQ_CODE } });
+    expect(a.ambiguous).toContain("dal_test_seq.wide");
+    expect(a.ambiguous).not.toContain("other.seq");
+    expect(a.ambiguous).not.toContain(SEQ_CODE); // self never reported
+  });
+});
