@@ -69,8 +69,8 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "step", label_key: F("step"), type: "number", order: 2 },
     { key: "start", label_key: F("start"), type: "number", order: 3 },
     { key: "tz", label_key: F("tz"), type: "text", order: 4 },
-    { key: "label_key", label_key: F("label_key"), type: "text", order: 5 },
-    { key: "description_key", label_key: F("description_key"), type: "text", order: 6 },
+    { key: "label_key", label_key: F("label_key"), type: "text", format: "i18n_key", order: 5 },
+    { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 6 },
     // Counter projection — machine state from `sequence_counters`
     // (default partition @ current period), attached post-query by
     // `attachCounterProjection`. `kind:"virtual"` forces sort/filter/
