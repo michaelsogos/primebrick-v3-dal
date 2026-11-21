@@ -268,6 +268,65 @@ export async function setupTestSchema(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS test_bench_primitives_uuid_idx ON test_bench_primitives (uuid);
   `);
 
+  // Sequence builtin tables — module-registry DDL mirrored from
+  // SequenceEntity / SequenceCounterEntity (unqualified = search_path,
+  // same resolution the resolver uses in tests).
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS sequences (
+      uuid            uuid PRIMARY KEY DEFAULT uuidv7(),
+      code            varchar(100) NOT NULL,
+      pattern         text NOT NULL,
+      step            bigint NOT NULL,
+      start           bigint NOT NULL,
+      tz              varchar(100),
+      label_key       varchar(100),
+      description_key varchar(200),
+      created_at      timestamptz NOT NULL DEFAULT now(),
+      created_by      varchar(100),
+      updated_at      timestamptz NOT NULL DEFAULT now(),
+      updated_by      varchar(100),
+      version         integer NOT NULL DEFAULT 1,
+      deleted_at      timestamptz,
+      deleted_by      varchar(100)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS sequences_code_uq ON sequences (code);
+
+    CREATE TABLE IF NOT EXISTS sequence_counters (
+      uuid             uuid PRIMARY KEY DEFAULT uuidv7(),
+      sequence_uuid    uuid NOT NULL,
+      period_key       varchar(64) NOT NULL DEFAULT '',
+      partition_key    varchar(255) NOT NULL DEFAULT '',
+      counter          bigint NOT NULL,
+      last_alloc_at    timestamptz,
+      last_alloc_by    varchar(100),
+      last_alloc_count bigint,
+      created_at       timestamptz NOT NULL DEFAULT now(),
+      created_by       varchar(100),
+      updated_at       timestamptz NOT NULL DEFAULT now(),
+      updated_by       varchar(100),
+      version          integer NOT NULL DEFAULT 1
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS sequence_counters_identity
+      ON sequence_counters (sequence_uuid, period_key, partition_key);
+
+    CREATE TABLE IF NOT EXISTS dal_test_seq (
+      id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid         uuid NOT NULL DEFAULT uuidv7(),
+      code         varchar(30) NOT NULL,
+      label        varchar(255),
+      created_at   timestamptz NOT NULL DEFAULT now(),
+      created_by   varchar(100),
+      updated_at   timestamptz NOT NULL DEFAULT now(),
+      updated_by   varchar(100),
+      version      integer NOT NULL DEFAULT 1,
+      deleted_at   timestamptz,
+      deleted_by   varchar(100),
+      cloned_from  uuid
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_seq_uuid_idx ON dal_test_seq (uuid);
+    CREATE UNIQUE INDEX IF NOT EXISTS dal_test_seq_code_idx ON dal_test_seq (code);
+  `);
+
   // Realign uuid defaults on pre-existing test tables — CREATE TABLE
   // IF NOT EXISTS leaves stale gen_random_uuid() defaults behind.
   for (const table of [
@@ -276,6 +335,7 @@ export async function setupTestSchema(): Promise<void> {
     "dal_test_types",
     "test_bench_simple",
     "test_bench_primitives",
+    "dal_test_seq",
   ]) {
     await db.query(`ALTER TABLE ${table} ALTER COLUMN uuid SET DEFAULT uuidv7()`);
   }
@@ -288,7 +348,7 @@ export async function setupTestSchema(): Promise<void> {
 export async function truncateTestTables(): Promise<void> {
   const db = getTestPool();
   await db.query(`
-    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source, dal_test_rel_links RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source, dal_test_rel_links, dal_test_seq, sequences, sequence_counters RESTART IDENTITY CASCADE;
   `);
 }
 

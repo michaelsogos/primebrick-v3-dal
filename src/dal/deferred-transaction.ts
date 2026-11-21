@@ -471,6 +471,11 @@ export class DeferredTransaction {
     options: WriteOptions<TEntity> | AuditableWriteOptions<TEntity>,
   ): Deferred<TResult> {
     const ignore = options?.onConflict === "ignore";
+    if (Object.values(getEntityPersistenceMeta(entity).columns).some((c) => c.seqBound !== undefined)) {
+      throw new ValidationError(
+        "deferred transaction: seq-bound writes are unsupported — sequence allocation needs a JS-side claim between statements, which a single compiled CTE cannot express; use dal.transaction",
+      );
+    }
     return this.register<TEntity, TResult>({
       kind: "add",
       entity,
@@ -497,6 +502,12 @@ export class DeferredTransaction {
     updates: Partial<Record<keyof TEntity & string, unknown>>,
     options: (WriteOptions | AuditableWriteOptions) & MatchByOptions<TEntity>,
   ): Deferred<TResult> {
+    const seqCols = Object.values(getEntityPersistenceMeta(entity).columns).filter((c) => c.seqBound !== undefined);
+    if (seqCols.some((c) => (updates as Record<string, unknown>)[c.propertyKey] !== undefined)) {
+      throw new ValidationError(
+        "deferred transaction: seq-bound writes are unsupported — sequence allocation needs a JS-side claim between statements, which a single compiled CTE cannot express; use dal.transaction",
+      );
+    }
     return this.register<TEntity, TResult>({
       kind: "update",
       entity,

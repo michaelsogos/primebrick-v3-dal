@@ -33,6 +33,20 @@ export class MultipleRowsError extends DalError {
   }
 }
 
+/** Thrown when a sequence directive references a sequence that does not
+ *  exist — the missing code/uuid is in `identity`. NEVER falls back to a
+ *  default: an explicitly-named missing sequence and a missing derived
+ *  default are the same hard error. */
+export class SequenceNotFoundError extends DalError {
+  readonly code = "SEQUENCE_NOT_FOUND";
+  constructor(
+    /** The missing sequence's code or uuid — always populated. */
+    readonly identity: string,
+  ) {
+    super(`sequence not found: ${identity}`);
+  }
+}
+
 /** Thrown when a write operation (add, update) receives a property not in entity metadata. */
 export class UnknownColumnError extends DalError {
   readonly code = "UNKNOWN_COLUMN";

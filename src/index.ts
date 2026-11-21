@@ -177,6 +177,7 @@ export {
 export {
   DalError,
   NotFoundError,
+  SequenceNotFoundError,
   MultipleRowsError,
   UnknownColumnError,
   ValidationError,

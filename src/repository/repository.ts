@@ -28,6 +28,22 @@ import { field, Filter } from "../query/dsl.js";
 import { buildSelectQuery, buildVectorSearchQuery, quoteIdent } from "../query/query-builder.js";
 import { createStream } from "../query/streaming.js";
 import { SequenceCounterEntity } from "../entities/sequence-counter-entity.js";
+import { SequenceEntity } from "../entities/sequence-entity.js";
+import {
+  extJsonStringify,
+  parseSequenceDirective,
+  parseSequencePattern,
+  validateSequencePartitions,
+  sequencePartitionKey,
+  derivePeriodKey,
+  renderSequenceValue,
+  renderSequenceRange,
+  type SequenceDecl,
+  type SequenceDirective,
+  type SequencePattern,
+  type SequencePartitions,
+} from "@primebrick/core";
+import { sha256Hex } from "../schema-diff/patch-naming.js";
 import type {
   FindByIdOptions,
   FindOptions,
@@ -44,7 +60,7 @@ import type {
   BulkResult,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
-import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError } from "../errors/errors.js";
+import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError, SequenceNotFoundError } from "../errors/errors.js";
 import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { isUuidV7, newUuidV7 } from "../types/uuid.js";
@@ -465,16 +481,23 @@ export class Repository {
    * returned deadline is checked between statements so the whole op cannot
    * outlive the budget even across many fast statements.
    */
-  private async bulkBegin(options: { timeoutMs?: number } | undefined): Promise<{ client: PoolClient; deadline: number | null }> {
+  private async bulkBegin(options: { timeoutMs?: number } | undefined): Promise<{ client: PoolClient; deadline: number | null; owned: boolean }> {
     const client = await this.getClient();
-    await client.query("BEGIN");
+    // `owned` = this bulk op opened its own transaction. On a tx-bound
+    // repo (dal.transaction) the caller's BEGIN/COMMIT owns the boundary —
+    // a nested BEGIN here would warn-no-op and a COMMIT would commit the
+    // caller's work early, so both are skipped.
+    const owned = this.poolBound();
+    if (owned) {
+      await client.query("BEGIN");
+    }
     const budget = options?.timeoutMs ?? this.bulkTimeoutMs;
     let deadline: number | null = null;
     if (budget !== undefined && budget !== null && budget > 0) {
       await client.query(`SET LOCAL statement_timeout TO ${budget}`);
       deadline = Date.now() + budget;
     }
-    return { client, deadline };
+    return { client, deadline, owned };
   }
 
   /** Throws when the bulk operation has outlived its wall-clock budget. */
@@ -792,6 +815,22 @@ export class Repository {
     start: bigint;
     actor: string;
   }): Promise<{ first: bigint; last: bigint }> {
+    return this.sequenceAllocateOn(this.db, spec);
+  }
+
+  /** The claim primitive bound to an explicit queryable — the seq-bound
+   *  resolver calls it on the caller's tx (lazy mini-tx, bulk `client`,
+   *  or the inherited tx connection) so counter claim + entity write are
+   *  ONE atomic unit. INTERNAL — never routed. */
+  private async sequenceAllocateOn(q: Queryable, spec: {
+    sequence_uuid: string;
+    period_key: string;
+    partition_key: string;
+    count: number;
+    step: bigint;
+    start: bigint;
+    actor: string;
+  }): Promise<{ first: bigint; last: bigint }> {
     if (!Number.isInteger(spec.count) || spec.count < 1) {
       throw new ValidationError(`sequenceAllocate: count must be a positive integer, got ${spec.count}`);
     }
@@ -799,7 +838,7 @@ export class Repository {
       throw new ValidationError("sequenceAllocate: step must be non-zero");
     }
     const table = getQualifiedTableName(SequenceCounterEntity);
-    const r = await this.db.query<{ first: bigint; last: bigint }>(
+    const r = await q.query<{ first: bigint; last: bigint }>(
       `INSERT INTO ${table}
          (uuid, sequence_uuid, period_key, partition_key, counter,
           last_alloc_at, last_alloc_by, last_alloc_count,
@@ -829,6 +868,273 @@ export class Repository {
     const row = r.rows[0];
     if (!row) throw new ValidationError("sequenceAllocate: claim returned no row — identity constraint unreachable");
     return { first: row.first, last: row.last };
+  }
+
+  // ─── seq-bound column resolution ──────────────────────────────────────
+  // A column bound via @SequenceField never stores a raw literal through
+  // the Repository: on write the value is either a sequence directive —
+  // `{seq:uuid}` / `{seq:{code}}` / `{seq:{pattern,step,start}}` — or
+  // omitted on create, which allocates the field's default sequence
+  // (`<table>.<field>`). The counter claim and the entity write always
+  // share ONE transaction: pool-bound calls run inside a lazy mini-tx,
+  // a tx-bound repo joins the caller's transaction.
+
+  /** Columns carrying a @SequenceField binding. */
+  private seqBoundColumns(meta: EntityPersistenceMeta) {
+    return Object.values(meta.columns).filter((c) => c.seqBound !== undefined);
+  }
+
+  /** Lazy atomicity wrapper for pool-bound seq work: opens a mini-tx on
+   *  a dedicated client and runs `fn` against a client-bound repo. Events
+   *  the inner repo emits buffer and drain AFTER COMMIT through the
+   *  caller's events port — the same post-commit contract
+   *  `dal.transaction` gives its txRepo. A tx-bound repo never reaches
+   *  this wrapper — it resolves inline on the caller's connection. */
+  private async withSeqTx<T>(
+    options: WriteOptions<any>,
+    fn: (r: Repository) => Promise<T>,
+  ): Promise<T> {
+    const client = await (this.db as Pool).connect();
+    const txRepo = new Repository(client, REPO_INTERNAL, this.bulkTimeoutMs);
+    txRepo.eventBuffer = [];
+    try {
+      await client.query("BEGIN");
+      const out = await fn(txRepo);
+      await client.query("COMMIT");
+      const drafts = txRepo.eventBuffer ?? [];
+      txRepo.eventBuffer = undefined;
+      for (const d of drafts) {
+        void options.events?.emit(d).catch((err) =>
+          (options.logger ?? noopLogger).error("[DAL Entity Event Error]", err));
+      }
+      return out;
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Is this repo pool-bound (needs the lazy mini-tx) or already
+   *  transaction-bound (joins the caller tx inline)? The discriminator is
+   *  `release` — a PoolClient has it, a Pool does not; BOTH have `connect`
+   *  (PoolClient.connect throws once connected). */
+  private poolBound(): boolean {
+    return typeof (this.db as PoolClient).release !== "function";
+  }
+
+  /** Load a sequence row by code or uuid; missing → SEQUENCE_NOT_FOUND
+   *  carrying the requested identity (never a silent fallback). */
+  private async loadSequence(
+    q: Queryable,
+    by: { code: string } | { uuid: string },
+  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const col = "code" in by ? "code" : "uuid";
+    const identity = "code" in by ? by.code : by.uuid;
+    const r = await q.query<{ uuid: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
+      `SELECT "uuid","pattern","step","start","tz" FROM ${table}
+        WHERE ${quoteIdent(col)} = $1 AND "deleted_at" IS NULL`,
+      [identity],
+    );
+    const row = r.rows[0];
+    if (!row) throw new SequenceNotFoundError(identity);
+    return {
+      uuid: row.uuid,
+      pattern: parseSequencePattern(row.pattern),
+      step: row.step,
+      start: row.start,
+      tz: row.tz,
+    };
+  }
+
+  /** Field-scoped expression materialization: an expr directive owns a
+   *  sequence row derived as `<table>.<field>@expr_<hash16>` — identical
+   *  exprs on DIFFERENT fields never share a counter; runtime sharing
+   *  only happens through an explicit `{seq:{code}}` mapping. Idempotent
+   *  via ON CONFLICT (code). */
+  private async materializeExprSequence(
+    q: Queryable,
+    boundCode: string,
+    decl: SequenceDecl,
+    actor: string,
+  ): Promise<{ uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    const hash = sha256Hex(`${decl.pattern}|${decl.step}|${decl.start}|${decl.tz ?? ""}`).slice(0, 16);
+    const code = `${boundCode}@expr_${hash}`.slice(0, 100);
+    const table = getQualifiedTableName(SequenceEntity);
+    const ins = await q.query<{ uuid: string }>(
+      `INSERT INTO ${table}
+         ("uuid","code","pattern","step","start","tz","created_at","created_by","updated_at","updated_by","version")
+       VALUES (uuidv7(), $1,$2,$3,$4,$5, now(), $6, now(), $6, 1)
+       ON CONFLICT ("code") DO NOTHING RETURNING "uuid"`,
+      [code, decl.pattern, decl.step, decl.start, decl.tz ?? null, actor],
+    );
+    const uuid =
+      ins.rows[0]?.uuid ??
+      (await q.query<{ uuid: string }>(`SELECT "uuid" FROM ${table} WHERE "code" = $1`, [code])).rows[0]?.uuid;
+    if (!uuid) throw new SequenceNotFoundError(code);
+    return {
+      uuid,
+      pattern: parseSequencePattern(decl.pattern),
+      step: decl.step,
+      start: decl.start,
+      tz: decl.tz ?? null,
+    };
+  }
+
+  /** Resolve the sequence spec for a directive (or null = field default). */
+  private async sequenceSpecFor(
+    q: Queryable,
+    boundCode: string,
+    dir: SequenceDirective | null,
+    actor: string,
+  ): Promise<{
+    uuid: string;
+    pattern: SequencePattern;
+    step: bigint;
+    start: bigint;
+    tz: string | null;
+    partitions: SequencePartitions;
+    at?: Date;
+  }> {
+    const base = (spec: {
+      uuid: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
+    }, ctx: { partitions: SequencePartitions; at?: Date }) => ({ ...spec, ...ctx });
+    if (dir === null) {
+      return base(await this.loadSequence(q, { code: boundCode }), { partitions: {} });
+    }
+    const s = dir.seq;
+    if (typeof s === "string") {
+      return base(await this.loadSequence(q, { uuid: s }), { partitions: {} });
+    }
+    const ctx: { partitions: SequencePartitions; at?: Date } = {
+      partitions: Object.fromEntries(
+        (["sez", "sez2", "sez3"] as const).filter((k) => s[k] !== undefined).map((k) => [k, s[k]!]),
+      ) as SequencePartitions,
+      ...(s.at !== undefined ? { at: new Date(s.at) } : {}),
+    };
+    if ("uuid" in s) {
+      return base(await this.loadSequence(q, { uuid: s.uuid }), ctx);
+    }
+    if ("code" in s) {
+      return base(await this.loadSequence(q, { code: s.code }), ctx);
+    }
+    return base(await this.materializeExprSequence(q, boundCode, s, actor), ctx);
+  }
+
+  /** Claim `count` values on the resolved spec and render them. */
+  private async allocateAndRender(
+    q: Queryable,
+    spec: Awaited<ReturnType<Repository["sequenceSpecFor"]>>,
+    colLength: number | undefined,
+    count: number,
+    actor: string,
+  ): Promise<string[]> {
+    const { uuid, pattern, step, start, tz, partitions } = spec;
+    const parts = validateSequencePartitions(pattern, partitions);
+    const partition_key = sequencePartitionKey(pattern, parts);
+    const at = spec.at ?? new Date();
+    const period_key = derivePeriodKey(pattern.period_kind, at, tz ?? undefined);
+    const claim = await this.sequenceAllocateOn(q, {
+      sequence_uuid: uuid,
+      period_key,
+      partition_key,
+      count,
+      step,
+      start,
+      actor,
+    });
+    const rendered =
+      count === 1
+        ? [renderSequenceValue(pattern, claim.first, at, { tz: tz ?? undefined, partitions: parts })]
+        : renderSequenceRange(pattern, claim.first, step, count, at, { tz: tz ?? undefined, partitions: parts });
+    for (const value of rendered) {
+      if (colLength !== undefined && value.length > colLength) {
+        throw new ValidationError(
+          `sequence value exceeds column length ${colLength}: ${value.length} chars rendered by pattern "${pattern.source}"`,
+        );
+      }
+    }
+    return rendered;
+  }
+
+  /** Single-row seq resolution — mutates `rec` in place: every seq-bound
+   *  column exits holding a rendered literal (or absent on update).
+   *  STRICT: a raw literal reaching the repository is rejected even when
+   *  the API-layer predicate was bypassed. */
+  private async resolveSeqColumns(
+    q: Queryable,
+    meta: EntityPersistenceMeta,
+    rec: Record<string, unknown>,
+    mode: "create" | "update",
+    actor: string,
+  ): Promise<void> {
+    for (const col of Object.values(meta.columns)) {
+      const bound = col.seqBound;
+      if (!bound) continue;
+      const value = rec[col.propertyKey];
+      if (value === undefined || value === null) {
+        if (mode === "update") continue;
+        const spec = await this.sequenceSpecFor(q, bound.code, null, actor);
+        [rec[col.propertyKey]] = await this.allocateAndRender(q, spec, col.length, 1, actor);
+        continue;
+      }
+      const dir = parseSequenceDirective(value);
+      if (!dir) {
+        throw new ValidationError(
+          `${meta.entityClassName}.${col.propertyKey}: seq-bound column accepts only a sequence directive — raw literals are rejected`,
+        );
+      }
+      const spec = await this.sequenceSpecFor(q, bound.code, dir, actor);
+      [rec[col.propertyKey]] = await this.allocateAndRender(q, spec, col.length, 1, actor);
+    }
+  }
+
+  /** Bulk seq resolution — STRICT bulk contract: a seq-bound column must
+   *  carry the SAME directive on every row, or be absent on every row
+   *  (absent = field-default allocation on create). Mixed directives or
+   *  mixed presence are rejected. ONE contiguous counter claim covers the
+   *  whole group (`count:N`), then literals map back row-by-row. */
+  private async resolveSeqRows(
+    q: Queryable,
+    meta: EntityPersistenceMeta,
+    rows: Array<Record<string, unknown>>,
+    actor: string,
+    mode: "create" | "update",
+  ): Promise<void> {
+    for (const col of Object.values(meta.columns)) {
+      const bound = col.seqBound;
+      if (!bound) continue;
+      const groups = new Map<string, { dir: SequenceDirective | null; idxs: number[] }>();
+      rows.forEach((rec, i) => {
+        const value = rec[col.propertyKey];
+        const dir = value === undefined || value === null ? null : parseSequenceDirective(value);
+        if (value !== undefined && value !== null && !dir) {
+          throw new ValidationError(
+            `${meta.entityClassName}.${col.propertyKey}: seq-bound column accepts only a sequence directive — raw literals are rejected`,
+          );
+        }
+        const groupKey = dir === null ? "" : sha256Hex(extJsonStringify(dir.seq));
+        const g = groups.get(groupKey) ?? { dir, idxs: [] };
+        g.idxs.push(i);
+        groups.set(groupKey, g);
+      });
+      if (groups.size > 1) {
+        throw new ValidationError(
+          `${meta.entityClassName}.${col.propertyKey}: bulk seq-bound writes require the same directive on every row (or none) — mixed directives are rejected`,
+        );
+      }
+      for (const g of groups.values()) {
+        // update mode: all-absent = column untouched, never default-allocates.
+        if (mode === "update" && g.dir === null) continue;
+        const spec = await this.sequenceSpecFor(q, bound.code, g.dir, actor);
+        const rendered = await this.allocateAndRender(q, spec, col.length, g.idxs.length, actor);
+        g.idxs.forEach((rowIdx, j) => {
+          rows[rowIdx]![col.propertyKey] = rendered[j];
+        });
+      }
+    }
   }
 
   /**
@@ -929,6 +1235,22 @@ export class Repository {
     const auditable = isAuditableEntity(meta);
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
+
+    // Seq-bound columns: directives resolve to literals and omissions on
+    // create allocate the field default — inside ONE transaction with the
+    // INSERT (lazy mini-tx when pool-bound, the caller's tx otherwise).
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `add: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.add(entity as never, row as never, options as never) as Promise<TResult>);
+      }
+      await this.resolveSeqColumns(this.db, meta, row as Record<string, unknown>, "create", actor);
+    }
 
     const rec = row as Record<string, unknown>;
     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
@@ -2001,11 +2323,31 @@ WHERE agg.n > 0`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound writes need atomic claim+update — pool-bound runs through
+    // the lazy mini-tx; a tx-bound repo resolves inline below.
+    const seqCols = this.seqBoundColumns(meta);
+    const seqWrite =
+      seqCols.length > 0 &&
+      seqCols.some((c) => (remainingUpdates as Record<string, unknown>)[c.propertyKey] !== undefined);
+    if (seqWrite) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `update: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.update(entity as never, updates as never, options as never) as Promise<TResult>);
+      }
+    }
+
     // Optimistic concurrency: extract version from payload for auditable entities
     const versionCol = findVersionColumn(meta);
     const versionExtract = extractVersion(remainingUpdates, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
     const finalUpdates = versionExtract?.remainingPayload ?? remainingUpdates;
+    if (seqWrite) {
+      await this.resolveSeqColumns(this.db, meta, finalUpdates as Record<string, unknown>, "update", actor!);
+    }
 
     const setClauses: string[] = [];
     const values: unknown[] = [];
@@ -2707,6 +3049,21 @@ SELECT * FROM w`;
     const table = getQualifiedTableName(entity);
     const actor = options.actor;
 
+    // Seq-bound columns are @Unique — skipped by the copy loop below — so
+    // the clone ALLOCATES a fresh value per bound column (a clone never
+    // shares the source's unique code). Claim + INSERT share one tx.
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `clone: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.clone(entity, sourceUuid, options) as Promise<TEntity>);
+      }
+    }
+
     // Find the uuid column (marked with @Unique or named 'uuid')
     const uuidColEntry = Object.entries(meta.columns).find(
       ([name, col]) => name === "uuid" || col.isUnique,
@@ -2779,6 +3136,13 @@ SELECT * FROM w`;
     const clonedByField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_BY);
     if (clonedByField && actor !== undefined) {
       clonedRecord[clonedByField.sqlName] = actor;
+    }
+
+    // Allocate fresh sequence values for bound columns (skipped by the
+    // unique-copy loop above) — inside the same tx as the INSERT.
+    for (const col of seqCols) {
+      const spec = await this.sequenceSpecFor(this.db, col.seqBound!.code, null, actor!);
+      [clonedRecord[col.sqlName]] = await this.allocateAndRender(this.db, spec, col.length, 1, actor!);
     }
 
     // Build and execute INSERT
@@ -2861,8 +3225,24 @@ SELECT * FROM w`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound columns — bulk contract: every row carries the SAME
+    // directive or none (omission = field-default allocation on create).
+    // Resolution allocates one contiguous range and runs on the bulk
+    // client inside the op's transaction.
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0 && actor === undefined) {
+      throw new ValidationError(
+        `addMany: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+      );
+    }
+
     const first = rows[0] as Record<string, unknown>;
     let keys = Object.keys(first).filter((k) => first[k] !== undefined);
+    // A seq-bound column always resolves to a literal on create — force
+    // it into the key set even when every row omitted it.
+    for (const c of seqCols) {
+      if (!keys.includes(c.propertyKey)) keys.push(c.propertyKey);
+    }
 
     if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
       keys = keys.filter((k) => k !== pk!.propertyKey);
@@ -2909,8 +3289,13 @@ SELECT * FROM w`;
     // conflicts in one set-based query (single raised ERR04/ERR05 with up to
     // 10 offending rows), then one INSERT ... SELECT. Always transactional —
     // the whole operation is atomic and bounded by the bulk time budget.
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
+      // Seq-bound columns resolve INSIDE this transaction: every row gets a
+      // rendered literal before the temp-table payload is staged.
+      if (seqCols.length > 0) {
+        await this.resolveSeqRows(client, meta, rows as Array<Record<string, unknown>>, actor!, "create");
+      }
       // 1. Temp table mirroring the insert columns. Column types are derived
       //    FROM THE REAL TABLE (`AS SELECT … WHERE false`) — the runtime meta
       //    does not resolve annotation types, and re-deriving pg types here
@@ -3027,14 +3412,14 @@ WHERE agg.n > 0`;
       );
       const affected = insertRes.rowCount ?? 0;
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_create", rows as Array<Record<string, unknown>>, affected);
       return { received: rows.length, affected };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3274,7 +3659,7 @@ WHERE agg.n > 0`;
     // TEMP TABLE strategy (same as updateMany): stream match keys into a temp
     // table, then a single UPDATE ... FROM — a JOIN beats ANY($n::[]) and has
     // no parameter-count ceiling (~65535 limit of ANY/IN does not apply).
-    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
+    const { client, deadline, owned } = await this.bulkBegin(options as BulkOptions);
     try {
       // 1. Temp table: row_ix + all identity columns (+ expected_version)
       const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -3415,14 +3800,14 @@ WHERE agg.n > 0`;
         await client.query(auditSql, [now, actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_delete", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3472,7 +3857,7 @@ WHERE agg.n > 0`;
         )
       : { guard: false, versions: [] as number[], versionColSqlName: "" };
 
-    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
+    const { client, deadline, owned } = await this.bulkBegin(options as BulkOptions);
     try {
       const tmpName = `tmp_hdel_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       // Temp table types derive FROM THE REAL TABLE — runtime meta has no
@@ -3568,14 +3953,14 @@ WHERE agg.n > 0`;
         );
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_purge", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3625,7 +4010,7 @@ WHERE agg.n > 0`;
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
     const versionCol = findVersionColumn(meta);
 
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
       const tmpName = `tmp_restore_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       // Temp table types derive FROM THE REAL TABLE — runtime meta has no
@@ -3749,14 +4134,14 @@ WHERE agg.n > 0`;
         await client.query(auditSql, [now, actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_restore", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3798,6 +4183,18 @@ WHERE agg.n > 0`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound columns — same bulk contract as addMany: identical
+    // directive on every row or absent on all (absent = column untouched).
+    const seqCols = this.seqBoundColumns(meta);
+    const seqWrite = seqCols.some((c) =>
+      updates.some((u) => (u as Record<string, unknown>)[c.propertyKey] !== undefined),
+    );
+    if (seqWrite && actor === undefined) {
+      throw new ValidationError(
+        `updateMany: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+      );
+    }
+
     // Per-row optimistic concurrency: every row must carry the caller-observed
     // `version` on auditable entities (strict — same contract as update()).
     const versionGuard = this.extractExpectedVersions(
@@ -3838,8 +4235,13 @@ WHERE agg.n > 0`;
     }
 
     // TEMP TABLE strategy: CREATE TEMP TABLE → batch INSERT → UPDATE FROM → COMMIT
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
+      // Seq-bound update columns resolve inside this transaction — one
+      // contiguous claim, literals staged into the temp-table payload.
+      if (seqWrite) {
+        await this.resolveSeqRows(client, meta, updates as Array<Record<string, unknown>>, actor!, "update");
+      }
 
       // 1. Create temp table — row_ix + all identity columns + update cols.
       //    Column types derive FROM THE REAL TABLE via `AS SELECT … WHERE
@@ -4014,14 +4416,14 @@ WHERE agg.n > 0`;
         await client.query(auditSql, [now, actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_update", updates as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: updates.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -4029,7 +4431,7 @@ WHERE agg.n > 0`;
 
   /** Get a PoolClient for transactional operations. */
   private async getClient(): Promise<PoolClient> {
-    if ("connect" in this.db && typeof (this.db as any).connect === "function") {
+    if (this.poolBound()) {
       return (this.db as Pool).connect();
     }
     // Already a PoolClient — return a no-op release wrapper

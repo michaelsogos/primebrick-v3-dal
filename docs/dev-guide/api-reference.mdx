@@ -1092,6 +1092,24 @@ a subclass is useless the moment anything instantiates it).
 
 #### `SequenceEntity()`
 
+### `SequenceNotFoundError`
+
+Thrown when a sequence directive references a sequence that does not
+ exist — the missing code/uuid is in `identity`. NEVER falls back to a
+ default: an explicitly-named missing sequence and a missing derived
+ default are the same hard error.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"SEQUENCE_NOT_FOUND"` |  |
+| identity | `string` | The missing sequence's code or uuid — always populated. |
+
+#### `SequenceNotFoundError(identity)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| identity | `string` | The missing sequence's code or uuid — always populated. |
+
 ### `SequencesService`
 
 The contract every entity service must satisfy — enforced on the router.
@@ -2130,6 +2148,36 @@ UI configuration for a non-standard row CTA (route-backed bare op).
  rows. Absent = always visible. Scalar comparison — boolean/number
  fields are allowed (e.g. `enabled ∈ [false]` for an Enable CTA). |
 
+### `SequenceDecl`
+
+A sequence DEFINITION carried on the wire — the same shape
+`@SequenceField(decl)` declares on the entity class and the expr form
+of a write directive carries. `step`/`start` are bigint-only (ext-json
+decodes integers to bigint; plain-JSON clients cannot express the expr
+form — they select existing sequences by code/uuid instead).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pattern | `string` | Pattern source — parsed by parseSequencePattern at every boundary. |
+| step | `bigint` | Counter increment per emitted value — non-zero. |
+| start | `bigint` | First emitted counter value when the sequence is materialized. |
+| tz | `string \| null` | IANA zone for date tokens — `null`/`undefined` = server default. |
+
+### `SequenceDirectiveContext`
+
+Optional per-allocation context carried by the object directive forms —
+ the sezionale slot values (`sez`/`sez2`/`sez3` — the counter partitions
+ are persisted per `(sequence, period, partition_key)`; the pattern's
+ slots decide which are required/allowed) and the business date `at`
+ (ISO string — drives `period_key` + date tokens; default = write time).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| sez | `string` |  |
+| sez2 | `string` |  |
+| sez3 | `string` |  |
+| at | `string` |  |
+
 ### `SequencePattern`
 
 | Field | Type | Description |
@@ -3136,19 +3184,9 @@ Invariants:
 
 **Type:** `"yyyy" \| "yy" \| "MM" \| "dd" \| "q"`
 
-### `SequenceDecl`
+### `SequenceDirective`
 
-Sequence binding declaration — DATA, not logic. The write payload of a
- seq-bound column is never a literal string: it carries a sequence
- directive resolved to a literal inside the write transaction (the row
- and the counter commit or roll back together — atomic by construction).
-
- The binding's DEFAULT sequence code is never authored: it derives as
- `<table>.<field>` at persistence-meta resolution (e.g. `customers.code`),
- and the declared definition is materialized idempotently at boot so the
- default exists in the module's sequence registry before first use. A
- different sequence is still reachable per-write via the explicit
- `{seq:{code}}` directive — sequences are data, not declarations.
+**Type:** `{ seq: string } \| { seq: { uuid: string } & SequenceDirectiveContext } \| { seq: { code: string } & SequenceDirectiveContext } \| { seq: SequenceDecl & SequenceDirectiveContext }`
 
 ### `SequenceMode`
 
@@ -5397,6 +5435,18 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | raw | `string` |  |
+
+### `parseSequenceDirective(raw): SequenceDirective \| null`
+
+The ONLY accepted wire shape for a `format:"sequence"` column — see
+SequenceDirective for the four forms. Returns the parsed
+directive or `null` (shape/decl violation — the caller emits the
+`app.common.validation.sequence_directive` issue). A literal value is
+never writable: the repository resolves the directive in-transaction.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `unknown` |  |
 
 ### `parseSequencePattern(source): SequencePattern`
 
