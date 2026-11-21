@@ -1,6 +1,7 @@
 import "reflect-metadata";
 
 import type { DictFacet, RelationFacet } from "@primebrick/core";
+import { parseSequencePattern } from "@primebrick/core";
 
 import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
@@ -159,6 +160,10 @@ type ColumnRegistration = {
   refEntity?: string;
   /** Cast type to apply when this field is used in JOIN ON clause */
   castInJoin?: string;
+  /** `@SequenceField(decl)` — sequence binding declaration (data, not
+   *  logic). The binding's default sequence code is NEVER authored here —
+   *  it derives as `<table>.<field>` at persistence-meta resolution. */
+  seqBound?: SequenceDecl;
 };
 
 /**
@@ -683,6 +688,69 @@ export function Ref(entity: string): PropertyDecorator {
   };
 }
 
+/** Sequence binding declaration — DATA, not logic. The write payload of a
+ *  seq-bound column is never a literal string: it carries a sequence
+ *  directive resolved to a literal inside the write transaction (the row
+ *  and the counter commit or roll back together — atomic by construction).
+ *
+ *  The binding's DEFAULT sequence code is never authored: it derives as
+ *  `<table>.<field>` at persistence-meta resolution (e.g. `customers.code`),
+ *  and the declared definition is materialized idempotently at boot so the
+ *  default exists in the module's sequence registry before first use. A
+ *  different sequence is still reachable per-write via the explicit
+ *  `{seq:{code}}` directive — sequences are data, not declarations. */
+export type SequenceDecl = {
+  /** Authored pattern — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}` —
+   *  validated by `parseSequencePattern` at decoration time. */
+  pattern: string;
+  /** Signed increment per emitted code — bigint, non-zero. */
+  step: bigint;
+  /** First next-to-emit value for a fresh (period, partition) counter. */
+  start: bigint;
+  /** IANA zone for date tokens + period_key boundary — null → UTC. */
+  tz?: string | null;
+};
+
+/** The resolution-time shape: the authored decl plus the derived default
+ *  sequence code (`<table>.<field>`). Carried on persistence column meta
+ *  and served-meta `seq.code`. */
+export type SequenceBound = SequenceDecl & { code: string };
+
+/** Marks a plain text column as sequence-bound — see {@link SequenceDecl}.
+ *  Accepted shape (positive form): a physical, business-owned text/varchar
+ *  column — not a key, not a ref, not a partition/retention/audit/deletable/
+ *  synchronizable/clone facet, not a foreign key — carrying a valid
+ *  sequence definition. Anything outside that shape is a boot error at
+ *  declaration or resolution time, never a runtime surprise. */
+export function SequenceField(decl: SequenceDecl): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    const where = `${ctor.name}.${String(propertyKey)}`;
+    if (typeof decl !== "object" || decl === null) {
+      throw new TypeError(`${where}: @SequenceField requires a decl {pattern, step, start, tz?}`);
+    }
+    try {
+      parseSequencePattern(decl.pattern);
+    } catch (e) {
+      throw new TypeError(`${where}: @SequenceField pattern is invalid — ${(e as Error).message}`);
+    }
+    if (typeof decl.step !== "bigint" || decl.step === 0n) {
+      throw new TypeError(`${where}: @SequenceField step must be a non-zero bigint`);
+    }
+    if (typeof decl.start !== "bigint") {
+      throw new TypeError(`${where}: @SequenceField start must be a bigint`);
+    }
+    if (decl.tz !== undefined && decl.tz !== null) {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: decl.tz });
+      } catch {
+        throw new TypeError(`${where}: @SequenceField tz must be an IANA zone or null`);
+      }
+    }
+    touchColumn(ctor, propertyKey).seqBound = { ...decl };
+  };
+}
+
 /** Marks an entity as having an audit trail table.
  *  `options.retention` overrides the audit-table retention window —
  *  default `"12 months"` (audit is a bounded operational cost, not an
@@ -1052,6 +1120,9 @@ export type EntityPersistenceMeta = {
       cloneType?: CloneFieldType;
       /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
       refEntity?: string;
+      /** `@SequenceField` — resolved binding: authored decl + derived
+       *  default code `<table>.<field>`. */
+      seqBound?: SequenceBound;
       castInJoin?: string;
       /** `@Partition()` — RANGE partition key marker + options. */
       isPartition?: boolean;
@@ -1230,6 +1301,32 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
     if (reg.cloneType !== undefined) entry.cloneType = reg.cloneType;
     if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
+    if (reg.seqBound !== undefined) {
+      // Positive-form enforcement at resolution: a seq-bound column is a
+      // plain business-owned text/varchar column — nothing else.
+      const facet = reg.refEntity !== undefined ? "ref"
+        : reg.foreignKey !== undefined ? "foreignKey"
+        : reg.isKey ? "key"
+        : reg.isPartition ? "partition"
+        : reg.isRetention ? "retention"
+        : reg.isAuditable ? "auditable"
+        : reg.isDeletable ? "deletable"
+        : reg.isSynchronizable ? "synchronizable"
+        : reg.isClone ? "clone"
+        : undefined;
+      if (facet !== undefined) {
+        throw new TypeError(
+          `${entityClassName}.${propertyKey}: @SequenceField on a ${facet} column — ` +
+            `seq-bound columns are plain business text columns`,
+        );
+      }
+      if (inferredPgType !== "text" && !inferredPgType.startsWith("varchar")) {
+        throw new TypeError(
+          `${entityClassName}.${propertyKey}: @SequenceField requires text/varchar storage, got "${inferredPgType}"`,
+        );
+      }
+      entry.seqBound = { ...reg.seqBound, code: `${tableName}.${reg.sqlName}` };
+    }
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;

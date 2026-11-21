@@ -2632,7 +2632,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence"`
 
 ### `MetaColumnOptionsSource`
 
@@ -2699,13 +2699,6 @@ absent — adimensional, it is a `kind` of its own.
 **Type:** `"length" \| "mass" \| "volume" \| "area" \| "time" \| "temperature" \| "digital" \| "angle"`
 
 ### `MetaColumnUomSource`
-
-Option vocabulary a unit-of-measure selector may draw from.
-`"currencies"`: the ISO 4217 list resolved client-side (`getAllCurrencies`
-— same source the config-domain currency picker uses). `{entity}`: the
-UoM codes persist as rows of another entity (resolved via its `/list`).
-`{api_url}`: an explicit endpoint serving the options.
-Closed union on purpose — an unknown source is a construction error.
 
 **Type:** `"currencies" \| { entity: string } \| { api_url: string; value_field: string; label_field: string }`
 
@@ -3097,6 +3090,14 @@ Generation side of the migration engine (migrations/ is the apply side).
 
 ### `SelectQueryInput`
 
+### `SequenceBound`
+
+The resolution-time shape: the authored decl plus the derived default
+ sequence code (`<table>.<field>`). Carried on persistence column meta
+ and served-meta `seq.code`.
+
+**Type:** `SequenceDecl & { code: string }`
+
 ### `SequenceDateToken`
 
 Sequence pattern engine — the ONE generator shared by ad-hoc (runtime)
@@ -3134,6 +3135,31 @@ Invariants:
    and ext-json carries bigint natively.
 
 **Type:** `"yyyy" \| "yy" \| "MM" \| "dd" \| "q"`
+
+### `SequenceDecl`
+
+Sequence binding declaration — DATA, not logic. The write payload of a
+ seq-bound column is never a literal string: it carries a sequence
+ directive resolved to a literal inside the write transaction (the row
+ and the counter commit or roll back together — atomic by construction).
+
+ The binding's DEFAULT sequence code is never authored: it derives as
+ `<table>.<field>` at persistence-meta resolution (e.g. `customers.code`),
+ and the declared definition is materialized idempotently at boot so the
+ default exists in the module's sequence registry before first use. A
+ different sequence is still reachable per-write via the explicit
+ `{seq:{code}}` directive — sequences are data, not declarations.
+
+### `SequenceMode`
+
+Sequence-widget modes — the two write-path configurations a
+`format:"sequence"` control may offer. Closed union on purpose.
+ - `"generate"` — inline pattern builder emitting a `{seq:{pattern,…}}`
+   directive (resolved + materialized inside the write transaction);
+ - `"select"` — combobox over the module's `sequence` registry,
+   emitting `{seq:{code}}`/`{seq:"<uuid>"}`.
+
+**Type:** `"generate" \| "select"`
 
 ### `SequencePartitions`
 
@@ -4309,7 +4335,7 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; seqBound: SequenceBound; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
 
 ### `columnSchemaLeaf(col): { type: string \| string[]; format: string; enum: string[] }`
 
@@ -5888,6 +5914,19 @@ never masquerade as user edits.
 | sourceSchema | `Record<string, unknown> \| undefined` |  |
 | sourceEntity | `{ key: string; entity: string; table: string } \| undefined` |  |
 | map | `PayloadMap` |  |
+
+### `SequenceField(decl): PropertyDecorator`
+
+Marks a plain text column as sequence-bound — see SequenceDecl.
+ Accepted shape (positive form): a physical, business-owned text/varchar
+ column — not a key, not a ref, not a partition/retention/audit/deletable/
+ synchronizable/clone facet, not a foreign key — carrying a valid
+ sequence definition. Anything outside that shape is a boot error at
+ declaration or resolution time, never a runtime surprise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| decl | `SequenceDecl` |  |
 
 ### `sequencePartitionKey(_pattern, partitions): string`
 

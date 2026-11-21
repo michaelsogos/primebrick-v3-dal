@@ -121,6 +121,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           ? { type: "ref" as const, ref: { entity_field: `${col.key}_ref_entity`, key_field: `${col.key}_ref_key` } }
           : { type: "ref" as const, ref: { entity: refEnt } }
         : {}),
+      // Seq-bound: `format` + `seq.code` are class facts — the authored
+      // surface half (modes/default_mode/allow_create) merges under the
+      // derived code.
+      ...(phys.seqBound !== undefined
+        ? { format: "sequence" as const, seq: { ...(col.seq ?? {}), code: phys.seqBound.code } }
+        : {}),
     };
   };
 
@@ -512,6 +518,30 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" restates derived prop(s) ${restated.join(", ")} — ` +
             `the entity class is the source; remove the authored value(s)`,
+        );
+      }
+      // ── @SequenceField — the binding is a class fact like ref/type:
+      //    `format:"sequence"` and `seq.code` are DERIVED (the entity owns
+      //    them). The surface-config half (`seq.modes`/`default_mode`/
+      //    `allow_create`) stays authorable — placement config, not
+      //    binding.                                                        */
+      if (phys.seqBound !== undefined) {
+        if (col.format !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors format on a @SequenceField column — ` +
+              `the binding derives format:"sequence"; drop the authored value`,
+          );
+        }
+        if (col.seq?.code !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors seq.code — ` +
+              `the binding derives it ("${phys.seqBound.code}"); only seq.modes/default_mode/allow_create are authorable`,
+          );
+        }
+      } else if (col.format === "sequence" || col.seq !== undefined) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors a sequence contract ` +
+            `without @SequenceField on the entity class — the class owns the binding`,
         );
       }
       if (isAuditActorColumn(phys) && col.options_source !== undefined && col.options_source !== "audit.actors") {

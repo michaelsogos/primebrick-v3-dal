@@ -12,6 +12,7 @@ export {
   SynchronizableField,
   CloneField,
   Ref,
+  SequenceField,
   AuditTrail,
   AuditTrailEntity,
   Partition,
@@ -53,6 +54,8 @@ export {
   type ForeignKeyOptions,
   type ForeignKeyAction,
   type EntityPersistenceMeta,
+  type SequenceDecl,
+  type SequenceBound,
 } from "./entity-decorators.js";
 
 export { withColumnConstraints } from "./column-constraints.js";
