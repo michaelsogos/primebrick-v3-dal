@@ -64,6 +64,21 @@ describe("Repository — seq-bound write resolution", () => {
     await seedSequence(SEQ_CODE);
   });
 
+  it("empty registry: omission self-provisions the declared default row", async () => {
+    await getTestPool().query(`DELETE FROM sequences`); // wipe the beforeEach seed
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-00001");
+    const rows = await seqRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.code).toBe(SEQ_CODE);
+    expect(rows[0]!.pattern).toBe("TST-{seq:5}");
+    // an operator-edited row stays authoritative — ON CONFLICT never overwrites
+    await getTestPool().query(`UPDATE sequences SET pattern = 'OP-{seq:3}', start = 50, step = 1 WHERE code = $1`, [SEQ_CODE]);
+    await getTestPool().query(`DELETE FROM sequence_counters`);
+    const b = await repo.add(SeqTestEntity, { label: "b" }, { actor: ACTOR });
+    expect(b.code).toBe("OP-050");
+  });
+
   it("add omitted → allocates the field default sequence inside the lazy mini-tx", async () => {
     const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
     expect(row.code).toBe("TST-00001");
