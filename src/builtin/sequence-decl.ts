@@ -71,6 +71,16 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "tz", label_key: F("tz"), type: "text", order: 4 },
     { key: "label_key", label_key: F("label_key"), type: "text", order: 5 },
     { key: "description_key", label_key: F("description_key"), type: "text", order: 6 },
+    // Counter projection — machine state from `sequence_counters`
+    // (default partition @ current period), attached post-query by
+    // `attachCounterProjection`. `kind:"virtual"` forces sort/filter/
+    // search off — the values are not SQL-addressable.
+    { key: "value_next", label_key: F("value_next"), type: "number", order: 10, kind: "virtual" },
+    { key: "value_actual", label_key: F("value_actual"), type: "number", order: 11, kind: "virtual" },
+    { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 12, kind: "virtual" },
+    { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 13, kind: "virtual" },
+    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual" },
+    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual" },
   ];
   // `audited` is NOT authored on data columns — it marks the audit section
   // (created/deleted stamps), which arrives derived from the entity class.
@@ -93,6 +103,16 @@ function sequenceMeta(ns: string): EntityMeta {
         default_sort: SEQUENCE_DEFAULT_SORT,
         default_page_size: 25,
         page_size_options: [10, 25, 50],
+      },
+      // Soft-delete reads as "disable" on sequences — same semantics as
+      // job_trigger: exec-stop icon + destructive for the off-transition,
+      // exec-start + success for the re-enable. Underlying mechanics stay
+      // soft-delete/restore.
+      actions_overrides: {
+        "delete.single": { label_key: `${ns}.entities.sequence.actions.disable`, icon: "exec-stop", color: "destructive", confirm_key: `${ns}.entities.sequence.actions.disable_confirm`, busy_key: `${ns}.entities.sequence.actions.disabling` },
+        "delete.bulk": { label_key: `${ns}.entities.sequence.actions.disable`, icon: "exec-stop", color: "destructive", confirm_key: `${ns}.entities.sequence.actions.disable_entities_confirm`, busy_key: `${ns}.entities.sequence.actions.disabling` },
+        "restore.single": { label_key: `${ns}.entities.sequence.actions.enable`, icon: "exec-start", color: "success", confirm_key: `${ns}.entities.sequence.actions.enable_confirm`, busy_key: `${ns}.entities.sequence.actions.enabling` },
+        "restore.bulk": { label_key: `${ns}.entities.sequence.actions.enable`, icon: "exec-start", color: "success", confirm_key: `${ns}.entities.sequence.actions.enable_entities_confirm`, busy_key: `${ns}.entities.sequence.actions.enabling` },
       },
     },
     SequenceEntity,
@@ -160,12 +180,23 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     };
   }
 
-  /** Batch default-context forecast for served rows: `next` = value the
-   *  next claim emits on the default partition at now; `null` when the
-   *  pattern needs sezionale context (the forecast RPC covers that). */
-  private async attachForecast(rows: Array<Record<string, unknown>>): Promise<void> {
+  /** Batch counter projection for served rows — virtual columns the list
+   *  renders as machine state. Semantics per row, evaluated on the
+   *  DEFAULT partition ("") at the row's CURRENT period key:
+   *    - `value_next`    — next-to-emit number: `counter ?? start`
+   *    - `value_actual`  — last emitted number: `counter - step` (null
+   *                        before the first claim in the current period)
+   *    - `emitted_next`  — the pattern rendered with `value_next`
+   *    - `emitted_actual`— the pattern rendered with `value_actual`
+   *    - `last_alloc_at`/`last_alloc_by` — attribution of the last claim
+   *  Multi-period/multi-partition counters project ONLY their default-
+   *  context slice — the forecast RPC covers explicit sez contexts;
+   *  `emitted_*` are `null` when the pattern needs sezionale context. */
+  private async attachCounterProjection(rows: Array<Record<string, unknown>>): Promise<void> {
     if (rows.length === 0) return;
     const now = new Date();
+    // Default-partition key: the sez tuple with all slots empty
+    // (`\x1f`-joined — see sequencePartitionKey in @primebrick/core).
     const EMPTY_PARTITION = "\x1f\x1f";
     const counters = await this.counterSvc().query<SequenceCounterEntity>(null, {
       filters: [
@@ -176,24 +207,33 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
         Filter.fieldValue(field(SequenceCounterEntity, "partition_key"), "=", EMPTY_PARTITION),
       ],
     });
-    const byKey = new Map(counters.map((c) => [`${c.sequence_uuid}|${c.period_key}`, c.counter]));
+    const byKey = new Map(counters.map((c) => [`${c.sequence_uuid}|${c.period_key}`, c]));
     for (const row of rows) {
       const pattern = parseSequencePattern(row.pattern as string);
-      row.next = pattern.sez_slots.length > 0
+      const tz = (row.tz as string | null) ?? undefined;
+      const counter = byKey.get(
+        `${row.uuid}|${derivePeriodKey(pattern.period_kind, now, tz)}`,
+      );
+      const step = row.step as bigint;
+      const next_n = counter?.counter ?? (row.start as bigint);
+      const actual_n = counter ? counter.counter - step : null;
+      row.value_next = next_n;
+      row.value_actual = actual_n;
+      row.last_alloc_at = counter?.last_alloc_at ?? null;
+      row.last_alloc_by = counter?.last_alloc_by ?? null;
+      const has_sez = pattern.sez_slots.length > 0;
+      row.emitted_next = has_sez
         ? null
-        : renderSequenceValue(
-            pattern,
-            byKey.get(`${row.uuid}|${derivePeriodKey(pattern.period_kind, now, (row.tz as string | null) ?? undefined)}`)
-              ?? (row.start as bigint),
-            now,
-            { tz: (row.tz as string | null) ?? undefined, partitions: {} },
-          );
+        : renderSequenceValue(pattern, next_n, now, { tz, partitions: {} });
+      row.emitted_actual = has_sez || actual_n === null
+        ? null
+        : renderSequenceValue(pattern, actual_n, now, { tz, partitions: {} });
     }
   }
 
   override async list(query: EntityListQuery): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>> {
     const res = await super.list(query);
-    await this.attachForecast(res.rows as unknown as Record<string, unknown>[]);
+    await this.attachCounterProjection(res.rows as unknown as Record<string, unknown>[]);
     return res;
   }
 
@@ -201,7 +241,7 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
   override async get(uuid: string, options: EntityGetOptions & { throwIfNotFound: false }): Promise<(SequenceEntity & Record<string, unknown>) | null>;
   override async get(uuid: string, options?: EntityGetOptions): Promise<(SequenceEntity & Record<string, unknown>) | null> {
     const row = await super.get(uuid, options as never);
-    if (row) await this.attachForecast([row as unknown as Record<string, unknown>]);
+    if (row) await this.attachCounterProjection([row as unknown as Record<string, unknown>]);
     return row;
   }
 
