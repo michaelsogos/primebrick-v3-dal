@@ -818,6 +818,31 @@ closer).
 | entity | `EntityClass` |  |
 | options | `{ tableName: string }` |  |
 
+#### `Repository.sequenceAllocate(spec): Promise<{ first: bigint; last: bigint }>`
+
+sequenceAllocate — the ONE counter claim primitive. INTERNAL ENGINE:
+services call it inside their own `dal.transaction` — it has no route,
+no RPC, no remote surface. The claim is a single atomic statement:
+
+  - the row's own UPDATE takes the row lock — concurrent claimers
+    serialize on commit order, never interleave ranges (no doubles);
+  - it lives in the consumer tx, so a ROLLBACK returns the range —
+    no holes either (unlike PG `nextval`, which can never roll back);
+  - INSERT..ON CONFLICT covers the first claim of a
+    (period, partition) atomically — no create-if-missing race.
+
+`counter` is NEXT-TO-EMIT: emitting `count` codes with `step` consumes
+`[counter, counter + (count-1)·step]` and stores `counter + count·step`.
+RETURNING `first`/`last` is uniform across the INSERT and UPDATE
+branches. `start` is only used when the counter row is created.
+
+SQL moves integers only — the code STRING never touches the database;
+interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ sequence_id: string; period_key: string; partition_key: string; count: number; step: bigint; start: bigint; actor: string }` |  |
+
 #### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
 
 distinctAuditActors — the governed vocabulary behind
@@ -982,6 +1007,90 @@ Enforcement points:
 |-----------|------|-------------|
 | message | `string` |  |
 | details | `{ entity: string; schema: string; allowed: string[] }` |  |
+
+### `SequenceCounterEntity`
+
+SequenceCounterEntity — the machine state of a persisted sequence
+(`sequence_counters` table). NOT a domain entity: never routed, never
+listed — rows exist only to be claimed atomically inside a consumer's
+transaction (`Repository.sequenceAllocate`).
+
+Identity = (sequence_id, period_key, partition_key):
+  - `period_key` derives from the pattern's finest date token at the
+    allocation business date (`''` for period-free patterns). Rows are
+    append-only: an old period's row IS the immutable record of where
+    that period ended — nothing is ever closed or deleted, the next
+    period simply keys differently.
+  - `partition_key` is the fixed 3-slot sezionale tuple
+    (`sez\x1fsez2\x1fsez3` — `core/sequence.ts sequencePartitionKey`).
+  - `counter` is NEXT-TO-EMIT (not last-emitted): the row answers
+    "where did it get to" at a glance; the claim bumps it by count*step
+    and RETURNS the emitted range in one atomic statement.
+
+`last_alloc_*` = attribution without a trail — who/when/how many took
+the last claim, overwritten each time.
+
+SEALED: same `new.target` construction guard as SequenceEntity.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
+| uuid | `string` |  |
+| sequence_id | `string` | → `sequences.uuid` of the owning definition (same module schema). |
+| period_key | `string` | Period identity from `derivePeriodKey` — `''` for period-free patterns. |
+| partition_key | `string` | Sezionale tuple `sez\x1fsez2\x1fsez3` — `''`…`''` when partition-free. |
+| counter | `bigint` | NEXT-TO-EMIT counter — claimed ranges bump it atomically. |
+| last_alloc_at | `Date \| null` | Instant of the last claim (attribution, overwritten). |
+| last_alloc_by | `string \| null` | Actor of the last claim (attribution, overwritten). |
+| last_alloc_count | `bigint \| null` | Codes taken by the last claim (attribution, overwritten). |
+
+#### `SequenceCounterEntity()`
+
+### `SequenceEntity`
+
+SequenceEntity — the governed DEFINITION row of a persisted sequence
+(`sequences` table). Shared CONCRETE class: every module that owns
+sequences declares the same class — the schema resolves to the
+service's `domain.primary` (never declared here, so one class serves
+every owner schema).
+
+SEALED by construction: subclassing would fork the counter namespace
+and break the one-registry-per-module ownership contract — `new.target`
+throws on any descendant instantiation (hydration bypasses ctors, but
+a subclass is useless the moment anything instantiates it).
+
+  code    — the addressable identity on the wire (`{sequence:"customer_code"}`),
+            unique per module, never a uuid in directives
+  pattern — the authored template verbatim (`core/sequence.ts` grammar);
+            validation happens at the service boundary via
+            `parseSequencePattern`, the column is the verbatim store
+  step    — signed increment (≠0; negative = countdown)
+  start   — first next-to-emit counter for a fresh period/partition
+  tz      — IANA zone for date tokens + period boundary (UTC when null)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `number` |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+| uuid | `string` |  |
+| code | `string` | Module-unique addressable code — directives reference this, never uuid. |
+| pattern | `string` | Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. |
+| step | `bigint` | Signed increment per emitted code — non-zero by service validation. |
+| start | `bigint` | First next-to-emit value for a fresh (period, partition) counter. |
+| tz | `string \| null` | IANA zone for date tokens + period_key boundary — null → UTC. |
+| label_key | `string \| null` | i18n key for the registry label. |
+| description_key | `string \| null` | i18n key for the explanatory description. |
+
+#### `SequenceEntity()`
 
 ### `ServiceRegistryRefEntity`
 
@@ -1806,6 +1915,16 @@ UI configuration for a non-standard row CTA (route-backed bare op).
  equals one of these values — e.g. show `resume` only on `paused`
  rows. Absent = always visible. Scalar comparison — boolean/number
  fields are allowed (e.g. `enabled ∈ [false]` for an Enable CTA). |
+
+### `SequencePattern`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source | `string` | The authored pattern string — persisted verbatim on the sequence row. |
+| segments | `SequenceSegment[]` |  |
+| counter_width | `number` | `{seq:W}` pad width (0 → no padding). |
+| period_kind | `SequencePeriodKind` | Counter-identity granularity implied by the date tokens present. |
+| sez_slots | `SequenceSezToken[]` | Sezionale slots the pattern uses, in slot order (`[]` → partition-free). |
 
 ### `SnapshotQueryable`
 
@@ -2764,6 +2883,62 @@ Generation side of the migration engine (migrations/ is the apply side).
 
 ### `SelectQueryInput`
 
+### `SequenceDateToken`
+
+Sequence pattern engine — the ONE generator shared by ad-hoc (runtime)
+and persisted (counter-in-DB) sequences. String interpolation NEVER
+happens in SQL: the database only escrows integer counters; this module
+turns `{pattern, counter, step}` into rendered codes, identically for
+the FE forecast and the BE assignment (same function → no drift).
+
+Grammar (closed):
+
+  segment   := literal | counter | dateToken | partition
+  counter   := "&#123;seq&#125;" | "&#123;seq:" width "&#125;"     — exactly ONE per pattern
+  dateToken := "&#123;yyyy&#125;" | "&#123;yy&#125;" | "&#123;MM&#125;" | "&#123;dd&#125;" | "&#123;q&#125;"
+  partition := "&#123;sez&#125;" | "&#123;sez2&#125;" | "&#123;sez3&#125;"   — up to 3, any position
+  literal   := any chars except unescaped braces; "&#123;&#123;"→"&#123;", "&#125;&#125;"→"&#125;"
+
+Invariants:
+ - exactly one `{seq[:W]}` slot — two numeric slots would need two
+   counters, and that is scope creep not a pattern;
+ - `width` is a MIN-width zero-pad, never a max — a counter that
+   overflows its width renders honestly (`{seq:5}` + 100000 →
+   `"100000"`): uniqueness beats aesthetics, always;
+ - a pattern carrying date tokens is PERIOD-SCOPED by its finest
+   token: `{yyyy}`→reset per year, `+{q}`→per quarter, `+{MM}`→per
+   month, `+{dd}`→per day (Italian-invoice semantics — no holes,
+   no duplicates inside one period);
+ - `{sez}`/`{sez2}`/`{sez3}` are POSITIONAL sezionale slots rendered
+   from directive fields (`sez`, `sez2`, `sez3`); the counter PK is
+   `(sequence_id, period_key, partition_key)` where partition_key is
+   the used slots joined in slot order — `{sez3}` alone ≠ `{sez}`
+   with the same value: empty slots stay meaningful;
+ - `step` is a non-zero bigint — negative steps are honest arithmetic
+   (countdown sequences exist) and are NOT special-cased;
+ - counters are `bigint` end to end: width 19 is PG bigint capacity
+   and ext-json carries bigint natively.
+
+**Type:** `"yyyy" \| "yy" \| "MM" \| "dd" \| "q"`
+
+### `SequencePartitions`
+
+Sezionale values supplied per assignment — positional per token.
+
+**Type:** `Partial<Record<SequenceSezToken, string>>`
+
+### `SequencePeriodKind`
+
+**Type:** `"none" \| "year" \| "quarter" \| "month" \| "day"`
+
+### `SequenceSegment`
+
+**Type:** `{ kind: "literal"; text: string } \| { kind: "counter"; width: number } \| { kind: "date"; token: SequenceDateToken } \| { kind: "sez"; slot: SequenceSezToken }`
+
+### `SequenceSezToken`
+
+**Type:** `"sez" \| "sez2" \| "sez3"`
+
 ### `SnakeCaseSingular`
 
 Branded type that enforces snake_case singular (no uppercase letters).
@@ -3341,7 +3516,7 @@ The canonical vocabulary of standard entity ops. Every op is always
 present in `meta.actions` — ops whose route is not registered are emitted
 with `enabled: false` (explicitly unavailable) instead of being omitted.
 
-**Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk"]`
+**Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk", "update.bulk"]`
 
 ### `SUPPORTED_LANGUAGES`
 
@@ -3888,6 +4063,29 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 |-----------|------|-------------|
 | col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
 
+### `columnSchemaLeaf(col): { type: string \| string[]; format: string; enum: string[] }`
+
+Canonical `MetaColumn → JSON-schema leaf` conversion — the honest WIRE
+shape of the column so schema-driven resolvers (`schemaTypeIcon`,
+`schemaLeafSub`, `schemaToNavNodes` — the ONE vocabulary shared with
+the payload-map editor and rule-filter picker) can render it without a
+second icon map:
+
+  - the declared `format` wins over the bare `type` (`email`→`"email"`
+    → mail, `identifier`→`"uuid"` → file-key, `json`/`rule_filter`→
+    `"object"` → braces);
+  - a `badge` column exposes its value vocabulary as `enum` (→ tags),
+    `ref` is its uuid wire shape, `sparkline` is an array;
+  - `nullable` flags the type union with `"null"` — the resolver
+    renders the base icon dashed.
+
+Icon names live ONLY in `schemaTypeIcon`; this function must never
+carry a glyph of its own.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `Pick<MetaColumn, "type"> & Partial<Pick<MetaColumn, "nullable" \| "format" \| "badge">>` |  |
+
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
 Authoring warnings for one column:
@@ -4029,6 +4227,20 @@ decorators express physical reality — the two cannot diverge.
 | columns | `MetaColumn[]` |  |
 | entity | `EntityClass` |  |
 
+### `derivePeriodKey(kind, at, tz): string`
+
+The counter-identity key for `period_kind` at `at` — `''` for
+period-free patterns. `derivePeriodKey` + `INSERT..ON CONFLICT` make
+the first allocation of a period atomic (no create-if-missing race).
+`at` is the BUSINESS date (document date on the directive, default
+now()): a Jan-issued invoice dated December lands in the Dec period.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| kind | `SequencePeriodKind` |  |
+| at | `Date` |  |
+| tz | `string` |  |
+
 ### `deriveVisibleKeyPrefs(visibleKeys, columns): VisibleKeyPrefs`
 
 Derive the persistable intent from the resolved set + served columns:
@@ -4157,11 +4369,15 @@ Numeric equality ignoring scale — `eq(1.0, 1.00)` is `true`.
 
 ### `extJsonParse(text): T`
 
-Parse an Ext-JSON string.
+Parse an Ext-JSON string — strict.
 
-ALL integers are returned as native `bigint` (via reviver).
-Floats (values with decimal point or scientific notation) are `number`.
-Strings, booleans, null are unaffected.
+ALL integer-valued numbers are returned as native `bigint`; non-integer
+floats stay `number`; strings/booleans/null are unaffected.
+
+Throws `SyntaxError` on malformed input, trailing commas, and
+duplicate keys at any depth (native JSON.parse silently last-wins —
+that failure mode is deliberately closed: a duplicated key is a wire
+contract violation, not data).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4908,6 +5124,16 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 |-----------|------|-------------|
 | raw | `string` |  |
 
+### `parseSequencePattern(source): SequencePattern`
+
+Parse a pattern string into segments — the construction gate: anything
+outside the closed grammar throws, so an invalid pattern can never be
+persisted on a sequence row nor accepted on the wire.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
+
 ### `Partition(opts): PropertyDecorator`
 
 Marks a column as the RANGE partition key of the table (pg_partman,
@@ -5112,6 +5338,35 @@ forward/inverse label pair; `hierarchical` opts into deep-cycle
 | template | `string` |  |
 | entity | `EntityClass` |  |
 | alias | `string` |  |
+
+### `renderSequenceRange(pattern, first, step, count, at, opts): string[]`
+
+Render the full code series for `count` items starting at `first` —
+`codes[i] = render(first + i*step)`. THE shared function: the FE calls
+it for forecast display, the BE calls it inside the claim transaction
+for the actual assignment. `count === 0` → `[]`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| first | `bigint` |  |
+| step | `bigint` |  |
+| count | `number` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
+
+### `renderSequenceValue(pattern, counter, at, opts): string`
+
+Render ONE counter value through the pattern. Padding is min-width:
+`String(abs(counter)).padStart(width,"0")`; a negative counter renders
+the sign before the digits (`-0042`) — honest, never truncated.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| counter | `bigint` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
 
 ### `rescale(d, newScale, mode): Decimal`
 
@@ -5380,6 +5635,34 @@ never masquerade as user edits.
 | sourceEntity | `{ key: string; entity: string; table: string } \| undefined` |  |
 | map | `PayloadMap` |  |
 
+### `sequencePartitionKey(_pattern, partitions): string`
+
+Deterministic counter partition identity — the FIXED 3-slot tuple
+ `sez|sez2|sez3` (unused slots empty), so a `{sez3}`-only pattern can
+ never collide with a `{sez}`-only one even if the pattern is edited
+ over the sequence's life: the slot position IS the identity.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| _pattern | `SequencePattern` |  |
+| partitions | `SequencePartitions` |  |
+
+### `sequencePreview(pattern, first, step, count, at, opts): { first: string \| null; last: string \| null }`
+
+Forecast `{first, last}` — what the bulk editor shows before apply.
+For a persisted sequence `first` is the counter read WITHOUT
+incrementing (optimistic preview; a concurrent claim may shift it —
+the claim RETURNING is the only truth).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| first | `bigint` |  |
+| step | `bigint` |  |
+| count | `number` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
+
 ### `serviceApiBase(listBasePath): string`
 
 Service API base of an entity list basePath — strips the trailing
@@ -5604,6 +5887,17 @@ Returns a diagnostic string on violation, `null` when the pair is legal:
 |-----------|------|-------------|
 | icon | `string \| undefined` |  |
 | color | `string \| undefined` |  |
+
+### `validateSequencePartitions(pattern, partitions): SequencePartitions`
+
+Validate the directive's sezionale fields against the pattern's slots —
+every used token requires its field; unused slots must NOT be supplied
+(a sez the pattern ignores would silently mis-key the counter).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| partitions | `Partial<Record<SequenceSezToken, string>> \| undefined` |  |
 
 ### `verifyManifest(manifest, keyring, allowedTrust): TrustedKey`
 

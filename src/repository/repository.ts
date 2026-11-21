@@ -27,6 +27,7 @@ import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from
 import { field, Filter } from "../query/dsl.js";
 import { buildSelectQuery, buildVectorSearchQuery, quoteIdent } from "../query/query-builder.js";
 import { createStream } from "../query/streaming.js";
+import { SequenceCounterEntity } from "../entities/sequence-counter-entity.js";
 import type {
   FindByIdOptions,
   FindOptions,
@@ -760,6 +761,74 @@ export class Repository {
       : getQualifiedTableName(entity);
     const r = await this.db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM ${table}`, []);
     return r.rows?.[0]?.n ?? 0n;
+  }
+
+  /**
+   * sequenceAllocate — the ONE counter claim primitive. INTERNAL ENGINE:
+   * services call it inside their own `dal.transaction` — it has no route,
+   * no RPC, no remote surface. The claim is a single atomic statement:
+   *
+   *   - the row's own UPDATE takes the row lock — concurrent claimers
+   *     serialize on commit order, never interleave ranges (no doubles);
+   *   - it lives in the consumer tx, so a ROLLBACK returns the range —
+   *     no holes either (unlike PG `nextval`, which can never roll back);
+   *   - INSERT..ON CONFLICT covers the first claim of a
+   *     (period, partition) atomically — no create-if-missing race.
+   *
+   * `counter` is NEXT-TO-EMIT: emitting `count` codes with `step` consumes
+   * `[counter, counter + (count-1)·step]` and stores `counter + count·step`.
+   * RETURNING `first`/`last` is uniform across the INSERT and UPDATE
+   * branches. `start` is only used when the counter row is created.
+   *
+   * SQL moves integers only — the code STRING never touches the database;
+   * interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
+   */
+  async sequenceAllocate(spec: {
+    sequence_id: string;
+    period_key: string;
+    partition_key: string;
+    count: number;
+    step: bigint;
+    start: bigint;
+    actor: string;
+  }): Promise<{ first: bigint; last: bigint }> {
+    if (!Number.isInteger(spec.count) || spec.count < 1) {
+      throw new ValidationError(`sequenceAllocate: count must be a positive integer, got ${spec.count}`);
+    }
+    if (spec.step === 0n) {
+      throw new ValidationError("sequenceAllocate: step must be non-zero");
+    }
+    const table = getQualifiedTableName(SequenceCounterEntity);
+    const r = await this.db.query<{ first: bigint; last: bigint }>(
+      `INSERT INTO ${table}
+         (uuid, sequence_id, period_key, partition_key, counter,
+          last_alloc_at, last_alloc_by, last_alloc_count,
+          created_at, created_by, updated_at, updated_by, version)
+       VALUES (uuidv7(), $1, $2, $3, $4::bigint + $5::bigint * $6::bigint,
+               now(), $7, $5::bigint, now(), $7, now(), $7, 1)
+       ON CONFLICT (sequence_id, period_key, partition_key) DO UPDATE
+         SET counter = ${table}.counter + $5::bigint * $6::bigint,
+             last_alloc_at = now(),
+             last_alloc_by = $7,
+             last_alloc_count = $5::bigint,
+             updated_at = now(),
+             updated_by = $7,
+             version = ${table}.version + 1
+       RETURNING counter - $5::bigint * $6::bigint AS first,
+                 counter - $6::bigint AS last`,
+      [
+        spec.sequence_id,
+        spec.period_key,
+        spec.partition_key,
+        spec.start,
+        spec.count,
+        spec.step,
+        spec.actor,
+      ],
+    );
+    const row = r.rows[0];
+    if (!row) throw new ValidationError("sequenceAllocate: claim returned no row — identity constraint unreachable");
+    return { first: row.first, last: row.last };
   }
 
   /**

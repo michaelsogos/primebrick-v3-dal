@@ -256,6 +256,12 @@ export { DictEntityBase } from "./entities/dict-entity-base.js";
 // Translation entity base — standard i18n translations table entity
 export { TranslationEntityBase } from "./entities/translation-entity-base.js";
 
+// Sequence entities — SEALED concrete classes shared by every module that
+// owns a sequence registry (schema resolves to the service's domain.primary;
+// subclassing throws — the counter namespace is one-per-module by contract)
+export { SequenceEntity } from "./entities/sequence-entity.js";
+export { SequenceCounterEntity } from "./entities/sequence-counter-entity.js";
+
 // Dal gateway — high-level pool-owning singleton with best-practice defaults.
 // `Dal` is exported TYPE-ONLY: consumers may annotate (`private _dal: Dal`)
 // but `new Dal(...)` is unimportable — the singleton is built by initDal/getDal
