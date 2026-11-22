@@ -73,7 +73,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // search off — the values are not SQL-addressable.
     { key: "value_actual", label_key: F("value_actual"), type: "number", order: 3, kind: "virtual" },
     { key: "value_next", label_key: F("value_next"), type: "number", order: 4, kind: "virtual" },
-    { key: "pattern", label_key: F("pattern"), type: "text", order: 5 },
+    { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 5 },
     { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
     { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
     { key: "tz", label_key: F("tz"), type: "text", order: 8 },

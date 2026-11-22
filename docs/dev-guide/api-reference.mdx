@@ -2264,6 +2264,35 @@ Optional per-allocation context carried by the object directive forms —
 | period_kind | `SequencePeriodKind` | Counter-identity granularity implied by the date tokens present. |
 | sez_slots | `SequenceSezToken[]` | Sezionale slots the pattern uses, in slot order (`[]` → partition-free). |
 
+### `SequenceTokenContext`
+
+Authoring context for token examples/previews — the pattern-builder
+widget renders "what this token would emit" through the same helpers
+the real renderer uses. `counter`/`partitions` are ILLUSTRATIVE sample
+values (partitions are claim-time context, never persisted on the
+sequence row); `at` defaults to now, `tz` to UTC.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| counter | `bigint` |  |
+| at | `Date` |  |
+| tz | `string` |  |
+| partitions | `SequencePartitions` |  |
+
+### `SequenceTokenSpec`
+
+One insertable entry of the pattern grammar — the SINGLE catalog the
+ authoring widget lists, so the FE never re-declares the token set.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | `string` | i18n key suffix — `app.widgets.sequence_pattern.tokens.<id>`. |
+| insert | `string` | Insertable source text — `{seq:5}` is the width *example*: the
+ digit stays literal text the user edits after insertion. |
+| kind | `"date" \| "counter" \| "sez" \| "literal"` |  |
+| slot | `string` | The used-set slot this insert consumes (`seq`, `yyyy`, `sez`…).
+ `undefined` for repeatable literals — `{{`/`}}` never mark used. |
+
 ### `SnapshotQueryable`
 
 Minimal queryable shape — pg.Pool, pg.PoolClient, or any adapter.
@@ -2756,7 +2785,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence" \| "i18n_key"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence" \| "sequence_pattern" \| "i18n_key"`
 
 ### `MetaColumnOptionsSource`
 
@@ -6113,6 +6142,13 @@ the claim RETURNING is the only truth).
 | at | `Date` |  |
 | opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
 
+### `sequenceTokenCatalog(): SequenceTokenSpec[]`
+
+The closed token vocabulary of the pattern grammar — counter slot
+(`{seq}` plain and `{seq:W}` width example), date tokens, sezionale
+slots, literal braces. Derived from the same token sets/render helpers
+the parser and renderer use — extending the grammar extends the sheet.
+
 ### `serviceApiBase(listBasePath): string`
 
 Service API base of an entity list basePath — strips the trailing
@@ -6318,6 +6354,17 @@ True if two metas are “same enough” for rename pairing (not for strict migra
 ### `Unique(): PropertyDecorator`
 
 Unique constraint (PostgreSQL: unique index in generated patches).
+
+### `usedSequenceTokens(source): Set<string>`
+
+Best-effort scan of the pattern source for already-consumed slots —
+the sheet marks used tokens (grammar: one counter, each date/sez at
+most once). NEVER throws: mid-typing text like `INV-{seq:}` still
+reports `seq` used — the UI affordance must survive invalid states.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
 
 ### `utcTimestampForFilename(d): string`
 
