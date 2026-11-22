@@ -50,6 +50,7 @@
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
 import { extJsonStringify, isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { dec } from "@primebrick/core/decimal";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
@@ -61,6 +62,41 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
 const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
+
+/** Constant `defaultSql` literals — the SAME whitelist the repository's
+ *  `constantDefaultSql` uses for write-path resolution: quoted strings,
+ *  numeric literals, booleans, NULL. Volatile expressions (`now()`,
+ *  `uuidv7()`, function calls) never match → they are never served as a
+ *  form prefill (nothing to show — the DB evaluates them at write). */
+const CONSTANT_DEFAULT_RE = /^'(?:[^']|'')*'$|^-?\d+(\.\d+)?$|^(true|false|null)$/i;
+
+/**
+ * Parses a constant `defaultSql` to the column's wire value per
+ * `inferredPgType` — the served `MetaColumn.default` consumed as the
+ * create-surface prefill. Returns `undefined` for volatile expressions
+ * and for `DEFAULT NULL` (a NULL default is the absence of one).
+ *   int8/bigint → `bigint`; numeric/money → `Decimal`; other numerics →
+ *   `number`; `'literal'` → string; `true|false` → boolean.
+ */
+function constantDefaultValue(defaultSql: string | undefined, pgType: string | undefined): unknown {
+  if (defaultSql === undefined) return undefined;
+  const s = defaultSql.trim();
+  if (!CONSTANT_DEFAULT_RE.test(s)) return undefined;
+  if (/^null$/i.test(s)) return undefined;
+  if (s.startsWith("'")) {
+    const lit = s.slice(1, -1).replace(/''/g, "'");
+    // typed literal: `'1'` on a numeric column stores the number —
+    // serve the wire type, not the raw string
+    if (pgType === "int8" || pgType === "bigint") return /^-?\d+$/.test(lit) ? BigInt(lit) : lit;
+    if (pgType === "numeric" || pgType === "money" || pgType === "decimal")
+      return /^-?\d+(\.\d+)?$/.test(lit) ? dec(lit) : lit;
+    return lit;
+  }
+  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === "true";
+  if (pgType === "int8" || pgType === "bigint") return BigInt(s);
+  if (pgType === "numeric" || pgType === "money" || pgType === "decimal") return dec(s);
+  return Number(s);
+}
 
 /** Intl-sanctioned unit identifiers — the same vocabulary the cell
  *  formatter feeds `style:"unit"` (`Intl.supportedValuesOf("unit")`,
@@ -89,9 +125,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     const phys = persistence.columns[col.key];
     if (!phys) return col;
     const refEnt = servedRefEntity(phys, meta.entity);
+    const derivedDefault = constantDefaultValue(phys.defaultSql, phys.inferredPgType);
     return {
       ...col,
       nullable: phys.nullable ?? false,
+      // Constant `defaultSql` → served `default` (the create-surface
+      // prefill). An AUTHORED `default` is the legal override channel —
+      // the derived value never stomps it.
+      ...(col.default === undefined && derivedDefault !== undefined ? { default: derivedDefault } : {}),
       ...(phys.length !== undefined ? { max_length: phys.length } : {}),
       pg_type: phys.inferredPgType,
       // Identity-generated @Key → server-managed on write: exempt from

@@ -212,6 +212,7 @@ async function cmdCompare(flags: Record<string, string>): Promise<void> {
           !t.likelyRenames.length &&
           !t.typeMismatches.length &&
           !t.nullabilityMismatches.length &&
+          !(t.defaultMismatches?.length) &&
           !(t.onlyInEntityIndexes?.length) &&
           !(t.onlyInEntityForeignKeys?.length),
       );

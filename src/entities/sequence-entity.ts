@@ -58,12 +58,15 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "text", nullable: false })
   pattern!: string;
 
-  /** Signed increment per emitted code — non-zero by service validation. */
-  @Column({ nullable: false, jsType: "bigint" })
+  /** Signed increment per emitted code — non-zero by service validation.
+   *  `DEFAULT 1` is the physical + served default: the create surface
+   *  prefills it and an omitted value resolves in the DB. */
+  @Column({ nullable: false, jsType: "bigint", defaultSql: "1" })
   step!: bigint;
 
-  /** First next-to-emit value for a fresh (period, partition) counter. */
-  @Column({ nullable: false, jsType: "bigint" })
+  /** First next-to-emit value for a fresh (period, partition) counter —
+   *  `DEFAULT 1`, same contract as `step`. */
+  @Column({ nullable: false, jsType: "bigint", defaultSql: "1" })
   start!: bigint;
 
   /** IANA zone for date tokens + period_key boundary — null → UTC. */

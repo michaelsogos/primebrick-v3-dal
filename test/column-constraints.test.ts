@@ -49,6 +49,56 @@ describe("withColumnConstraints", () => {
     expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/restates derived prop/);
   });
 
+  it("served `default` — constant `defaultSql` is derived to the column's wire type", () => {
+    @Entity("cc_def", "job")
+    class CcDefaultEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "1" }) step!: bigint;
+      @Column({ nullable: false, defaultSql: "'user'" }) lane!: string;
+      @Column({ nullable: false, defaultSql: "false" }) enabled!: boolean;
+      @Column({ nullable: false, defaultSql: "now()" }) stamp!: Date;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "'7'" }) quoted_int!: bigint;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_def",
+      translation_key: "cc_def",
+      uid: "uuid",
+      display_field: "step",
+      columns: [
+        { key: "step", label_key: "x.step", type: "number", order: 10 },
+        { key: "lane", label_key: "x.lane", type: "text", order: 20 },
+        { key: "enabled", label_key: "x.enabled", type: "boolean", order: 30 },
+        { key: "stamp", label_key: "x.stamp", type: "datetime", order: 40 },
+        { key: "quoted_int", label_key: "x.quoted_int", type: "number", order: 50 },
+      ],
+    };
+    const byKey = Object.fromEntries(withColumnConstraints(meta, CcDefaultEntity).columns.map((c) => [c.key, c]));
+    expect(byKey.step?.default).toBe(1n);            // int8 literal → bigint
+    expect(byKey.lane?.default).toBe("user");        // quoted literal → string
+    expect(byKey.enabled?.default).toBe(false);      // boolean literal → boolean
+    expect(byKey.quoted_int?.default).toBe(7n);      // '7' on int8 → typed, not raw string
+    expect(byKey.stamp?.default).toBeUndefined();    // volatile expr → never a form prefill
+  });
+
+  it("served `default` — an AUTHORED `default` is the legal override and is never stomped", () => {
+    @Entity("cc_def2", "job")
+    class CcDefaultOverrideEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "1" }) step!: bigint;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_def2",
+      translation_key: "cc_def2",
+      uid: "uuid",
+      display_field: "step",
+      columns: [{ key: "step", label_key: "x.step", type: "number", order: 10, default: 5n }],
+    };
+    const byKey = Object.fromEntries(withColumnConstraints(meta, CcDefaultOverrideEntity).columns.map((c) => [c.key, c]));
+    expect(byKey.step?.default).toBe(5n);
+  });
+
   it("display_field convention — required + min_length 5 + max_length 255 on a nullable text column", () => {
     @Entity("cc_customer", "crm")
     class CcCustomerEntity {

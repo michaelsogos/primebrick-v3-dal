@@ -384,12 +384,16 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
   const opt = (k: string) => rec[k] !== undefined;
   if (need("name")) out.name = vString(rec.name, "name", 100);
   if (need("pattern")) out.pattern = vPattern(rec.pattern);
-  if (need("step")) {
+  // step/start carry `defaultSql:"1"` — OPTIONAL on the wire: an omitted
+  // value stays out of the payload and the DB applies its DEFAULT; a
+  // PROVIDED value is still validated strictly (0n rejected — the
+  // validator enforces the perimeter, the default only fills gaps).
+  if (opt("step")) {
     const s = vBigint(rec.step, "step");
     if (s === 0n) bad("step", "must be non-zero");
     out.step = s;
   }
-  if (need("start")) out.start = vBigint(rec.start, "start");
+  if (opt("start")) out.start = vBigint(rec.start, "start");
   if (opt("tz")) out.tz = vIanaTz(rec.tz);
   if (opt("description_key")) out.description_key = vOptKey(rec.description_key, "description_key", 200);
   if (partial) {

@@ -287,6 +287,22 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
         `ALTER TABLE ${fq} ALTER COLUMN ${quoteIdent(m.column)} ${op};`
       );
     }
+    // column DEFAULTs — catalog-only operation (no rewrite, no data scan);
+    // emit the authored entity expression verbatim, not the normalized key.
+    for (const m of tab.defaultMismatches ?? []) {
+      const authored = tmeta.columns[m.column]?.defaultSql;
+      if (authored == null) {
+        review.push(
+          `-- drop default "${m.column}" (db=${m.databaseDefault ?? "(none)"})`,
+          `ALTER TABLE ${fq} ALTER COLUMN ${quoteIdent(m.column)} DROP DEFAULT;`
+        );
+      } else {
+        review.push(
+          `-- set default "${m.column}" → ${authored} (db=${m.databaseDefault ?? "(none)"})`,
+          `ALTER TABLE ${fq} ALTER COLUMN ${quoteIdent(m.column)} SET DEFAULT ${authored};`
+        );
+      }
+    }
 
     // index redefinitions: same name, different definition → DROP + CREATE (review)
     for (const m of tab.indexMismatches) {

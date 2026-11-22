@@ -10,7 +10,7 @@ import {
   type RenameAmbiguity,
 } from "./schema-rename-heuristics.js";
 import type { SchemaIndexMeta, SchemaSnapshot } from "./schema-types.js";
-import { comparablePgType } from "./schema-type-normalize.js";
+import { comparablePgType, normalizeDefaultExpr } from "./schema-type-normalize.js";
 
 export type { LikelyRename, RenameAmbiguity, RenameHeuristicResult } from "./schema-rename-heuristics.js";
 export { RENAME_HEURISTIC_AGENT_INSTRUCTION } from "./schema-rename-heuristics.js";
@@ -51,6 +51,15 @@ export type SchemaMetaDiffV2 = {
         column: string;
         entityNullable?: boolean | null;
         databaseNullable?: boolean | null;
+      }[];
+      /** Column DEFAULT divergence — populated only when the database
+       *  snapshot was captured with `capturesDefaults` (older stored
+       *  snapshots didn't introspect `pg_attrdef`; "unknown" must not
+       *  flag every declared default as missing). */
+      defaultMismatches: {
+        column: string;
+        entityDefault?: string | null;
+        databaseDefault?: string | null;
       }[];
       /** Index names declared only on the entity side (@Index/@Unique groups) */
       onlyInEntityIndexes: string[];
@@ -121,6 +130,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
 
     const typeMismatches: SchemaMetaDiffV2["tables"][string]["typeMismatches"] = [];
     const nullabilityMismatches: SchemaMetaDiffV2["tables"][string]["nullabilityMismatches"] = [];
+    const defaultMismatches: SchemaMetaDiffV2["tables"][string]["defaultMismatches"] = [];
 
     for (const col of [...eCols].filter((c) => dCols.has(c))) {
       const ec = et.columns[col]!;
@@ -141,6 +151,17 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
       }
       if (ec.isNullable != null && dc.isNullable != null && ec.isNullable !== dc.isNullable) {
         nullabilityMismatches.push({ column: col, entityNullable: ec.isNullable, databaseNullable: dc.isNullable });
+      }
+      if (dbSnap.capturesDefaults === true) {
+        const eDef = normalizeDefaultExpr(ec.defaultSql);
+        const dDef = normalizeDefaultExpr(dc.defaultSql);
+        // identity/serial artifacts (`nextval('…_seq'::regclass)`) are the
+        // physical implementation of `isPostgresIdentity`, not authored
+        // defaults — the entity side never declares them.
+        if (dDef !== undefined && dDef.startsWith("nextval(")) continue;
+        if (eDef !== dDef) {
+          defaultMismatches.push({ column: col, entityDefault: eDef ?? null, databaseDefault: dDef ?? null });
+        }
       }
     }
 
@@ -247,6 +268,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
       renameHeuristic.ambiguities.length ||
       typeMismatches.length ||
       nullabilityMismatches.length ||
+      defaultMismatches.length ||
       onlyInEntityIndexes.length ||
       indexMismatches.length ||
       onlyInEntityForeignKeys.length ||
@@ -264,6 +286,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
           : {}),
         typeMismatches,
         nullabilityMismatches,
+        defaultMismatches,
         onlyInEntityIndexes,
         onlyInDatabaseIndexes,
         indexMismatches,

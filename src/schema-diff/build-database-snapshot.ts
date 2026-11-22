@@ -15,6 +15,8 @@ type PgColRow = {
   format_type: string;
   numeric_precision: number | null;
   numeric_scale: number | null;
+  default_expr: string | null;
+  generated: string;
 };
 
 /** Primary key columns (one query per schema batch). */
@@ -100,11 +102,14 @@ export async function buildDatabaseSnapshot(
          CASE
            WHEN t.typname IN ('numeric', 'decimal') AND a.atttypmod > 0
              THEN ((a.atttypmod - 4) & 65535)::int
-         END AS numeric_scale
+         END AS numeric_scale,
+         pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+         a.attgenerated AS generated
        FROM pg_catalog.pg_attribute a
        INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
        INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
        INNER JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+       LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
        WHERE n.nspname = $1::name
          AND c.relname = $2::name
          AND c.relkind IN ('r', 'p')
@@ -129,6 +134,11 @@ export async function buildDatabaseSnapshot(
         numericScale: row.numeric_scale,
         isNullable: row.is_nullable,
         isPrimaryKey: isPk,
+        // `attgenerated` ≠ '' → the attrdef entry is a GENERATED ALWAYS AS
+        // expression, not a DEFAULT — never report it as one.
+        ...(row.default_expr != null && row.generated === ""
+          ? { defaultSql: row.default_expr }
+          : {}),
       };
     }
     // secondary indexes (non-PK) — matched by constraint/index name downstream
@@ -207,7 +217,7 @@ export async function buildDatabaseSnapshot(
     };
   }
 
-  return { version: 1, generatedAt, source: "database", tables: out };
+  return { version: 1, generatedAt, source: "database", capturesDefaults: true, tables: out };
 }
 
 /** Extract WHERE predicate from a partial index definition. */

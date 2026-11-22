@@ -1117,8 +1117,11 @@ a subclass is useless the moment anything instantiates it).
 | name | `string` | Operator-facing name — display data, never an identity (uuid is the
  only chain). Bound rows carry `<table>.<field>` as their name value. |
 | pattern | `string` | Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. |
-| step | `bigint` | Signed increment per emitted code — non-zero by service validation. |
-| start | `bigint` | First next-to-emit value for a fresh (period, partition) counter. |
+| step | `bigint` | Signed increment per emitted code — non-zero by service validation.
+ `DEFAULT 1` is the physical + served default: the create surface
+ prefills it and an omitted value resolves in the DB. |
+| start | `bigint` | First next-to-emit value for a fresh (period, partition) counter —
+ `DEFAULT 1`, same contract as `step`. |
 | tz | `string \| null` | IANA zone for date tokens + period_key boundary — null → UTC. |
 | description_key | `string \| null` | i18n key for the explanatory description — doubles as the option
  tooltip on sequence pickers. |
@@ -5438,6 +5441,21 @@ Strip trailing fractional zeros — `1.230` → `1.23`, `12.000` → `12`.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `normalizeDefaultExpr(expr): string \| undefined`
+
+Canonicalize a column DEFAULT expression for snapshot comparison.
+`pg_get_expr` de-parses stored defaults into PG's canonical form —
+`'x'::character varying`, `(1)::bigint`, `'now'::text::timestamptz` —
+while the entity side authors the raw SQL (`'x'`, `1`, `now()`).
+We strip `::<type>` casts and redundant outer parens, and collapse
+whitespace — all strictly outside single-quoted literals so values
+like `'foo::bar'` or `'a  b'` survive untouched.
+`undefined` = no default (or unknown).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| expr | `string \| null \| undefined` |  |
 
 ### `normalizePatchEol(body): string`
 

@@ -105,6 +105,12 @@ export type SchemaSnapshot = {
   version: 1;
   generatedAt: string;
   source: "entities" | "database";
+  /** `source:"database"` only: the introspection captured column DEFAULT
+   *  expressions (`pg_attrdef`). Absent on snapshots written before the
+   *  capture existed — the default diff treats them as "unknown", never
+   *  as "no default" (stale snapshots can't false-flag every declared
+   *  `defaultSql` as missing). */
+  capturesDefaults?: boolean;
   tables: Record<string, SchemaTableMeta>;
 };
 

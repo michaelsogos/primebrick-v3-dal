@@ -74,6 +74,27 @@ transitions the next run picks up:
 | `resolveManually` | `failed`/`pending`/`pending_review → resolved_manual` |
 | `registryStatus` | read all rows — the FE `db_patch` list |
 
+## Schema diff — what `compare` sees
+
+`compareSnapshots` diffs entity declarations against the catalog across:
+
+- **tables / columns** — presence, rename heuristics;
+- **type** (`typeMismatches`) and **nullability** (`nullabilityMismatches`);
+- **indexes** (`onlyInEntityIndexes`, `onlyInDatabaseIndexes`,
+  `indexMismatches` — columns, uniqueness, method, predicate);
+- **foreign keys** (`onlyInEntityForeignKeys`, `onlyInDatabaseForeignKeys`,
+  `foreignKeyMismatches`);
+- **column DEFAULTs** (`defaultMismatches`) — `pg_attrdef` introspection
+  via `pg_get_expr`, canonicalized by `normalizeDefaultExpr` (casts,
+  outer parens, whitespace stripped *outside* quoted literals —
+  `1::bigint` ≡ entity `1`, `'x'::character varying` ≡ `'x'`). Identity
+  artifacts (`nextval('…_seq'::regclass)`) are NOT authored defaults and
+  never diff; `GENERATED ALWAYS AS` expressions aren't DEFAULTs either.
+  Emission: `ALTER COLUMN … SET DEFAULT <authored>` / `DROP DEFAULT` —
+  catalog-only, no rewrite. Snapshots written before the capture carry
+  no `capturesDefaults` marker — treated as *unknown*, never *absent*,
+  so stale snapshots can't false-flag every declared default.
+
 ## `primebrick-db` CLI
 
 `bin/primebrick-db` (`src/cli/primebrick-db.ts`) wraps the engine and the

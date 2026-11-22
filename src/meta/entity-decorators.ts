@@ -1237,6 +1237,9 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     const propertyKey = String(propKey);
     // Semantic defaults — decorator/type driven, never name driven:
     //   @AuditableField(CREATED_AT|UPDATED_AT) → now()
+    //   @AuditableField(CREATED_BY|UPDATED_BY) → 'system'  (a write that
+    //     somehow lacks actor attribution blames 'system' — the safety net
+    //     the physical schema has carried since 0001, now entity-declared)
     //   @AuditableField(VERSION)               → 1
     //   resolved type `uuid` on a key/unique col → gen_random_uuid() (below,
     //   after type resolution — it needs the effective pgType).
@@ -1246,6 +1249,11 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         reg.auditableType === AuditableFieldType.UPDATED_AT
       ) {
         reg.defaultSql = "now()";
+      } else if (
+        reg.auditableType === AuditableFieldType.CREATED_BY ||
+        reg.auditableType === AuditableFieldType.UPDATED_BY
+      ) {
+        reg.defaultSql = "'system'";
       } else if (reg.auditableType === AuditableFieldType.VERSION) {
         reg.defaultSql = "1";
       }
