@@ -1867,6 +1867,13 @@ served response. Used automatically for edit-page titles; reusable for
 comboboxes, lists, chips. |
 | actions_overrides | `ActionsOverrides` | Per-op enable overrides — may ONLY toggle `enabled` on route-backed
  ops; a missing route already produces `enabled: false`. |
+| create | `{ surface: "form" \| "sheet" }` | Create surface declaration — HOW `create.single` is exercised.
+ `"form"` (default when absent) → census `kind:"create"` route +
+ `page_props.form` → `EntityFormPage` page (the canonical archetype).
+ `"sheet"` → NO route required (a sheet is never a nav leaf): the
+ list create CTA opens `entity.record` in `mode:"create"` — the same
+ record panel, no fetch, empty draft, POST on commit.
+ Authored on the entity meta — never via component props. |
 | columns | `MetaColumn[]` | Entity field dictionary (root-level, transversal). |
 | table | `TableMeta` | Table options — omit when the entity has no table page
  (e.g. a self-service form meta). |

@@ -64,7 +64,7 @@ const STICKY_KEYS = new Set<string>(["name"]);
 function sequenceColumns(ns: string): MetaColumn[] {
   const F = (c: string) => `${ns}.entities.sequence.fields.${c}`;
   const raw: Array<Omit<MetaColumn, "sticky">> = [
-    { key: "name", label_key: F("name"), type: "text", order: 0, hideable: false, immutable: true },
+    { key: "name", label_key: F("name"), type: "text", order: 0, hideable: false },
     { key: "step", label_key: F("step"), type: "number", order: 1 },
     { key: "start", label_key: F("start"), type: "number", order: 2 },
     // Counter projection — machine state from `sequence_counters`
@@ -106,6 +106,10 @@ function sequenceMeta(ns: string): EntityMeta {
         default_page_size: 25,
         page_size_options: [10, 25, 50],
       },
+      // Create opens the record sheet in `mode:"create"` — no census
+      // create route (a sheet is never a nav leaf). The list CTA
+      // auto-wires from this declaration.
+      create: { surface: "sheet" },
       // Soft-delete reads as "disable" on sequences — same semantics as
       // job_trigger: exec-stop icon + destructive for the off-transition,
       // exec-start + success for the re-enable. Underlying mechanics stay
