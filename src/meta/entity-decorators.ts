@@ -1,5 +1,7 @@
 import "reflect-metadata";
 
+import { createHash } from "node:crypto";
+
 import type { DictFacet, RelationFacet, SequenceDecl } from "@primebrick/core";
 import { parseSequencePattern } from "@primebrick/core";
 
@@ -693,12 +695,13 @@ export function Ref(entity: string): PropertyDecorator {
  *  directive resolved to a literal inside the write transaction (the row
  *  and the counter commit or roll back together — atomic by construction).
  *
- *  The binding's DEFAULT sequence code is never authored: it derives as
- *  `<table>.<field>` at persistence-meta resolution (e.g. `customers.code`),
- *  and the declared definition is materialized idempotently at boot so the
- *  default exists in the module's sequence registry before first use. A
- *  different sequence is still reachable per-write via the explicit
- *  `{seq:{code}}` directive — sequences are data, not declarations. */
+ *  The binding's DEFAULT sequence is never authored: it derives at
+ *  persistence-meta resolution as `<table>.<field>` (the bound NAME —
+ *  display data) plus its DETERMINISTIC uuid (`sequenceBoundUuid`), so
+ *  the bound row's identity is known before the row exists and
+ *  materialization is idempotent on `ON CONFLICT (uuid)`. A different
+ *  sequence is still reachable per-write via the `{seq:{uuid}}`
+ *  directive — sequences are data, not declarations. */
 /** The authored sequence definition — the canonical type lives in core
  *  (`sequence.ts`) so the `@SequenceField` decl and the wire directive's
  *  expr form are ONE shape: `{pattern, step, start, tz?}` — pattern
@@ -706,10 +709,27 @@ export function Ref(entity: string): PropertyDecorator {
  *  `tz` an IANA zone or null. */
 export type { SequenceDecl };
 
-/** The resolution-time shape: the authored decl plus the derived default
- *  sequence code (`<table>.<field>`). Carried on persistence column meta
- *  and served-meta `seq.code`. */
-export type SequenceBound = SequenceDecl & { code: string };
+/** Deterministic uuid for a self-materialized sequence row — the bound
+ *  name is sha256'd under a fixed namespace and the digest is formatted
+ *  as a uuid (v5-style version/variant bits; NOT RFC 4122 — a private
+ *  deterministic scheme). Any replica derives the same uuid from the
+ *  same seed, so `INSERT … ON CONFLICT ("uuid") DO NOTHING` is
+ *  idempotent without a second functional key. The sequence `name`
+ *  stays display-only. */
+export function sequenceBoundUuid(seed: string): string {
+  const h = createHash("sha256").update(`primebrick.sequence|${seed}`, "utf8").digest("hex");
+  return (
+    `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-` +
+    `${((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`
+  );
+}
+
+/** The resolution-time shape: the authored decl plus the derived bound
+ *  identity — `name` = `<table>.<field>` (display data, never an
+ *  address), `uuid` = `sequenceBoundUuid(name)` (the deterministic row
+ *  identity). Carried on persistence column meta and served-meta
+ *  `seq.uuid`/`seq.name`. */
+export type SequenceBound = SequenceDecl & { uuid: string; name: string };
 
 /** Marks a plain text column as sequence-bound — see {@link SequenceDecl}.
  *  Accepted shape (positive form): a physical, business-owned text/varchar
@@ -1320,7 +1340,8 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
           `${entityClassName}.${propertyKey}: @SequenceField requires text/varchar storage, got "${inferredPgType}"`,
         );
       }
-      entry.seqBound = { ...reg.seqBound, code: `${tableName}.${reg.sqlName}` };
+      const boundName = `${tableName}.${reg.sqlName}`;
+      entry.seqBound = { ...reg.seqBound, name: boundName, uuid: sequenceBoundUuid(boundName) };
     }
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;

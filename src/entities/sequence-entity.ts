@@ -5,7 +5,6 @@ import {
   Column,
   Entity,
   Key,
-  Unique,
 } from "../meta/entity-decorators.js";
 import { Auditable, Deletable, EntityBase } from "./entity-base.js";
 import { ValidationError } from "../errors/errors.js";
@@ -22,8 +21,11 @@ import { ValidationError } from "../errors/errors.js";
  * throws on any descendant instantiation (hydration bypasses ctors, but
  * a subclass is useless the moment anything instantiates it).
  *
- *   code    — the addressable identity on the wire (`{sequence:"customer_code"}`),
- *             unique per module, never a uuid in directives
+ *   uuid    — the ONLY identity: directives, counter FKs, RPC params and
+ *             the deterministic bound-row provisioning key all chain uuid
+ *   name    — the operator-facing display name, plain text, NOT unique
+ *             (bound rows carry `<table>.<field>` as their name value;
+ *             ambiguity between operator rows is the operator's business)
  *   pattern — the authored template verbatim (`core/sequence.ts` grammar);
  *             validation happens at the service boundary via
  *             `parseSequencePattern`, the column is the verbatim store
@@ -47,10 +49,10 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "uuid" })
   uuid!: string;
 
-  /** Module-unique addressable code — directives reference this, never uuid. */
-  @Unique()
+  /** Operator-facing name — display data, never an identity (uuid is the
+   *  only chain). Bound rows carry `<table>.<field>` as their name value. */
   @Column({ pgType: "varchar", length: 100, nullable: false })
-  code!: string;
+  name!: string;
 
   /** Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. */
   @Column({ pgType: "text", nullable: false })
@@ -68,11 +70,8 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "varchar", length: 100, nullable: true })
   tz?: string | null;
 
-  /** i18n key for the registry label. */
-  @Column({ pgType: "varchar", length: 100, nullable: true })
-  label_key?: string | null;
-
-  /** i18n key for the explanatory description. */
+  /** i18n key for the explanatory description — doubles as the option
+   *  tooltip on sequence pickers. */
   @Column({ pgType: "varchar", length: 200, nullable: true })
   description_key?: string | null;
 }

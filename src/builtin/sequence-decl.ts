@@ -36,7 +36,7 @@ import { SequenceEntity } from "../entities/sequence-entity.js";
 import { SequenceCounterEntity } from "../entities/sequence-counter-entity.js";
 import { withColumnConstraints } from "../meta/column-constraints.js";
 import { getSchemaDomain } from "../meta/schema-domain.js";
-import { SequenceNotFoundError, ValidationError } from "../errors/errors.js";
+import { ValidationError } from "../errors/errors.js";
 import { Filter, field } from "../query/dsl.js";
 
 /** The module's owned schema — domain when configured, else the
@@ -58,34 +58,34 @@ function ownedNamespace(): string {
 
 // ─── list config + meta ──────────────────────────────────────────────────
 
-const SEQUENCE_DEFAULT_SORT = { key: "code", dir: "asc" as const };
-const STICKY_KEYS = new Set<string>(["code"]);
+const SEQUENCE_DEFAULT_SORT = { key: "name", dir: "asc" as const };
+const STICKY_KEYS = new Set<string>(["name"]);
 
 function sequenceColumns(ns: string): MetaColumn[] {
   const F = (c: string) => `${ns}.entities.sequence.fields.${c}`;
-  const raw: Array<Omit<MetaColumn, "sticky" | "audited">> = [
-    { key: "code", label_key: F("code"), type: "text", order: 0, hideable: false, immutable: true },
-    { key: "pattern", label_key: F("pattern"), type: "text", order: 1 },
-    { key: "step", label_key: F("step"), type: "number", order: 2 },
-    { key: "start", label_key: F("start"), type: "number", order: 3 },
-    { key: "tz", label_key: F("tz"), type: "text", order: 4 },
-    { key: "label_key", label_key: F("label_key"), type: "text", format: "i18n_key", order: 5 },
-    { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 6 },
+  const raw: Array<Omit<MetaColumn, "sticky">> = [
+    { key: "name", label_key: F("name"), type: "text", order: 0, hideable: false, immutable: true },
+    { key: "step", label_key: F("step"), type: "number", order: 1 },
+    { key: "start", label_key: F("start"), type: "number", order: 2 },
     // Counter projection — machine state from `sequence_counters`
     // (default partition @ current period), attached post-query by
     // `attachCounterProjection`. `kind:"virtual"` forces sort/filter/
     // search off — the values are not SQL-addressable.
-    { key: "value_next", label_key: F("value_next"), type: "number", order: 10, kind: "virtual" },
-    { key: "value_actual", label_key: F("value_actual"), type: "number", order: 11, kind: "virtual" },
-    { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 12, kind: "virtual" },
-    { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 13, kind: "virtual" },
-    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual" },
-    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual" },
+    { key: "value_actual", label_key: F("value_actual"), type: "number", order: 3, kind: "virtual" },
+    { key: "value_next", label_key: F("value_next"), type: "number", order: 4, kind: "virtual" },
+    { key: "pattern", label_key: F("pattern"), type: "text", order: 5 },
+    { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
+    { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
+    { key: "tz", label_key: F("tz"), type: "text", order: 8 },
+    // i18n keys are operator-managed pointers — hidden by default,
+    // toggleable via the column picker.
+    { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
+    // `audited` authored ONLY on the last_alloc_* virtuals: it places
+    // them in the ELT audit band (the physical-writable exclusion the
+    // flag implies on data columns is a no-op on enrichments).
+    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual", audited: true },
+    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual", audited: true },
   ];
-  // `audited` is NOT authored on data columns — it marks the audit section
-  // (created/deleted stamps), which arrives derived from the entity class.
-  // Authoring it here would both double-emit a `sticky`+`audited` column in
-  // the ELT groups and exclude the column from physical-writable checks.
   return raw.map((c) => ({ ...c, sticky: STICKY_KEYS.has(c.key) }));
 }
 
@@ -96,7 +96,7 @@ function sequenceMeta(ns: string): EntityMeta {
       translation_key: "sequence",
       entities_ns: ns,
       uid: "uuid",
-      display_field: "code",
+      display_field: "name",
       columns: sequenceColumns(ns),
       table: {
         default_view: "table",
@@ -246,28 +246,22 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
   }
 
   /** `sequence-forecast` RPC — explicit-context (sez and at) forecast.
-   *  READ-ONLY by construction: identity resolution + counter SELECT +
-   *  render. `{uuid|code}` — uuid for the registry page, code for the
-   *  field-binding widget. */
+   *  READ-ONLY by construction: uuid resolution + counter SELECT +
+   *  render. uuid is the ONLY sequence identity — `name` is display
+   *  data and is never accepted as an address. */
   async forecast(spec: {
-    uuid?: string; code?: string;
+    uuid: string;
     sez?: string; sez2?: string; sez3?: string;
     at?: Date;
   }) {
-    const row = spec.uuid !== undefined
-      ? await this.get(spec.uuid, { throwIfNotFound: true })
-      : await this.svc.find<SequenceEntity & Record<string, unknown>>(null, {
-          throwIfNotFound: false,
-          filters: [Filter.fieldValue(field(SequenceEntity, "code"), "=", spec.code)],
-        });
-    if (!row) throw new SequenceNotFoundError(spec.uuid ?? spec.code ?? "?");
+    const row = await this.get(spec.uuid, { throwIfNotFound: true });
     const parts = validateSequencePartitions(parseSequencePattern(row.pattern as string), this.sezCtx(spec));
     const f = await this.forecastRow(
       { uuid: row.uuid as string, pattern: row.pattern as string, start: row.start as bigint, tz: row.tz as string | null },
       parts,
       spec.at ?? new Date(),
     );
-    return { uuid: row.uuid, code: row.code, ...f };
+    return { uuid: row.uuid, name: row.name, ...f };
   }
 
   /** `sequence-set` RPC — governed counter re-seed: writes the explicit
@@ -301,15 +295,14 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
    *  bind). Delegates to the repository primitive inside a governed tx —
    *  pure SELECTs, nothing mutates. */
   async analyze(spec: {
-    uuid?: string; code?: string;
+    uuid: string;
     table?: string; column?: string;
     sez?: string; sez2?: string; sez3?: string;
     at?: Date;
   }) {
-    const seq = spec.uuid !== undefined ? { uuid: spec.uuid } : { code: spec.code! };
     return this.svc.transaction((tx) =>
       tx.sequenceAnalyze({
-        seq,
+        seq: { uuid: spec.uuid },
         ...(spec.table !== undefined ? { table: spec.table } : {}),
         ...(spec.column !== undefined ? { column: spec.column } : {}),
         ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
@@ -365,7 +358,7 @@ function vOptKey(v: unknown, field: string, max: number): string | null {
   return vString(v, field, max);
 }
 
-const SEQUENCE_WRITE_KEYS = new Set(["code", "pattern", "step", "start", "tz", "label_key", "description_key", "version"]);
+const SEQUENCE_WRITE_KEYS = new Set(["name", "pattern", "step", "start", "tz", "description_key", "version"]);
 
 function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> {
   const e = (body as { entity?: unknown })?.entity;
@@ -383,7 +376,7 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
     return true;
   };
   const opt = (k: string) => rec[k] !== undefined;
-  if (need("code")) out.code = vString(rec.code, "code", 100);
+  if (need("name")) out.name = vString(rec.name, "name", 100);
   if (need("pattern")) out.pattern = vPattern(rec.pattern);
   if (need("step")) {
     const s = vBigint(rec.step, "step");
@@ -392,7 +385,6 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
   }
   if (need("start")) out.start = vBigint(rec.start, "start");
   if (opt("tz")) out.tz = vIanaTz(rec.tz);
-  if (opt("label_key")) out.label_key = vOptKey(rec.label_key, "label_key", 100);
   if (opt("description_key")) out.description_key = vOptKey(rec.description_key, "description_key", 200);
   if (partial) {
     // `version` rides int8 on the wire — ext-json decodes it as `bigint`,
@@ -512,31 +504,27 @@ function vSetBody(raw: unknown): {
 }
 
 function vForecastBody(raw: unknown): {
-  uuid?: string; code?: string;
+  uuid: string;
   sez?: string; sez2?: string; sez3?: string; at?: Date;
 } {
   const rec = vObjectBody(raw);
-  const uuid = rec.uuid === undefined || rec.uuid === null ? undefined : vString(rec.uuid, "uuid", 40);
-  const code = rec.code === undefined || rec.code === null ? undefined : vString(rec.code, "code", 100);
-  if (uuid === undefined && code === undefined) bad("identity", "uuid or code is required");
-  return { ...(uuid !== undefined ? { uuid } : {}), ...(code !== undefined ? { code } : {}), ...vSezCtx(rec) };
+  // uuid is the ONLY sequence identity — `name` is display data and is
+  // never accepted on the wire.
+  return { uuid: vString(rec.uuid, "uuid", 40), ...vSezCtx(rec) };
 }
 
 function vAnalyzeBody(raw: unknown): {
-  uuid?: string; code?: string;
+  uuid: string;
   table?: string; column?: string;
   sez?: string; sez2?: string; sez3?: string; at?: Date;
 } {
   const rec = vObjectBody(raw);
-  const uuid = rec.uuid === undefined || rec.uuid === null ? undefined : vString(rec.uuid, "uuid", 40);
-  const code = rec.code === undefined || rec.code === null ? undefined : vString(rec.code, "code", 100);
-  if (uuid === undefined && code === undefined) bad("identity", "uuid or code is required");
+  const uuid = vString(rec.uuid, "uuid", 40);
   const table = rec.table === undefined || rec.table === null ? undefined : vString(rec.table, "table", 63);
   const column = rec.column === undefined || rec.column === null ? undefined : vString(rec.column, "column", 63);
   if ((table === undefined) !== (column === undefined)) bad("target", "table and column must come together");
   return {
-    ...(uuid !== undefined ? { uuid } : {}),
-    ...(code !== undefined ? { code } : {}),
+    uuid,
     ...(table !== undefined ? { table } : {}),
     ...(column !== undefined ? { column } : {}),
     ...vSezCtx(rec),
@@ -620,9 +608,9 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
         tags: ["sequences"],
         requestSchema: {
           type: "object",
+          required: ["uuid"],
           properties: {
             uuid: { type: "string" },
-            code: { type: "string" },
             sez: { type: "string" }, sez2: { type: "string" }, sez3: { type: "string" },
             at: { type: "string", format: "date-time" },
           },
@@ -631,7 +619,7 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
           type: "object",
           properties: {
             uuid: { type: "string" },
-            code: { type: "string" },
+            name: { type: "string" },
             period_key: { type: "string" },
             partition_key: { type: "string" },
             counter: { type: ["integer", "null"] },
@@ -653,13 +641,13 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
           "Read-only pre-check: scans a text column in the module's schema with the " +
           "pattern-exact regex and reports in-use count, max numeric value, proposed " +
           "next, collisions and ambiguous sibling sequences. Target derives from a " +
-          "<table>.<field> code or explicit table/column. Never mutates state.",
+          "<table>.<field> bound name or explicit table/column. Never mutates state.",
         tags: ["sequences"],
         requestSchema: {
           type: "object",
+          required: ["uuid"],
           properties: {
             uuid: { type: "string" },
-            code: { type: "string" },
             table: { type: "string" },
             column: { type: "string" },
             sez: { type: "string" }, sez2: { type: "string" }, sez3: { type: "string" },

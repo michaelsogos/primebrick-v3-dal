@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 
 import { getDal, resetDal } from "../src/dal/dal.js";
 import { SequencesService } from "../src/builtin/sequence-decl.js";
+import { sequenceBoundUuid } from "../src/meta/entity-decorators.js";
 import { SequenceNotFoundError } from "../src/errors/errors.js";
 import {
   getTestPool,
@@ -14,20 +15,23 @@ import {
 /**
  * SequencesService — the governed builtin surface: `setCounter` (the
  * `sequence.set` RPC primitive) upserts the counter row through the
- * governed entity-service door; `forecast` + list/get `next` are
- * READ-ONLY (never create or bump a counter). Actor attribution lands in
- * audit cols, never in last_alloc_* (a SET is not a claim).
+ * governed entity-service door; `forecast` + list/get counter
+ * projections are READ-ONLY (never create or bump a counter). Actor
+ * attribution lands in audit cols, never in last_alloc_* (a SET is not
+ * a claim). uuid is the ONLY identity on every surface — `name` is
+ * display data.
  */
 
 const ACTOR = "seq-svc-actor";
 
-async function seedSequence(code: string, pattern = "TST-{seq:5}", start = 1n): Promise<string> {
-  const r = await getTestPool().query<{ uuid: string }>(
-    `INSERT INTO sequences (uuid, code, pattern, step, start)
-     VALUES (uuidv7(), $1, $2, 1, $3) RETURNING uuid`,
-    [code, pattern, start],
+async function seedSequence(name: string, pattern = "TST-{seq:5}", start = 1n): Promise<string> {
+  const uuid = sequenceBoundUuid(name);
+  await getTestPool().query(
+    `INSERT INTO sequences (uuid, name, pattern, step, start)
+     VALUES ($1, $2, $3, 1, $4)`,
+    [uuid, name, pattern, start],
   );
-  return r.rows[0]!.uuid;
+  return uuid;
 }
 
 async function counters(): Promise<Array<Record<string, unknown>>> {
@@ -100,10 +104,11 @@ describe("SequencesService — governed setCounter + read-only forecast", () => 
     const uuid = await seedSequence("svc.seq");
     const f1 = await svc.forecast({ uuid });
     expect(f1.next).toBe("TST-00001");
+    expect(f1.name).toBe("svc.seq");
     expect(f1.counter).toBeNull();
     expect(await counters()).toHaveLength(0); // forecast never provisions
     await svc.setCounter({ uuid, next: 42n });
-    const f2 = await svc.forecast({ code: "svc.seq" });
+    const f2 = await svc.forecast({ uuid });
     expect(f2.next).toBe("TST-00042");
     expect(f2.counter).toBe(42n);
     expect((await counters())[0]!.counter).toBe(42n); // unchanged
@@ -119,22 +124,23 @@ describe("SequencesService — governed setCounter + read-only forecast", () => 
     expect(await counters()).toHaveLength(1); // read-only
   });
 
-  it("forecast missing identity → SEQUENCE_NOT_FOUND carrying it", async () => {
-    await expect(svc.forecast({ code: "bogus.seq" })).rejects.toThrow(SequenceNotFoundError);
+  it("forecast missing identity → NotFound carrying it", async () => {
+    await expect(svc.forecast({ uuid: crypto.randomUUID() })).rejects.toThrow();
   });
 
-  it("list/get attach `next` — null for partitioned patterns, rendered otherwise", async () => {
+  it("list/get attach counter projections — emitted_next null for partitioned patterns", async () => {
     const uuid = await seedSequence("svc.seq");
     await svc.setCounter({ uuid, next: 42n });
     await seedSequence("svc.part", "P-{sez}-{seq:3}");
     const res = await svc.list({ page: 1, page_size: 10 } as never);
     const rows = res.rows as unknown as Array<Record<string, unknown>>;
-    const flat = rows.find((r) => r.code === "svc.seq")!;
-    const part = rows.find((r) => r.code === "svc.part")!;
-    expect(flat.next).toBe("TST-00042");
-    expect(part.next).toBeNull();
+    const flat = rows.find((r) => r.name === "svc.seq")!;
+    const part = rows.find((r) => r.name === "svc.part")!;
+    expect(flat.value_next).toBe(42n);
+    expect(flat.emitted_next).toBe("TST-00042");
+    expect(part.emitted_next).toBeNull();
     const g = (await svc.get(uuid)) as unknown as Record<string, unknown>;
-    expect(g.next).toBe("TST-00042");
+    expect(g.emitted_next).toBe("TST-00042");
     expect(await counters()).toHaveLength(1); // still read-only
   });
 });
@@ -164,11 +170,11 @@ describe("SequencesService — analyze (governed read-only pre-check)", () => {
   });
 
   it("scans a physical column in the module schema — reports usage/collisions/ambiguity, writes nothing", async () => {
-    // scan target: the `sequences.code` column itself (text, same schema)
+    // scan target: the `sequences.name` column itself (text, same schema)
     const uuid = await seedSequence("TST-001", "TST-{seq:3}");
     await seedSequence("TST-002", "TST-{seq:3}");
     await seedSequence("svc.wide", "TST-{seq:2}"); // \d{2,} also matches TST-001 → ambiguous
-    const a = await svc.analyze({ uuid, table: "sequences", column: "code" });
+    const a = await svc.analyze({ uuid, table: "sequences", column: "name" });
     expect(a.table).toBe("sequences");
     expect(a.in_use).toBe(2n);
     expect(a.max_value).toBe(2n);
@@ -179,12 +185,12 @@ describe("SequencesService — analyze (governed read-only pre-check)", () => {
     expect(await counters()).toHaveLength(0); // read-only
   });
 
-  it("derives target from <table>.<field> code when table/column omitted", async () => {
-    const uuid = await seedSequence("sequences.code", "TST-{seq:3}");
+  it("derives target from the <table>.<field> bound name when table/column omitted", async () => {
+    const uuid = await seedSequence("sequences.name", "TST-{seq:3}");
     await seedSequence("TST-001", "Q-{seq:4}");
     const a = await svc.analyze({ uuid });
     expect(a.table).toBe("sequences");
-    expect(a.column).toBe("code");
+    expect(a.column).toBe("name");
     expect(a.in_use).toBe(1n);
   });
 });

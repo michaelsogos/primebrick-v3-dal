@@ -274,12 +274,11 @@ export async function setupTestSchema(): Promise<void> {
   await db.query(`
     CREATE TABLE IF NOT EXISTS sequences (
       uuid            uuid PRIMARY KEY DEFAULT uuidv7(),
-      code            varchar(100) NOT NULL,
+      name            varchar(100) NOT NULL,
       pattern         text NOT NULL,
       step            bigint NOT NULL,
       start           bigint NOT NULL,
       tz              varchar(100),
-      label_key       varchar(100),
       description_key varchar(200),
       created_at      timestamptz NOT NULL DEFAULT now(),
       created_by      varchar(100),
@@ -289,7 +288,18 @@ export async function setupTestSchema(): Promise<void> {
       deleted_at      timestamptz,
       deleted_by      varchar(100)
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS sequences_code_uq ON sequences (code);
+    -- legacy shape migration (code→name, unique index, label_key)
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'sequences' AND column_name = 'code'
+      ) THEN
+        ALTER TABLE sequences RENAME COLUMN code TO name;
+      END IF;
+    END $$;
+    DROP INDEX IF EXISTS sequences_code_uq;
+    ALTER TABLE sequences DROP COLUMN IF EXISTS label_key;
 
     CREATE TABLE IF NOT EXISTS sequence_counters (
       uuid             uuid PRIMARY KEY DEFAULT uuidv7(),

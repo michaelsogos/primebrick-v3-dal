@@ -121,11 +121,11 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
           ? { type: "ref" as const, ref: { entity_field: `${col.key}_ref_entity`, key_field: `${col.key}_ref_key` } }
           : { type: "ref" as const, ref: { entity: refEnt } }
         : {}),
-      // Seq-bound: `format` + `seq.code` are class facts — the authored
-      // surface half (modes/default_mode/allow_create) merges under the
-      // derived code.
+      // Seq-bound: `format` + `seq.uuid`/`seq.name` are class facts — the
+      // authored surface half (modes/default_mode/allow_create) merges
+      // under the derived bound identity.
       ...(phys.seqBound !== undefined
-        ? { format: "sequence" as const, seq: { ...(col.seq ?? {}), code: phys.seqBound.code } }
+        ? { format: "sequence" as const, seq: { ...(col.seq ?? {}), uuid: phys.seqBound.uuid, name: phys.seqBound.name } }
         : {}),
     };
   };
@@ -532,10 +532,10 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
               `the binding derives format:"sequence"; drop the authored value`,
           );
         }
-        if (col.seq?.code !== undefined) {
+        if (col.seq?.uuid !== undefined || col.seq?.name !== undefined) {
           throw new Error(
-            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors seq.code — ` +
-              `the binding derives it ("${phys.seqBound.code}"); only seq.modes/default_mode/allow_create are authorable`,
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors seq.uuid/seq.name — ` +
+              `the binding derives them ("${phys.seqBound.name}"); only seq.modes/default_mode/allow_create are authorable`,
           );
         }
       } else if (col.format === "sequence" || col.seq !== undefined) {

@@ -855,7 +855,7 @@ Governed counter SET — writes an EXPLICIT next-to-emit value into
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| spec | `{ seq: { code: string } \| { uuid: string }; next: bigint; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date; actor: string }` |  |
+| spec | `{ seq: { uuid: string }; next: bigint; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date; actor: string }` |  |
 
 #### `Repository.sequenceAnalyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
 
@@ -864,12 +864,13 @@ Read-only column-usage analysis for a sequence pattern — the
  physical text column inside the module's own schema with a
  pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
  sequences sharing a prefix never pollute each other's report).
- Target resolves from explicit `table`/`column`, else the bound code
- `<table>.<field>`. Pure SELECTs — nothing is created or mutated.
+ Target resolves from explicit `table`/`column`, else the bound NAME
+ `<table>.<field>` carried by the row. Pure SELECTs — nothing is
+ created or mutated.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| spec | `{ seq: { code: string } \| { uuid: string }; table: string; column: string; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date }` |  |
+| spec | `{ seq: { uuid: string }; table: string; column: string; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date }` |  |
 
 #### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
 
@@ -1091,8 +1092,11 @@ and break the one-registry-per-module ownership contract — `new.target`
 throws on any descendant instantiation (hydration bypasses ctors, but
 a subclass is useless the moment anything instantiates it).
 
-  code    — the addressable identity on the wire (`{sequence:"customer_code"}`),
-            unique per module, never a uuid in directives
+  uuid    — the ONLY identity: directives, counter FKs, RPC params and
+            the deterministic bound-row provisioning key all chain uuid
+  name    — the operator-facing display name, plain text, NOT unique
+            (bound rows carry `<table>.<field>` as their name value;
+            ambiguity between operator rows is the operator's business)
   pattern — the authored template verbatim (`core/sequence.ts` grammar);
             validation happens at the service boundary via
             `parseSequencePattern`, the column is the verbatim store
@@ -1110,13 +1114,14 @@ a subclass is useless the moment anything instantiates it).
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 | uuid | `string` |  |
-| code | `string` | Module-unique addressable code — directives reference this, never uuid. |
+| name | `string` | Operator-facing name — display data, never an identity (uuid is the
+ only chain). Bound rows carry `<table>.<field>` as their name value. |
 | pattern | `string` | Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. |
 | step | `bigint` | Signed increment per emitted code — non-zero by service validation. |
 | start | `bigint` | First next-to-emit value for a fresh (period, partition) counter. |
 | tz | `string \| null` | IANA zone for date tokens + period_key boundary — null → UTC. |
-| label_key | `string \| null` | i18n key for the registry label. |
-| description_key | `string \| null` | i18n key for the explanatory description. |
+| description_key | `string \| null` | i18n key for the explanatory description — doubles as the option
+ tooltip on sequence pickers. |
 
 #### `SequenceEntity()`
 
@@ -1165,16 +1170,16 @@ The contract every entity service must satisfy — enforced on the router.
 | uuid | `string` |  |
 | options | `EntityGetOptions & { throwIfNotFound: true }` |  |
 
-#### `SequencesService.forecast(spec): Promise<{ period_key: string; partition_key: string; counter: bigint \| null; next: string; uuid: string; code: string }>`
+#### `SequencesService.forecast(spec): Promise<{ period_key: string; partition_key: string; counter: bigint \| null; next: string; uuid: string; name: string }>`
 
 `sequence-forecast` RPC — explicit-context (sez and at) forecast.
- READ-ONLY by construction: identity resolution + counter SELECT +
- render. `{uuid|code}` — uuid for the registry page, code for the
- field-binding widget.
+ READ-ONLY by construction: uuid resolution + counter SELECT +
+ render. uuid is the ONLY sequence identity — `name` is display
+ data and is never accepted as an address.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| spec | `{ uuid: string; code: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
+| spec | `{ uuid: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
 
 #### `SequencesService.setCounter(spec): Promise<{ uuid: string; period_key: string; partition_key: string; counter: unknown }>`
 
@@ -1196,7 +1201,7 @@ The contract every entity service must satisfy — enforced on the router.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| spec | `{ uuid: string; code: string; table: string; column: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
+| spec | `{ uuid: string; table: string; column: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
 
 #### `SequencesService.svcFor(entity): EntityService<T2>`
 
@@ -3201,11 +3206,13 @@ Generation side of the migration engine (migrations/ is the apply side).
 
 ### `SequenceBound`
 
-The resolution-time shape: the authored decl plus the derived default
- sequence code (`<table>.<field>`). Carried on persistence column meta
- and served-meta `seq.code`.
+The resolution-time shape: the authored decl plus the derived bound
+ identity — `name` = `<table>.<field>` (display data, never an
+ address), `uuid` = `sequenceBoundUuid(name)` (the deterministic row
+ identity). Carried on persistence column meta and served-meta
+ `seq.uuid`/`seq.name`.
 
-**Type:** `SequenceDecl & { code: string }`
+**Type:** `SequenceDecl & { uuid: string; name: string }`
 
 ### `SequenceDateToken`
 
@@ -3247,7 +3254,7 @@ Invariants:
 
 ### `SequenceDirective`
 
-**Type:** `{ seq: string } \| { seq: { uuid: string } & SequenceDirectiveContext } \| { seq: { code: string } & SequenceDirectiveContext } \| { seq: SequenceDecl & SequenceDirectiveContext }`
+**Type:** `{ seq: string } \| { seq: { uuid: string } & SequenceDirectiveContext } \| { seq: SequenceDecl & SequenceDirectiveContext }`
 
 ### `SequenceMode`
 
@@ -3256,7 +3263,7 @@ Sequence-widget modes — the two write-path configurations a
  - `"generate"` — inline pattern builder emitting a `{seq:{pattern,…}}`
    directive (resolved + materialized inside the write transaction);
  - `"select"` — combobox over the module's `sequence` registry,
-   emitting `{seq:{code}}`/`{seq:"<uuid>"}`.
+   emitting `{seq:{uuid}}` (uuid is the ONLY sequence identity).
 
 **Type:** `"generate" \| "select"`
 
@@ -5500,7 +5507,7 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 ### `parseSequenceDirective(raw): SequenceDirective \| null`
 
 The ONLY accepted wire shape for a `format:"sequence"` column — see
-SequenceDirective for the four forms. Returns the parsed
+SequenceDirective for the three forms. Returns the parsed
 directive or `null` (shape/decl violation — the caller emits the
 `app.common.validation.sequence_directive` issue). A literal value is
 never writable: the repository resolves the directive in-transaction.
@@ -6025,6 +6032,20 @@ never masquerade as user edits.
 | sourceSchema | `Record<string, unknown> \| undefined` |  |
 | sourceEntity | `{ key: string; entity: string; table: string } \| undefined` |  |
 | map | `PayloadMap` |  |
+
+### `sequenceBoundUuid(seed): string`
+
+Deterministic uuid for a self-materialized sequence row — the bound
+ name is sha256'd under a fixed namespace and the digest is formatted
+ as a uuid (v5-style version/variant bits; NOT RFC 4122 — a private
+ deterministic scheme). Any replica derives the same uuid from the
+ same seed, so `INSERT … ON CONFLICT ("uuid") DO NOTHING` is
+ idempotent without a second functional key. The sequence `name`
+ stays display-only.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| seed | `string` |  |
 
 ### `SequenceField(decl): PropertyDecorator`
 

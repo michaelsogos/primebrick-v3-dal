@@ -13,6 +13,7 @@ export {
   CloneField,
   Ref,
   SequenceField,
+  sequenceBoundUuid,
   AuditTrail,
   AuditTrailEntity,
   Partition,

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, Calculated, Ref, SequenceField, withColumnConstraints, getEntityPersistenceMeta, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, Ref, SequenceField, sequenceBoundUuid, withColumnConstraints, getEntityPersistenceMeta, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
@@ -1184,35 +1184,44 @@ const seqDocMeta = (): EntityMeta => ({
 });
 
 describe("@SequenceField", () => {
-  it("emits seqBound on persistence meta with the derived <table>.<field> code", () => {
+  it("emits seqBound on persistence meta with the derived <table>.<field> name + deterministic uuid", () => {
     const p = getEntityPersistenceMeta(CcSeqDocEntity);
     expect(p.columns.code.seqBound).toMatchObject({
       pattern: "DOC-{seq:6}",
       step: 1n,
       start: 1n,
-      code: "cc_seq_docs.code",
+      name: "cc_seq_docs.code",
+      uuid: sequenceBoundUuid("cc_seq_docs.code"),
     });
-    expect(p.columns.alt_code.seqBound?.code).toBe("cc_seq_docs.alt_code");
+    expect(p.columns.alt_code.seqBound?.name).toBe("cc_seq_docs.alt_code");
+    expect(p.columns.alt_code.seqBound?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.alt_code"));
     expect(p.columns.name.seqBound).toBeUndefined();
   });
 
-  it("serves format:'sequence' + derived seq.code on bound columns", () => {
+  it("serves format:'sequence' + derived seq.uuid/seq.name on bound columns", () => {
     const out = withColumnConstraints(seqDocMeta(), CcSeqDocEntity);
     const code = out.columns.find((c) => c.key === "code")!;
     expect(code.format).toBe("sequence");
-    expect(code.seq?.code).toBe("cc_seq_docs.code");
+    expect(code.seq?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.code"));
+    expect(code.seq?.name).toBe("cc_seq_docs.code");
     // auto-derived (un-authored) bound column gets the contract too
     const alt = out.columns.find((c) => c.key === "alt_code")!;
     expect(alt.format).toBe("sequence");
-    expect(alt.seq?.code).toBe("cc_seq_docs.alt_code");
+    expect(alt.seq?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.alt_code"));
   });
 
-  it("merges authored seq surface keys under the derived code", () => {
+  it("merges authored seq surface keys under the derived identity", () => {
     const meta = seqDocMeta();
     meta.columns[0] = { ...meta.columns[0], seq: { modes: ["select"], default_mode: "select", allow_create: false } };
     const out = withColumnConstraints(meta, CcSeqDocEntity);
     const code = out.columns.find((c) => c.key === "code")!;
-    expect(code.seq).toEqual({ code: "cc_seq_docs.code", modes: ["select"], default_mode: "select", allow_create: false });
+    expect(code.seq).toEqual({
+      uuid: sequenceBoundUuid("cc_seq_docs.code"),
+      name: "cc_seq_docs.code",
+      modes: ["select"],
+      default_mode: "select",
+      allow_create: false,
+    });
   });
 
   it("rejects authored format on a seq-bound column", () => {
@@ -1221,10 +1230,13 @@ describe("@SequenceField", () => {
     expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/authors format on a @SequenceField column/);
   });
 
-  it("rejects authored seq.code (derived fact)", () => {
+  it("rejects authored seq.uuid/seq.name (derived facts)", () => {
     const meta = seqDocMeta();
-    meta.columns[0] = { ...meta.columns[0], seq: { code: "bogus.code" } };
-    expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/authors seq\.code/);
+    meta.columns[0] = { ...meta.columns[0], seq: { uuid: "11111111-2222-4333-8444-555555555555" } };
+    expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/authors seq\.uuid/);
+    const meta2 = seqDocMeta();
+    meta2.columns[0] = { ...meta2.columns[0], seq: { name: "bogus.name" } };
+    expect(() => withColumnConstraints(meta2, CcSeqDocEntity)).toThrow(/authors seq\.uuid\/seq\.name/);
   });
 
   it("rejects the sequence contract on an un-bound column", () => {

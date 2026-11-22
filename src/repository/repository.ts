@@ -44,6 +44,7 @@ import {
   type SequencePartitions,
 } from "@primebrick/core";
 import type { SequenceBound } from "../meta/entity-decorators.js";
+import { sequenceBoundUuid } from "../meta/entity-decorators.js";
 import { getSchemaDomain } from "../meta/schema-domain.js";
 import { sha256Hex } from "../schema-diff/patch-naming.js";
 import type {
@@ -881,7 +882,7 @@ export class Repository {
    *  SET exists only behind the governed `sequence.set` RPC which always
    *  has an authenticated operator. */
   async sequenceSet(spec: {
-    seq: { code: string } | { uuid: string };
+    seq: { uuid: string };
     next: bigint;
     sez?: string | null;
     sez2?: string | null;
@@ -927,10 +928,11 @@ export class Repository {
    *  physical text column inside the module's own schema with a
    *  pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
    *  sequences sharing a prefix never pollute each other's report).
-   *  Target resolves from explicit `table`/`column`, else the bound code
-   *  `<table>.<field>`. Pure SELECTs — nothing is created or mutated. */
+   *  Target resolves from explicit `table`/`column`, else the bound NAME
+   *  `<table>.<field>` carried by the row. Pure SELECTs — nothing is
+   *  created or mutated. */
   async sequenceAnalyze(spec: {
-    seq: { code: string } | { uuid: string };
+    seq: { uuid: string };
     table?: string;
     column?: string;
     sez?: string | null;
@@ -952,17 +954,18 @@ export class Repository {
     const s = await this.loadSequence(q, spec.seq);
     const pattern = s.pattern;
 
-    // ── target column: explicit, else derived from a `<table>.<field>` code
+    // ── target column: explicit, else derived from the `<table>.<field>`
+    //    bound NAME carried by the row (display data, not an identity)
     const IDENT = /^[a-z_][a-z0-9_]*$/;
     let table = spec.table;
     let column = spec.column;
     if (table === undefined && column === undefined) {
-      const parts = s.code.split(".");
+      const parts = s.name.split(".");
       if (parts.length === 2) { table = parts[0]; column = parts[1]; }
     }
     if (table === undefined || column === undefined) {
       throw new ValidationError(
-        "sequenceAnalyze: table and column are required (the sequence code carries no derivable <table>.<field> binding)",
+        "sequenceAnalyze: table and column are required (the sequence name carries no derivable <table>.<field> binding)",
       );
     }
     if (!IDENT.test(table) || !IDENT.test(column)) {
@@ -1074,8 +1077,8 @@ export class Repository {
 
     // ── ambiguity: OTHER registry sequences whose pattern also matches
     const seqTable = getQualifiedTableName(SequenceEntity);
-    const others = await q.query<{ code: string; pattern: string }>(
-      `SELECT code, pattern FROM ${seqTable} WHERE uuid <> $1 AND deleted_at IS NULL`,
+    const others = await q.query<{ name: string; pattern: string }>(
+      `SELECT name, pattern FROM ${seqTable} WHERE uuid <> $1 AND deleted_at IS NULL`,
       [s.uuid],
     );
     const ambiguous: string[] = [];
@@ -1093,7 +1096,7 @@ export class Repository {
         return `[A-Za-z0-9][A-Za-z0-9_.\\-/]*`;
       }).join("") + "$";
       const hit = await q.query(`SELECT 1 FROM ${qualified} t WHERE t."${column}" ~ $1${alive} LIMIT 1`, [orx]);
-      if (hit.rows.length > 0) ambiguous.push(o.code);
+      if (hit.rows.length > 0) ambiguous.push(o.name);
     }
 
     return {
@@ -1112,7 +1115,7 @@ export class Repository {
   // ─── seq-bound column resolution ──────────────────────────────────────
   // A column bound via @SequenceField never stores a raw literal through
   // the Repository: on write the value is either a sequence directive —
-  // `{seq:uuid}` / `{seq:{code}}` / `{seq:{pattern,step,start}}` — or
+  // `{seq:uuid}` / `{seq:{uuid}}` / `{seq:{pattern,step,start}}` — or
   // omitted on create, which allocates the field's default sequence
   // (`<table>.<field>`). The counter claim and the entity write always
   // share ONE transaction: pool-bound calls run inside a lazy mini-tx,
@@ -1163,23 +1166,22 @@ export class Repository {
     return typeof (this.db as PoolClient).release !== "function";
   }
 
-  /** Fetch a sequence row by code or uuid — null when absent/soft-deleted. */
+  /** Fetch a sequence row by uuid — null when absent/soft-deleted. */
   private async querySequence(
     q: Queryable,
-    by: { code: string } | { uuid: string },
-  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null } | null> {
+    by: { uuid: string },
+  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null } | null> {
     const table = getQualifiedTableName(SequenceEntity);
-    const col = "code" in by ? "code" : "uuid";
-    const r = await q.query<{ uuid: string; code: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
-      `SELECT "uuid","code","pattern","step","start","tz" FROM ${table}
-        WHERE ${quoteIdent(col)} = $1 AND "deleted_at" IS NULL`,
-      ["code" in by ? by.code : by.uuid],
+    const r = await q.query<{ uuid: string; name: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
+      `SELECT "uuid","name","pattern","step","start","tz" FROM ${table}
+        WHERE "uuid" = $1 AND "deleted_at" IS NULL`,
+      [by.uuid],
     );
     const row = r.rows[0];
     if (!row) return null;
     return {
       uuid: row.uuid,
-      code: row.code,
+      name: row.name,
       pattern: parseSequencePattern(row.pattern),
       // bigint columns arrive as strings on pools without the INT8 parser
       // (bare probe pools, non-dal consumers) — coerce so JS arithmetic
@@ -1191,51 +1193,61 @@ export class Repository {
   }
 
   /** Strict sequence lookup — missing → SEQUENCE_NOT_FOUND carrying the
-   *  requested identity (never a silent fallback to a default). */
+   *  requested uuid (never a silent fallback to a default). */
   private async loadSequence(
     q: Queryable,
-    by: { code: string } | { uuid: string },
-  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    by: { uuid: string },
+  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const spec = await this.querySequence(q, by);
-    if (!spec) throw new SequenceNotFoundError("code" in by ? by.code : by.uuid);
+    if (!spec) throw new SequenceNotFoundError(by.uuid);
     return spec;
   }
 
-  /** Idempotent sequence-row provisioning — INSERT ... ON CONFLICT (code)
+  /** Idempotent sequence-row provisioning — INSERT ... ON CONFLICT (uuid)
    *  DO NOTHING, then re-read the STORED row: an operator-managed row
-   *  under the same code always wins over the decl. */
+   *  under the same deterministic uuid always wins over the decl. The
+   *  uuid is derived (`sequenceBoundUuid(seed)`) — the row identity is
+   *  known before it exists, so uuid is the ONLY functional key. */
   private async materializeSequenceRow(
     q: Queryable,
-    code: string,
+    uuid: string,
+    name: string,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const table = getQualifiedTableName(SequenceEntity);
     await q.query(
       `INSERT INTO ${table}
-         ("uuid","code","pattern","step","start","tz","created_at","created_by","updated_at","updated_by","version")
-       VALUES (uuidv7(), $1,$2,$3,$4,$5, now(), $6, now(), $6, 1)
-       ON CONFLICT ("code") DO NOTHING`,
-      [code, decl.pattern, decl.step, decl.start, decl.tz ?? null, actor],
+         ("uuid","name","pattern","step","start","tz","created_at","created_by","updated_at","updated_by","version")
+       VALUES ($1, $2, $3, $4, $5, $6, now(), $7, now(), $7, 1)
+       ON CONFLICT ("uuid") DO NOTHING`,
+      [uuid, name, decl.pattern, decl.step, decl.start, decl.tz ?? null, actor],
     );
-    const spec = await this.querySequence(q, { code });
-    if (!spec) throw new SequenceNotFoundError(code);
+    const spec = await this.querySequence(q, { uuid });
+    if (!spec) throw new SequenceNotFoundError(uuid);
     return spec;
   }
 
   /** Field-scoped expression materialization: an expr directive owns a
-   *  sequence row derived as `<table>.<field>@expr_<hash16>` — identical
-   *  exprs on DIFFERENT fields never share a counter; runtime sharing
-   *  only happens through an explicit `{seq:{code}}` mapping. Idempotent
-   *  via ON CONFLICT (code). */
+   *  sequence row whose uuid derives as `<bound.name>|expr|<hash16>` —
+   *  identical exprs on DIFFERENT fields never share a counter; runtime
+   *  sharing only happens through an explicit `{seq:{uuid}}` mapping.
+   *  The row's NAME (`<table>.<field>@expr_<hash>`) is display-only.
+   *  Idempotent via ON CONFLICT (uuid). */
   private async materializeExprSequence(
     q: Queryable,
-    boundCode: string,
+    bound: SequenceBound,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
     const hash = sha256Hex(`${decl.pattern}|${decl.step}|${decl.start}|${decl.tz ?? ""}`).slice(0, 16);
-    return this.materializeSequenceRow(q, `${boundCode}@expr_${hash}`.slice(0, 100), decl, actor);
+    return this.materializeSequenceRow(
+      q,
+      sequenceBoundUuid(`${bound.name}|expr|${hash}`),
+      `${bound.name}@expr_${hash}`.slice(0, 100),
+      decl,
+      actor,
+    );
   }
 
   /** The field's declared default: strict lookup, self-provisioning from
@@ -1245,9 +1257,9 @@ export class Repository {
     q: Queryable,
     bound: SequenceBound,
     actor: string,
-  ): Promise<{ uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
-    const found = await this.querySequence(q, { code: bound.code });
-    return found ?? this.materializeSequenceRow(q, bound.code, bound, actor);
+  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    const found = await this.querySequence(q, { uuid: bound.uuid });
+    return found ?? this.materializeSequenceRow(q, bound.uuid, bound.name, bound, actor);
   }
 
   /** Resolve the sequence spec for a directive (or null = field default). */
@@ -1266,7 +1278,7 @@ export class Repository {
     at?: Date;
   }> {
     const base = (spec: {
-      uuid: string; code: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
+      uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
     }, ctx: { partitions: SequencePartitions; at?: Date }) => ({ ...spec, ...ctx });
     if (dir === null) {
       return base(await this.loadOrMaterializeBound(q, bound, actor), { partitions: {} });
@@ -1284,14 +1296,7 @@ export class Repository {
     if ("uuid" in s) {
       return base(await this.loadSequence(q, { uuid: s.uuid }), ctx);
     }
-    if ("code" in s) {
-      // The field's own code self-provisions from the decl — foreign codes
-      // are strict lookups (the explicit field→sequence mapping is data).
-      return s.code === bound.code
-        ? base(await this.loadOrMaterializeBound(q, bound, actor), ctx)
-        : base(await this.loadSequence(q, { code: s.code }), ctx);
-    }
-    return base(await this.materializeExprSequence(q, bound.code, s, actor), ctx);
+    return base(await this.materializeExprSequence(q, bound, s, actor), ctx);
   }
 
   /** Claim `count` values on the resolved spec and render them. */
