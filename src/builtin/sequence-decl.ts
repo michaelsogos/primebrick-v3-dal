@@ -82,9 +82,11 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
     // `audited` authored ONLY on the last_alloc_* virtuals: it places
     // them in the ELT audit band (the physical-writable exclusion the
-    // flag implies on data columns is a no-op on enrichments).
-    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual", audited: true },
-    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual", audited: true },
+    // flag implies on data columns is a no-op on enrichments). Same
+    // anatomy as the standard audit stamps — `default_visible:false`,
+    // toggleable via the column picker.
+    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual", audited: true, default_visible: false },
+    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual", audited: true, default_visible: false },
   ];
   return raw.map((c) => ({ ...c, sticky: STICKY_KEYS.has(c.key) }));
 }
