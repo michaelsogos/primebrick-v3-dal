@@ -1000,7 +1000,12 @@ export class Repository {
     const rx = "^" + pattern.segments.map((seg) => {
       if (seg.kind === "literal") return esc(seg.text);
       if (seg.kind === "counter") { seqIdx = ++groups; return `([0-9]{${seg.width > 0 ? `${seg.width},` : ""}})`; }
-      if (seg.kind === "date") return `[0-9]{${DATE_W[seg.token]}}`;
+      if (seg.kind === "date") {
+        // `{q}` renders `Q<digit>` (e.g. `Q4`) — a bare width would never match.
+        return seg.token === "q" ? "Q[1-4]" : `[0-9]{${DATE_W[seg.token]}}`;
+      }
+      // time tokens all render zero-padded 2-digit (HH/hh/mm/ss)
+      if (seg.kind === "time") return "[0-9]{2}";
       // sez: an explicit ctx value narrows to that partition, else a charset group
       const v = spec[seg.slot];
       if (v !== undefined && v !== null && v !== "") return esc(v);
@@ -1092,7 +1097,10 @@ export class Repository {
       const orx = "^" + opattern.segments.map((seg) => {
         if (seg.kind === "literal") return esc(seg.text);
         if (seg.kind === "counter") return `[0-9]{${seg.width > 0 ? `${seg.width},` : ""}}`;
-        if (seg.kind === "date") return `[0-9]{${DATE_W[seg.token]}}`;
+        if (seg.kind === "date") {
+          return seg.token === "q" ? "Q[1-4]" : `[0-9]{${DATE_W[seg.token]}}`;
+        }
+        if (seg.kind === "time") return "[0-9]{2}";
         return `[A-Za-z0-9][A-Za-z0-9_.\\-/]*`;
       }).join("") + "$";
       const hit = await q.query(`SELECT 1 FROM ${qualified} t WHERE t."${column}" ~ $1${alive} LIMIT 1`, [orx]);

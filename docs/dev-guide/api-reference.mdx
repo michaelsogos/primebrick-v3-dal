@@ -2286,11 +2286,16 @@ One insertable entry of the pattern grammar — the SINGLE catalog the
 
 | Field | Type | Description |
 |-------|------|-------------|
-| id | `string` | i18n key suffix — `app.widgets.sequence_pattern.tokens.<id>`. |
-| insert | `string` | Insertable source text — `{seq:5}` is the width *example*: the
- digit stays literal text the user edits after insertion. |
-| kind | `"date" \| "counter" \| "sez" \| "literal"` |  |
-| slot | `string` | The used-set slot this insert consumes (`seq`, `yyyy`, `sez`…).
+| id | `string` | Catalog identity — testids and the spec discriminator. |
+| key | `string` | i18n key suffix — `app.widgets.sequence_pattern.tokens.<key>`.
+ Explicit because the key grammar is lowercase-only and token ids
+ are case-meaningful: `{MM}` (month) and `{mm}` (minutes) would
+ both lowercase to `mm` — so minutes carries `min`, and `{HH}`/
+ `{hh}` carry `hh`/`hh12`. |
+| insert | `string` | Insertable source text — for `kind:"counter"` the panel composes
+ `{seq}`/`{seq:W}` from its padding form, so this stays `{seq}`. |
+| kind | `"date" \| "time" \| "counter" \| "sez" \| "literal"` |  |
+| slot | `string` | The used-set slot this insert consumes (`seq`, `yyyy`, `HH`, `sez`…).
  `undefined` for repeatable literals — `{{`/`}}` never mark used. |
 
 ### `SnapshotQueryable`
@@ -3263,9 +3268,10 @@ the FE forecast and the BE assignment (same function → no drift).
 
 Grammar (closed):
 
-  segment   := literal | counter | dateToken | partition
+  segment   := literal | counter | dateToken | timeToken | partition
   counter   := "&#123;seq&#125;" | "&#123;seq:" width "&#125;"     — exactly ONE per pattern
   dateToken := "&#123;yyyy&#125;" | "&#123;yy&#125;" | "&#123;MM&#125;" | "&#123;dd&#125;" | "&#123;q&#125;"
+  timeToken := "&#123;HH&#125;" | "&#123;hh&#125;" | "&#123;mm&#125;" | "&#123;ss&#125;" — at most once each
   partition := "&#123;sez&#125;" | "&#123;sez2&#125;" | "&#123;sez3&#125;"   — up to 3, any position
   literal   := any chars except unescaped braces; "&#123;&#123;"→"&#123;", "&#125;&#125;"→"&#125;"
 
@@ -3278,7 +3284,13 @@ Invariants:
  - a pattern carrying date tokens is PERIOD-SCOPED by its finest
    token: `{yyyy}`→reset per year, `+{q}`→per quarter, `+{MM}`→per
    month, `+{dd}`→per day (Italian-invoice semantics — no holes,
-   no duplicates inside one period);
+   no duplicates inside one period). TIME TOKENS NEVER SCOPE the
+   counter — `{mm}`/`{ss}` are claim-time cosmetics (a timestamp
+   suffix), not period granularity: an hourly counter reset would
+   be a different feature entirely;
+ - case IS the grammar: `{MM}` is month, `{mm}` is minutes; `{HH}`
+   is 24-hour, `{hh}` is 12-hour — the token sets are disjoint by
+   case, exactly like strftime/moment conventions;
  - `{sez}`/`{sez2}`/`{sez3}` are POSITIONAL sezionale slots rendered
    from directive fields (`sez`, `sez2`, `sez3`); the counter PK is
    `(sequence_id, period_key, partition_key)` where partition_key is
@@ -3318,11 +3330,18 @@ Sezionale values supplied per assignment — positional per token.
 
 ### `SequenceSegment`
 
-**Type:** `{ kind: "literal"; text: string } \| { kind: "counter"; width: number } \| { kind: "date"; token: SequenceDateToken } \| { kind: "sez"; slot: SequenceSezToken }`
+**Type:** `{ kind: "literal"; text: string } \| { kind: "counter"; width: number } \| { kind: "date"; token: SequenceDateToken } \| { kind: "time"; token: SequenceTimeToken } \| { kind: "sez"; slot: SequenceSezToken }`
 
 ### `SequenceSezToken`
 
 **Type:** `"sez" \| "sez2" \| "sez3"`
+
+### `SequenceTimeToken`
+
+`{HH}`=24h, `{hh}`=12h, `{mm}`=minutes, `{ss}`=seconds — cosmetic
+ claim-time stamps; NEVER participate in `period_key`.
+
+**Type:** `"HH" \| "hh" \| "mm" \| "ss"`
 
 ### `SnakeCaseSingular`
 
@@ -5782,6 +5801,21 @@ forward/inverse label pair; `hierarchical` opts into deep-cycle
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | opts | `RelationFacet` |  |
+
+### `removeSequenceToken(source, slot): string`
+
+Remove the FIRST occurrence of a token slot from the pattern source —
+the sheet's "unuse" affordance (`-` on a consumed slot). `slot` is the
+used-set name: `seq` strips `{seq}` or `{seq:W}` whole (the width is
+part of the token, not trailing text); every other slot strips the
+literal `{slot}` span. Escaped `{{`/`}}` are skipped exactly like the
+tokenizer reads them, so `{{seq}}` literals are never stripped.
+Never throws — a slot not present returns the source unchanged.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
+| slot | `string` |  |
 
 ### `renderDisplayTemplate(template, entity, alias): string`
 
