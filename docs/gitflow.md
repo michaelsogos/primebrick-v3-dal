@@ -141,9 +141,10 @@ The script runs automatically as a `prebuild` hook and:
 
 ## Commit rules
 
-- NEVER commit automatically - wait for explicit user instruction
-- DO NOT ask user to approve commit messages
-- Write appropriate commit messages directly when instructed
+- COMMIT AT EVERY MODIFICATION TURN — standing authorization, no per-commit
+  approval; the cadence contract lives in `docs/ai/commit-verification.md`
+- Every commit is PUSHED immediately — see "COMMIT ⇒ PUSH" above
+- DO NOT ask user to approve commit messages — write them directly
 - DO NOT open editor for commit approval
 
 ## New task workflow
