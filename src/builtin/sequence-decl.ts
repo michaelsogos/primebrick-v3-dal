@@ -76,7 +76,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 5 },
     { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
     { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
-    { key: "tz", label_key: F("tz"), type: "text", order: 8 },
+    { key: "tz", label_key: F("tz"), type: "text", order: 8, options_source: "iana.tzones" },
     // i18n keys are operator-managed pointers — hidden by default,
     // toggleable via the column picker.
     { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
@@ -169,20 +169,20 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
   /** Read-only forecast — the value the next claim WOULD emit. Never
    *  creates/updates the counter row, never allocates. */
   private async forecastRow(row: {
-    uuid: string; pattern: string; start: bigint; tz: string | null;
+    uuid: string; pattern: string; start: bigint; tz: string;
   }, parts: SequencePartitions, at: Date): Promise<{
     period_key: string; partition_key: string; counter: bigint | null; next: string;
   }> {
     const pattern = parseSequencePattern(row.pattern);
     const partition_key = sequencePartitionKey(pattern, parts);
-    const period_key = derivePeriodKey(pattern.period_kind, at, row.tz ?? undefined);
+    const period_key = derivePeriodKey(pattern.period_kind, at, row.tz);
     const counter = await this.counterBy(row.uuid, period_key, partition_key);
     const n = counter ? counter.counter : row.start;
     return {
       period_key,
       partition_key,
       counter: counter?.counter ?? null,
-      next: renderSequenceValue(pattern, n, at, { tz: row.tz ?? undefined, partitions: parts }),
+      next: renderSequenceValue(pattern, n, at, { tz: row.tz, partitions: parts }),
     };
   }
 
@@ -216,7 +216,7 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     const byKey = new Map(counters.map((c) => [`${c.sequence_uuid}|${c.period_key}`, c]));
     for (const row of rows) {
       const pattern = parseSequencePattern(row.pattern as string);
-      const tz = (row.tz as string | null) ?? undefined;
+      const tz = row.tz as string;
       const counter = byKey.get(
         `${row.uuid}|${derivePeriodKey(pattern.period_kind, now, tz)}`,
       );
@@ -263,7 +263,7 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     const row = await this.get(spec.uuid, { throwIfNotFound: true });
     const parts = validateSequencePartitions(parseSequencePattern(row.pattern as string), this.sezCtx(spec));
     const f = await this.forecastRow(
-      { uuid: row.uuid as string, pattern: row.pattern as string, start: row.start as bigint, tz: row.tz as string | null },
+      { uuid: row.uuid as string, pattern: row.pattern as string, start: row.start as bigint, tz: row.tz as string },
       parts,
       spec.at ?? new Date(),
     );
@@ -283,7 +283,7 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     const pattern = parseSequencePattern(row.pattern as string);
     const parts = validateSequencePartitions(pattern, this.sezCtx(spec));
     const partition_key = sequencePartitionKey(pattern, parts);
-    const period_key = derivePeriodKey(pattern.period_kind, spec.at ?? new Date(), (row.tz as string | null) ?? undefined);
+    const period_key = derivePeriodKey(pattern.period_kind, spec.at ?? new Date(), row.tz as string);
     const existing = await this.counterBy(spec.uuid, period_key, partition_key);
     const saved = existing
       ? await this.counterSvc().update(existing.uuid, { counter: spec.next, version: existing.version })
@@ -394,7 +394,13 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
     out.step = s;
   }
   if (opt("start")) out.start = vBigint(rec.start, "start");
-  if (opt("tz")) out.tz = vIanaTz(rec.tz);
+  // tz carries `defaultSql:"'UTC'"` — same OPTIONAL contract as
+  // step/start: an omitted/empty value stays out of the payload and the
+  // DB applies its DEFAULT; a provided value is IANA-validated strictly.
+  if (opt("tz")) {
+    const tz = vIanaTz(rec.tz);
+    if (tz !== null) out.tz = tz;
+  }
   if (opt("description_key")) out.description_key = vOptKey(rec.description_key, "description_key", 200);
   if (partial) {
     // `version` rides int8 on the wire — ext-json decodes it as `bigint`,

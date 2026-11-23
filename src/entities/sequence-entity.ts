@@ -31,7 +31,8 @@ import { ValidationError } from "../errors/errors.js";
  *             `parseSequencePattern`, the column is the verbatim store
  *   step    — signed increment (≠0; negative = countdown)
  *   start   — first next-to-emit counter for a fresh period/partition
- *   tz      — IANA zone for date tokens + period boundary (UTC when null)
+ *   tz      — IANA zone for date tokens + period boundary —
+ *             `NOT NULL DEFAULT 'UTC'` (physical + served default)
  */
 @Entity("sequences")
 @AuditTrail()
@@ -69,9 +70,11 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ nullable: false, jsType: "bigint", defaultSql: "1" })
   start!: bigint;
 
-  /** IANA zone for date tokens + period_key boundary — null → UTC. */
-  @Column({ pgType: "varchar", length: 100, nullable: true })
-  tz?: string | null;
+  /** IANA zone for date tokens + period_key boundary — `DEFAULT 'UTC'`,
+   *  same physical+served contract as `step`/`start` (constant literal →
+   *  the create surface prefills it, an omitted value resolves in DB). */
+  @Column({ pgType: "varchar", length: 100, nullable: false, defaultSql: "'UTC'" })
+  tz!: string;
 
   /** i18n key for the explanatory description — doubles as the option
    *  tooltip on sequence pickers. */

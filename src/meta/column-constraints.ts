@@ -61,7 +61,7 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
-const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
+const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles", "iana.tzones"]);
 
 /** Constant `defaultSql` literals — the SAME whitelist the repository's
  *  `constantDefaultSql` uses for write-path resolution: quoted strings,
@@ -209,10 +209,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `one of ${[...COLUMN_OPTIONS_SOURCES].join(", ")}`,
         );
       }
-      if (typeof col.options_source === "string" && col.options_source.startsWith("census.") && col.allow_create === true) {
+      if (
+        typeof col.options_source === "string" &&
+        (col.options_source.startsWith("census.") || col.options_source === "iana.tzones") &&
+        col.allow_create === true
+      ) {
         throw new Error(
-          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares allow_create:true on a census options_source — ` +
-            `census vocabularies are closed by definition; drop allow_create`,
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares allow_create:true on a closed options_source — ` +
+            `census/iana vocabularies are closed by definition; drop allow_create`,
         );
       }
       if (col.managed !== undefined) {

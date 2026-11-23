@@ -1102,7 +1102,8 @@ a subclass is useless the moment anything instantiates it).
             `parseSequencePattern`, the column is the verbatim store
   step    — signed increment (≠0; negative = countdown)
   start   — first next-to-emit counter for a fresh period/partition
-  tz      — IANA zone for date tokens + period boundary (UTC when null)
+  tz      — IANA zone for date tokens + period boundary —
+            `NOT NULL DEFAULT 'UTC'` (physical + served default)
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -1122,7 +1123,9 @@ a subclass is useless the moment anything instantiates it).
  prefills it and an omitted value resolves in the DB. |
 | start | `bigint` | First next-to-emit value for a fresh (period, partition) counter —
  `DEFAULT 1`, same contract as `step`. |
-| tz | `string \| null` | IANA zone for date tokens + period_key boundary — null → UTC. |
+| tz | `string` | IANA zone for date tokens + period_key boundary — `DEFAULT 'UTC'`,
+ same physical+served contract as `step`/`start` (constant literal →
+ the create surface prefills it, an omitted value resolves in DB). |
 | description_key | `string \| null` | i18n key for the explanatory description — doubles as the option
  tooltip on sequence pickers. |
 
@@ -2799,7 +2802,7 @@ COLUMN (`MetaColumn.options_source`), never on a form placement:
 the same contract feeds forms, list filters and docs generation.
 Closed union on purpose — an unknown source is a construction error.
 
-**Type:** `"census.emits" \| "census.callables" \| "audit.actors" \| "system.roles"`
+**Type:** `"census.emits" \| "census.callables" \| "audit.actors" \| "system.roles" \| "iana.tzones"`
 
 ### `MetaColumnType`
 
@@ -3913,6 +3916,20 @@ label can never drift apart even by accident.
 - `exec-stop`  → destructive (stop/disable is a destructive op)
 
 **Type:** `Record<string, ActionColor>`
+
+### `sequenceTokenExampleDefaults`
+
+Illustrative defaults the catalog (and any pattern-builder preview)
+ falls back to when the caller does not override the example context —
+ exported so the authoring widget and the token sheet share ONE set
+ of sample values instead of re-declaring them.
+
+**Type:** `{ counter: {"value":"42","negative":false}; partitions: { sez: "A"; sez2: "01"; sez3: "X" } }`
+
+| Field | Value |
+|-------|-------|
+| counter | {"value":"42","negative":false} |
+| partitions | "" |
 
 ### `SLUG_RE`
 
