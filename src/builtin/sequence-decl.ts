@@ -76,7 +76,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 5 },
     { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
     { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
-    { key: "tz", label_key: F("tz"), type: "text", order: 8, options_source: "iana.tzones", icon: "globe" },
+    { key: "tz", label_key: F("tz"), type: "text", order: 8, options_source: "iana.tzones" },
     // i18n keys are operator-managed pointers — hidden by default,
     // toggleable via the column picker.
     { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
