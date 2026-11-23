@@ -412,7 +412,11 @@ const restored = await repo.restore(MyEntity, uuid, { actor: "admin" });
 
 ### `hardDelete(entity, uuid, options)`
 
-Permanently removes the row from the database.
+Permanently removes the row from the database. Migration and maintenance
+cleanup uses `hardDelete`, never `delete`: soft-deleted rows are a USER
+feature (the dict page deleted view + `restore.single`), not a cleanup
+artifact bin — tombstones left by migrations are rows users were never
+meant to restore.
 
 ```typescript
 await repo.hardDelete(MyEntity, uuid, { actor: "admin" });
