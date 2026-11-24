@@ -8,6 +8,7 @@ import {
   AuditTrail,
 } from "../meta/entity-decorators.js";
 import { Auditable, Deletable, EntityBase } from "./entity-base.js";
+import { ValidationError } from "../errors/errors.js";
 
 /**
  * TranslationEntityBase — standard i18n translations table entity.
@@ -64,4 +65,28 @@ export abstract class TranslationEntityBase
   /** Translated string value. */
   @Column({ nullable: false })
   value!: string;
+}
+
+/**
+ * `@TranslationEntity(schema)` — declares a concrete `translations` table
+ * entity pinned to a module schema. This is the dal's ONLY schema-pinning
+ * decorator: it hardcodes the table name and rejects classes that do not
+ * extend {@link TranslationEntityBase}, so it cannot be repurposed to pin
+ * arbitrary entities. Works as a class decorator for static declarations
+ * (`@TranslationEntity("public")`) and as a callable decorator factory for
+ * runtime-synthesized subclasses (`TranslationEntity(code)(cls)`).
+ *
+ * Module entities use `@Entity` (primary-schema resolution) or
+ * `@PublicEntity` (`public`) — never this.
+ */
+export function TranslationEntity(schema: string): (ctor: Function) => void {
+  return function <T extends Function>(ctor: T): T {
+    if (!(ctor.prototype instanceof TranslationEntityBase)) {
+      throw new ValidationError(
+        `@TranslationEntity can only decorate subclasses of TranslationEntityBase`,
+      );
+    }
+    Entity("translations", schema)(ctor);
+    return ctor;
+  };
 }

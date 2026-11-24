@@ -34,6 +34,7 @@ export { assertEntitySchemaDomain } from "./meta/schema-domain-assert.js";
 // Entity decorators + metadata
 export {
   Entity,
+  PublicEntity,
   Column,
   Key,
   Unique,
@@ -259,7 +260,7 @@ export { ConfigEntityBase } from "./entities/config-entity-base.js";
 export { DictEntityBase } from "./entities/dict-entity-base.js";
 
 // Translation entity base — standard i18n translations table entity
-export { TranslationEntityBase } from "./entities/translation-entity-base.js";
+export { TranslationEntityBase, TranslationEntity } from "./entities/translation-entity-base.js";
 
 // Sequence entities — SEALED concrete classes shared by every module that
 // owns a sequence registry (schema resolves to the service's domain.primary;

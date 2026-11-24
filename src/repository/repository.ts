@@ -1099,16 +1099,27 @@ export class Repository {
     if (!IDENT.test(table) || !IDENT.test(column)) {
       throw new ValidationError("sequenceAnalyze: table/column must be snake_case identifiers");
     }
-    const schema = getSchemaDomain()?.primary ?? "public";
-    const colMeta = await q.query<{ data_type: string }>(
-      `SELECT data_type FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2 AND column_name = $3`,
-      [schema, table, column],
+    // Bound-table probe: the bound column is a business field — it may live
+    // in ANY owned schema (module business tables on `public` when the
+    // platform namespace is `system`), not just the domain primary. Probe the
+    // whole domain; zero matches → missing, multiple → ambiguous.
+    const domain = getSchemaDomain();
+    const probeSchemas = domain ? [...domain.allowed] : ["public"];
+    const colMeta = await q.query<{ table_schema: string; data_type: string }>(
+      `SELECT table_schema, data_type FROM information_schema.columns
+        WHERE table_schema = ANY($1) AND table_name = $2 AND column_name = $3`,
+      [probeSchemas, table, column],
     );
-    if (!colMeta.rows[0]) {
-      throw new ValidationError(`sequenceAnalyze: ${schema}.${table}.${column} does not exist`);
+    if (colMeta.rows.length === 0) {
+      throw new ValidationError(`sequenceAnalyze: {${probeSchemas.join(",")}}.${table}.${column} does not exist`);
     }
-    if (colMeta.rows[0].data_type !== "character varying" && colMeta.rows[0].data_type !== "text") {
+    if (colMeta.rows.length > 1) {
+      throw new ValidationError(
+        `sequenceAnalyze: ${table}.${column} is ambiguous — exists in schemas [${colMeta.rows.map((r) => r.table_schema).join(", ")}]`,
+      );
+    }
+    const schema = colMeta.rows[0]!.table_schema;
+    if (colMeta.rows[0]!.data_type !== "character varying" && colMeta.rows[0]!.data_type !== "text") {
       throw new ValidationError(
         `sequenceAnalyze: ${schema}.${table}.${column} is ${colMeta.rows[0].data_type}, expected text/varchar`,
       );

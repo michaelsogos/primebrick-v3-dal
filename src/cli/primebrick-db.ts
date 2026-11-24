@@ -267,6 +267,7 @@ async function cmdApply(flags: Record<string, string>): Promise<void> {
       schema,
       patchesDir,
       allowedTrust: trust,
+      firstBoot: flags["first-boot"] === "true",
       actor: `cli:${process.pid}`,
       logger: consoleLogger,
     });

@@ -5,7 +5,13 @@
  * manifest gating and resume semantics.
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
@@ -27,6 +33,8 @@ class FakeClient {
   queries: { text: string; params?: unknown[]; inTx: boolean }[] = [];
   inTx = false;
   registry = new Map<string, Record<string, unknown>>();
+  /** Whether <schema>.primebrick_database_patches exists in the catalog. */
+  registryExists = false;
   lockFree = true;
   configEntries: Record<string, string> | null = {};
   /** audit-table twins that exist in the catalog (`schema.table_audit`) */
@@ -36,45 +44,110 @@ class FakeClient {
   throwOnce = new Set<string>();
   script: Script[] = [];
 
-  async query(text: string, params?: unknown[]): Promise<{ rows: any[]; rowCount: number }> {
+  async query(
+    text: string,
+    params?: unknown[],
+  ): Promise<{ rows: any[]; rowCount: number }> {
     this.queries.push({ text, params, inTx: this.inTx });
     const t = text.trim();
 
-    if (t === "BEGIN") { this.inTx = true; return { rows: [], rowCount: 0 }; }
-    if (t === "COMMIT") { this.inTx = false; return { rows: [], rowCount: 0 }; }
-    if (t === "ROLLBACK") { this.inTx = false; return { rows: [], rowCount: 0 }; }
-    if (/^SET /.test(t) || /SET LOCAL/.test(t)) return { rows: [], rowCount: 0 };
+    if (t === "BEGIN") {
+      this.inTx = true;
+      return { rows: [], rowCount: 0 };
+    }
+    if (t === "COMMIT") {
+      this.inTx = false;
+      return { rows: [], rowCount: 0 };
+    }
+    if (t === "ROLLBACK") {
+      this.inTx = false;
+      return { rows: [], rowCount: 0 };
+    }
+    if (/^SET /.test(t) || /SET LOCAL/.test(t))
+      return { rows: [], rowCount: 0 };
 
     if (/to_regclass/.test(t)) {
       // seed-audit-trail probe: unnest($1::text[]) carries the audit fq names
       if (Array.isArray(params?.[0])) {
-        const rows = (params[0] as string[]).map((a) => ({ a, oid: this.auditTables.has(a) ? "x" : null }));
+        const rows = (params[0] as string[]).map((a) => ({
+          a,
+          oid: this.auditTables.has(a) ? "x" : null,
+        }));
         return { rows, rowCount: rows.length };
+      }
+      // first-boot guard probe on the patch registry
+      if (/primebrick_database_patches/.test(String(params?.[0]))) {
+        return {
+          rows: [{ oid: this.registryExists ? "x" : null }],
+          rowCount: 1,
+        };
       }
       return { rows: [{ oid: this.configEntries ? "x" : null }], rowCount: 1 };
     }
     if (/config_entries/.test(t) && /db_migration\.mode/.test(t)) {
-      return { rows: this.configEntries?.["db_migration.mode"] ? [{ value: this.configEntries["db_migration.mode"] }] : [], rowCount: 1 };
+      return {
+        rows: this.configEntries?.["db_migration.mode"]
+          ? [{ value: this.configEntries["db_migration.mode"] }]
+          : [],
+        rowCount: 1,
+      };
     }
     if (/pg_try_advisory_lock/.test(t)) {
       return { rows: [{ locked: this.lockFree }], rowCount: 1 };
     }
     if (/pg_advisory_unlock/.test(t)) return { rows: [], rowCount: 0 };
 
-    if (/FROM "?test"?\.primebrick_database_patches/.test(t) && /SELECT/.test(t) && !/INSERT/.test(t)) {
-      return { rows: [...this.registry.values()], rowCount: this.registry.size };
+    if (
+      /SELECT count\(\*\)::int AS n FROM "?test"?\.primebrick_database_patches/.test(
+        t,
+      )
+    ) {
+      return { rows: [{ n: this.registry.size }], rowCount: 1 };
     }
-    if (/CREATE SCHEMA|CREATE TABLE IF NOT EXISTS|CREATE INDEX IF NOT EXISTS primebrick/.test(t)) {
+    if (
+      /FROM "?test"?\.primebrick_database_patches/.test(t) &&
+      /SELECT/.test(t) &&
+      !/INSERT/.test(t)
+    ) {
+      return {
+        rows: [...this.registry.values()],
+        rowCount: this.registry.size,
+      };
+    }
+    if (
+      /CREATE SCHEMA|CREATE TABLE IF NOT EXISTS|CREATE INDEX IF NOT EXISTS primebrick/.test(
+        t,
+      )
+    ) {
       return { rows: [], rowCount: 0 };
     }
-    if (/INSERT INTO "?test"?\.primebrick_database_patches/.test(t) || /primebrick_database_patches[\s\S]*VALUES/.test(t)) {
-      const [patch_name, content_sha256, status, signed_key_id, duration_ms, error, applied_by, atomic] = params as any[];
+    if (
+      /INSERT INTO "?test"?\.primebrick_database_patches/.test(t) ||
+      /primebrick_database_patches[\s\S]*VALUES/.test(t)
+    ) {
+      const [
+        patch_name,
+        content_sha256,
+        status,
+        signed_key_id,
+        duration_ms,
+        error,
+        applied_by,
+        atomic,
+      ] = params as any[];
       const prev = this.registry.get(patch_name);
       this.registry.set(patch_name, {
-        patch_name, content_sha256, status, signed_key_id,
-        attempts: (prev?.attempts as number ?? 0) + 1,
-        duration_ms, error, applied_by, atomic,
-        applied_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        patch_name,
+        content_sha256,
+        status,
+        signed_key_id,
+        attempts: ((prev?.attempts as number) ?? 0) + 1,
+        duration_ms,
+        error,
+        applied_by,
+        atomic,
+        applied_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
       return { rows: [], rowCount: 0 };
     }
@@ -82,14 +155,19 @@ class FakeClient {
     // patch body execution — failOn keyed by a marker string inside the SQL
     for (const [marker, msg] of Object.entries(this.failOn)) {
       if (msg && t.includes(marker)) {
-        if (this.throwOnce.has(marker)) { this.throwOnce.delete(marker); continue; }
+        if (this.throwOnce.has(marker)) {
+          this.throwOnce.delete(marker);
+          continue;
+        }
         throw new Error(msg);
       }
     }
     return { rows: [], rowCount: 0 };
   }
 
-  release() { this.released = true; }
+  release() {
+    this.released = true;
+  }
   released = false;
 }
 
@@ -111,36 +189,71 @@ beforeEach(() => {
   const a = generateKeyPairSync("ed25519");
   keys = {
     pub: a.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
-    priv: a.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    priv: a.privateKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64"),
   };
   const b = generateKeyPairSync("ed25519");
   second = {
     pub: b.publicKey.export({ format: "der", type: "spki" }).toString("base64"),
-    priv: b.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    priv: b.privateKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64"),
   };
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 function writePatch(name: string, sql: string, pragma = "") {
-  writeFileSync(join(patchesDir, `${name}.sql`), `${pragma}${pragma ? "\n" : ""}${sql}`);
+  writeFileSync(
+    join(patchesDir, `${name}.sql`),
+    `${pragma}${pragma ? "\n" : ""}${sql}`,
+  );
 }
 
 async function shaOf(name: string) {
   const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(readFileSync(join(patchesDir, `${name}.sql`), "utf8")).digest("hex");
+  return createHash("sha256")
+    .update(readFileSync(join(patchesDir, `${name}.sql`), "utf8"))
+    .digest("hex");
 }
 
-async function writeManifestAndKeys(names: string[], keyId = "dev-key", trust: "dev" | "release" = "dev", priv = keys.priv, sign = true) {
+async function writeManifestAndKeys(
+  names: string[],
+  keyId = "dev-key",
+  trust: "dev" | "release" = "dev",
+  priv = keys.priv,
+  sign = true,
+) {
   const patches: Record<string, string> = {};
   for (const n of names) patches[n] = await shaOf(n);
-  const unsigned = { version: 1 as const, key_id: keyId, issued_at: new Date().toISOString(), patches };
-  const manifest: PatchManifest = sign ? signManifest(unsigned, priv) : ({ ...unsigned, signature: "AA==" } as PatchManifest);
+  const unsigned = {
+    version: 1 as const,
+    key_id: keyId,
+    issued_at: new Date().toISOString(),
+    patches,
+  };
+  const manifest: PatchManifest = sign
+    ? signManifest(unsigned, priv)
+    : ({ ...unsigned, signature: "AA==" } as PatchManifest);
   writeFileSync(join(dir, "MANIFEST.json"), JSON.stringify(manifest, null, 2));
-  writeFileSync(join(dir, "keys.json"), JSON.stringify([
-    { key_id: "dev-key", algo: "ed25519", public_key: keys.pub, trust: "dev" },
-    { key_id: "rel-key", algo: "ed25519", public_key: second.pub, trust: "release" },
-  ]));
+  writeFileSync(
+    join(dir, "keys.json"),
+    JSON.stringify([
+      {
+        key_id: "dev-key",
+        algo: "ed25519",
+        public_key: keys.pub,
+        trust: "dev",
+      },
+      {
+        key_id: "rel-key",
+        algo: "ed25519",
+        public_key: second.pub,
+        trust: "release",
+      },
+    ]),
+  );
 }
 
 function opts(client: FakeClient, extra: Record<string, unknown> = {}) {
@@ -157,6 +270,9 @@ function opts(client: FakeClient, extra: Record<string, unknown> = {}) {
       patchesDir,
       dbMetaDir: dir,
       allowedTrust: ["dev", "release"] as const,
+      // Tests run first migrations on an empty schema — opt in explicitly;
+      // the guard's own cases below drop this flag.
+      firstBoot: true,
       logger,
       ...extra,
     } as any,
@@ -171,32 +287,51 @@ describe("migrations engine", () => {
     writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
     writePatch("20260101000001_b", "CREATE TABLE t2(id int);");
     writePatch("20260101000002_c", "CREATE TABLE t3(id int);");
-    await writeManifestAndKeys(["20260101000000_a", "20260101000001_b", "20260101000002_c"]);
+    await writeManifestAndKeys([
+      "20260101000000_a",
+      "20260101000001_b",
+      "20260101000002_c",
+    ]);
 
     const client = new FakeClient();
     const { options, logs } = opts(client);
     const res = await runMigrations(options);
 
-    expect(res.applied).toEqual(["20260101000000_a", "20260101000001_b", "20260101000002_c"]);
+    expect(res.applied).toEqual([
+      "20260101000000_a",
+      "20260101000001_b",
+      "20260101000002_c",
+    ]);
     expect(res.degraded).toBe(false);
 
     // registry INSERT executed inside the patch transaction
     for (const name of res.applied) {
-      const patchSql = client.queries.findIndex((q) => q.text.includes(`CREATE TABLE`));
+      const patchSql = client.queries.findIndex((q) =>
+        q.text.includes(`CREATE TABLE`),
+      );
       const ins = client.queries.findIndex((q) => q.params?.[0] === name);
       expect(ins).toBeGreaterThan(-1);
       expect(client.queries[ins]!.inTx).toBe(true);
       void patchSql;
     }
     expect(client.registry.size).toBe(3);
-    expect(logs.filter((l) => l.level === "info").length).toBeGreaterThanOrEqual(3);
+    expect(
+      logs.filter((l) => l.level === "info").length,
+    ).toBeGreaterThanOrEqual(3);
   });
 
   it("2. mid-apply failure rolls back; restart resumes at the failed patch", async () => {
     writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
-    writePatch("20260101000001_boom", "ALTER TABLE t1 ADD boom_col int; -- BOOM");
+    writePatch(
+      "20260101000001_boom",
+      "ALTER TABLE t1 ADD boom_col int; -- BOOM",
+    );
     writePatch("20260101000002_c", "CREATE TABLE t3(id int);");
-    await writeManifestAndKeys(["20260101000000_a", "20260101000001_boom", "20260101000002_c"]);
+    await writeManifestAndKeys([
+      "20260101000000_a",
+      "20260101000001_boom",
+      "20260101000002_c",
+    ]);
 
     // run 1: boom fails critically
     const c1 = new FakeClient();
@@ -257,7 +392,13 @@ describe("migrations engine", () => {
 
   it("7. bad manifest signature → refuse all", async () => {
     writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
-    await writeManifestAndKeys(["20260101000000_a"], "dev-key", "dev", keys.priv, false);
+    await writeManifestAndKeys(
+      ["20260101000000_a"],
+      "dev-key",
+      "dev",
+      keys.priv,
+      false,
+    );
     const c = new FakeClient();
     await expect(runMigrations(opts(c).options)).rejects.toThrow(/signature/);
   });
@@ -266,14 +407,22 @@ describe("migrations engine", () => {
     writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
     // sign with a key whose id is not in keyring
     const a = generateKeyPairSync("ed25519");
-    const roguePriv = a.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+    const roguePriv = a.privateKey
+      .export({ format: "der", type: "pkcs8" })
+      .toString("base64");
     await writeManifestAndKeys(["20260101000000_a"], "rogue", "dev", roguePriv);
     const c = new FakeClient();
-    await expect(runMigrations(opts(c).options)).rejects.toThrow(/not in trusted keyring/);
+    await expect(runMigrations(opts(c).options)).rejects.toThrow(
+      /not in trusted keyring/,
+    );
   });
 
   it("8. requires-review → pending_review gate stops ordering; approval applies it", async () => {
-    writePatch("20260101000000_a", "CREATE TABLE t1(id int);", "-- pb:requires-review");
+    writePatch(
+      "20260101000000_a",
+      "CREATE TABLE t1(id int);",
+      "-- pb:requires-review",
+    );
     writePatch("20260101000001_b", "CREATE TABLE t2(id int);");
     await writeManifestAndKeys(["20260101000000_a", "20260101000001_b"]);
 
@@ -286,7 +435,9 @@ describe("migrations engine", () => {
 
     const c2 = new FakeClient();
     c2.registry = c1.registry;
-    const r2 = await runMigrations(opts(c2, { approvedReviews: ["20260101000000_a"] }).options);
+    const r2 = await runMigrations(
+      opts(c2, { approvedReviews: ["20260101000000_a"] }).options,
+    );
     expect(r2.applied).toEqual(["20260101000000_a", "20260101000001_b"]);
   });
 
@@ -295,7 +446,9 @@ describe("migrations engine", () => {
     await writeManifestAndKeys(["20260101000000_a"]);
     const c = new FakeClient();
     c.lockFree = false;
-    await expect(runMigrations(opts(c, { lockWaitMs: 50 }).options)).rejects.toThrow(/advisory lock/);
+    await expect(
+      runMigrations(opts(c, { lockWaitMs: 50 }).options),
+    ).rejects.toThrow(/advisory lock/);
     expect(c.released).toBe(true);
   });
 
@@ -303,14 +456,16 @@ describe("migrations engine", () => {
     writePatch(
       "20260101000000_idx",
       "CREATE INDEX CONCURRENTLY a ON t(x); CREATE INDEX CONCURRENTLY b ON t(y);",
-      "-- pb:no-transaction"
+      "-- pb:no-transaction",
     );
     await writeManifestAndKeys(["20260101000000_idx"]);
     const c = new FakeClient();
     const res = await runMigrations(opts(c).options);
     expect(res.applied).toEqual(["20260101000000_idx"]);
     // registry insert runs in its own mini-tx; the DDL statements are autocommit
-    const idx = c.queries.filter((q) => q.text.includes("CREATE INDEX CONCURRENTLY"));
+    const idx = c.queries.filter((q) =>
+      q.text.includes("CREATE INDEX CONCURRENTLY"),
+    );
     expect(idx).toHaveLength(2);
     expect(idx.every((q) => q.inTx === false)).toBe(true);
     expect(c.registry.get("20260101000000_idx")!.atomic).toBe(false);
@@ -323,13 +478,15 @@ describe("migrations engine", () => {
 -- pb:begin-no-transaction
 CREATE INDEX CONCURRENTLY i ON t(x);
 -- pb:end-no-transaction
-ALTER TABLE t ADD COLUMN y int;`
+ALTER TABLE t ADD COLUMN y int;`,
     );
     await writeManifestAndKeys(["20260101000000_mix"]);
     const c = new FakeClient();
     const res = await runMigrations(opts(c).options);
     expect(res.applied).toEqual(["20260101000000_mix"]);
-    const ddl = c.queries.filter((q) => /ALTER TABLE|CREATE INDEX/.test(q.text));
+    const ddl = c.queries.filter((q) =>
+      /ALTER TABLE|CREATE INDEX/.test(q.text),
+    );
     expect(ddl.find((q) => q.text.includes("ADD COLUMN x"))!.inTx).toBe(true);
     expect(ddl.find((q) => q.text.includes("CONCURRENTLY"))!.inTx).toBe(false);
     expect(ddl.find((q) => q.text.includes("ADD COLUMN y"))!.inTx).toBe(true);
@@ -352,7 +509,9 @@ ALTER TABLE t ADD COLUMN y int;`
     cOff.configEntries = { "db_migration.mode": "off" };
     const r2 = await runMigrations(opts(cOff).options);
     expect(r2.mode).toBe("off");
-    expect(cOff.queries.some((q) => q.text.includes("CREATE TABLE t1"))).toBe(false);
+    expect(cOff.queries.some((q) => q.text.includes("CREATE TABLE t1"))).toBe(
+      false,
+    );
   });
 
   it("12. mode key changed by an applied patch → nextMode reflects re-read", async () => {
@@ -363,7 +522,8 @@ ALTER TABLE t ADD COLUMN y int;`
     const origQuery = c.query.bind(c);
     c.query = async (t: string, p?: unknown[]) => {
       const r = await origQuery(t, p);
-      if (/CREATE TABLE t1/.test(t)) c.configEntries = { "db_migration.mode": "check" };
+      if (/CREATE TABLE t1/.test(t))
+        c.configEntries = { "db_migration.mode": "check" };
       return r;
     };
     const res = await runMigrations(opts(c).options);
@@ -395,16 +555,27 @@ ALTER TABLE t ADD COLUMN y int;`
   });
 
   it("parsePatchPragmas reads the header contract", () => {
-    expect(parsePatchPragmas("-- pb:requires-review\n-- pb:no-transaction\n-- pb:no-audit-trail\nSQL")).toEqual({
-      requiresReview: true, noTransaction: true, noAuditTrail: true,
+    expect(
+      parsePatchPragmas(
+        "-- pb:requires-review\n-- pb:no-transaction\n-- pb:no-audit-trail\nSQL",
+      ),
+    ).toEqual({
+      requiresReview: true,
+      noTransaction: true,
+      noAuditTrail: true,
     });
     expect(parsePatchPragmas("SELECT 1;")).toEqual({
-      requiresReview: false, noTransaction: false, noAuditTrail: false,
+      requiresReview: false,
+      noTransaction: false,
+      noAuditTrail: false,
     });
   });
 
   it("seed into auditable table WITHOUT audit rows → failed (fail-closed)", async () => {
-    writePatch("20260101000000_seed", "INSERT INTO test.widgets (name) VALUES ('a');");
+    writePatch(
+      "20260101000000_seed",
+      "INSERT INTO test.widgets (name) VALUES ('a');",
+    );
     await writeManifestAndKeys(["20260101000000_seed"]);
     const c = new FakeClient();
     c.auditTables.add("test.widgets_audit");
@@ -413,7 +584,9 @@ ALTER TABLE t ADD COLUMN y int;`
     expect(res.failed[0]?.patch_name).toBe("20260101000000_seed");
     expect(res.failed[0]?.error).toContain("audit trail");
     // nothing of the patch body executed — the check is pre-SQL
-    expect(c.queries.some((q) => /INSERT INTO test\.widgets \(/.test(q.text))).toBe(false);
+    expect(
+      c.queries.some((q) => /INSERT INTO test\.widgets \(/.test(q.text)),
+    ).toBe(false);
   });
 
   it("seed into auditable table WITH audit rows → applied", async () => {
@@ -429,7 +602,11 @@ ALTER TABLE t ADD COLUMN y int;`
   });
 
   it("-- pb:no-audit-trail opts the seed out explicitly", async () => {
-    writePatch("20260101000000_seed", "INSERT INTO test.widgets (name) VALUES ('a');", "-- pb:no-audit-trail");
+    writePatch(
+      "20260101000000_seed",
+      "INSERT INTO test.widgets (name) VALUES ('a');",
+      "-- pb:no-audit-trail",
+    );
     await writeManifestAndKeys(["20260101000000_seed"]);
     const c = new FakeClient();
     c.auditTables.add("test.widgets_audit");
@@ -438,7 +615,10 @@ ALTER TABLE t ADD COLUMN y int;`
   });
 
   it("seed into a table with NO audit twin → applied (non-audited surface)", async () => {
-    writePatch("20260101000000_seed", "INSERT INTO test.telemetry (name) VALUES ('a');");
+    writePatch(
+      "20260101000000_seed",
+      "INSERT INTO test.telemetry (name) VALUES ('a');",
+    );
     await writeManifestAndKeys(["20260101000000_seed"]);
     const c = new FakeClient(); // auditTables empty → telemetry_audit does not exist
     const res = await runMigrations(opts(c).options);
@@ -528,5 +708,40 @@ ALTER TABLE t ADD COLUMN y int;`
     const c = new FakeClient();
     const res = await runMigrations(opts(c).options);
     expect(res.failed[0]!.error).toMatch(/must start with 'crm\.'/);
+  });
+
+  // ── first-boot guard (anti-bifurcation) ─────────────────────────────────
+  it("firstBoot guard: refuses a schema with no patch registry (bifurcation signature)", async () => {
+    writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
+    await writeManifestAndKeys(["20260101000000_a"]);
+    const c = new FakeClient(); // registryExists = false — fresh schema
+    const { options } = opts(c, { firstBoot: undefined });
+    await expect(runMigrations(options)).rejects.toThrow(
+      /never materialized|bifurcation/,
+    );
+  });
+
+  it("firstBoot guard: refuses a registry that exists but is empty (incomplete materialization)", async () => {
+    writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
+    await writeManifestAndKeys(["20260101000000_a"]);
+    const c = new FakeClient();
+    c.registryExists = true; // table present, zero rows
+    const { options } = opts(c, { firstBoot: undefined });
+    await expect(runMigrations(options)).rejects.toThrow(/exists but is empty/);
+  });
+
+  it("firstBoot guard: populated registry proceeds without the flag (normal boot)", async () => {
+    writePatch("20260101000000_a", "CREATE TABLE t1(id int);");
+    writePatch("20260101000001_b", "CREATE TABLE t2(id int);");
+    await writeManifestAndKeys(["20260101000000_a", "20260101000001_b"]);
+    const c = new FakeClient();
+    // first run materializes the schema (explicit first boot)
+    const r1 = await runMigrations(opts(c, { firstBoot: true }).options);
+    expect(r1.applied).toEqual(["20260101000000_a", "20260101000001_b"]);
+    c.registryExists = true; // engine-created by now
+    // second run: populated registry → guard passes without the flag
+    const { options } = opts(c, { firstBoot: undefined });
+    const r2 = await runMigrations(options);
+    expect(r2.applied).toEqual([]);
   });
 });

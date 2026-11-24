@@ -448,6 +448,23 @@ export function Entity(tableName?: string, schemaOrOptions?: string | EntityOpti
   };
 }
 
+/**
+ * `@PublicEntity("user_profiles")` — declares an entity on the cross-service
+ * `public` schema: the shared platform surface (shared-table contracts and
+ * BE-owned business entities). This is the ONLY alternative to
+ * primary-schema resolution available to module code — free-form schema
+ * pins are reserved for dal-internal machinery (translation entities).
+ *
+ * Self-limiting by construction: a service whose declared schema domain
+ * does not include `public` fails `resolveEntitySchema` at boot
+ * (SchemaDomainViolationError) — microservices cannot opt into `public`.
+ */
+export function PublicEntity(tableName?: string): (ctor: Function) => void;
+export function PublicEntity(tableName?: string, options?: Omit<EntityOptions, "schema">): (ctor: Function) => void;
+export function PublicEntity(tableName?: string, options?: Omit<EntityOptions, "schema">) {
+  return Entity(tableName, { ...options, schema: "public" });
+}
+
 function assertNonEmptyColumnOptions(o: ColumnOptions): void {
   if (
     o.sqlName === undefined &&

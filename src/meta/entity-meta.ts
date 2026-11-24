@@ -3,6 +3,7 @@
  */
 export {
   Entity,
+  PublicEntity,
   Column,
   Key,
   Unique,
