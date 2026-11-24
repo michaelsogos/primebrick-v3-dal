@@ -8,6 +8,7 @@
  */
 
 import type { FilterExpr, SortingExpr, JoinExpr, FieldProjector, FieldRef, GroupByOperand } from "../query/dsl.js";
+import type { DalNow } from "../meta/column-pg-io.js";
 
 /** Controls how soft-deleted rows (deleted_at IS NOT NULL) are handled in finders. */
 export type WithDeletedRecords = "EXCLUDED" | "ONLY" | "INCLUDED";
@@ -273,7 +274,7 @@ export type AuditParams = {
   entityId: bigint | null;
   entityUuid: string;
   action: AuditAction;
-  changedAt: Date;
+  changedAt: Date | DalNow;
   version: number;
   changedBy: string;
   delta: Record<string, { old: unknown; new: unknown }>;

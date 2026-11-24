@@ -21,6 +21,9 @@ import {
   type ColumnPgPersistenceHints,
   effectivePgStorageType,
   jsValueToPgParam,
+  DAL_NOW,
+  DAL_NOW_SQL,
+  acceptsDalNow,
 } from "../meta/column-pg-io.js";
 
 import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from "../query/dsl.js";
@@ -997,14 +1000,16 @@ export class Repository {
                 s."expire_at", s."binding_key"
            FROM ${table} s
           WHERE s."revive_every" IS NOT NULL AND s."deleted_at" IS NULL
-            AND s."expire_at" IS NOT NULL AND s."expire_at" <= $1
-            ${spec.only_uuid ? `AND s."uuid" = $2` : ""}
+            AND s."expire_at" IS NOT NULL AND s."expire_at" <= ${spec.now !== undefined ? "$1" : "clock_timestamp()"}
+            ${spec.only_uuid ? `AND s."uuid" = ${spec.now !== undefined ? "$2" : "$1"}` : ""}
             AND NOT EXISTS (
               SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
             )
           ORDER BY s."expire_at"
           LIMIT 1`,
-        spec.only_uuid ? [now, spec.only_uuid] : [now],
+        spec.now !== undefined
+          ? (spec.only_uuid ? [now, spec.only_uuid] : [now])
+          : (spec.only_uuid ? [spec.only_uuid] : []),
       );
       const prev = due.rows[0];
       if (!prev) break;
@@ -1026,8 +1031,8 @@ export class Repository {
             "created_at","created_by","updated_at","updated_by","version")
          SELECT uuidv7(), $1, "pattern", "step", "start", "tz", $2, $3, $4,
                 "binding_key", "revive_every", "revive_grace", "revive_slot",
-                $5, $6, $7, $8, $9, $10,
-                now(), $11, now(), $11, 1
+                $5, $6, $7, $8, ${spec.now !== undefined ? "$9" : "clock_timestamp()"}, $10,
+                clock_timestamp(), $11, clock_timestamp(), $11, 1
            FROM ${table} WHERE "uuid" = $12
          RETURNING "uuid"`,
         [
@@ -1042,8 +1047,8 @@ export class Repository {
     }
     // Phase B — physical retirement: switch_at passed → soft-delete.
     const switched = await q.query<{ uuid: string }>(
-      `UPDATE ${table} SET "deleted_at" = $1, "deleted_by" = $2
-        WHERE "switch_at" IS NOT NULL AND "switch_at" <= $1
+      `UPDATE ${table} SET "deleted_at" = ${spec.now !== undefined ? "$1" : "clock_timestamp()"}, "deleted_by" = $2
+        WHERE "switch_at" IS NOT NULL AND "switch_at" <= ${spec.now !== undefined ? "$1" : "clock_timestamp()"}
           AND "deleted_at" IS NULL
         RETURNING "uuid"`,
       [now, spec.actor],
@@ -1418,7 +1423,7 @@ export class Repository {
           "expire_at","switch_at","default_from",
           "created_at","created_by","updated_at","updated_by","version")
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-               now(),$17,now(),$17,1)
+               clock_timestamp(),$17,clock_timestamp(),$17,1)
        ON CONFLICT ("uuid") DO NOTHING`,
       [
         uuid, name, decl.pattern, decl.step, decl.start, decl.tz ?? null,
@@ -1805,7 +1810,6 @@ export class Repository {
     }
 
     // Stamp audit fields if entity is auditable
-    const now = new Date();
     const values: unknown[] = [];
     const colsSql: string[] = [];
     const params: string[] = [];
@@ -1820,6 +1824,14 @@ export class Repository {
       const colMeta = meta.columns[sqlName];
       colsSql.push(quoteIdent(sqlName));
       const rawVal = rec[k] ?? null;
+      if (rawVal === (DAL_NOW as unknown)) {
+        if (!acceptsDalNow(colMeta)) {
+          throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+        }
+        params.push(DAL_NOW_SQL);
+        attemptedParam.set(k, DAL_NOW_SQL);
+        continue;
+      }
       const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
       values.push(pgVal);
       params.push(`$${values.length}`);
@@ -1835,9 +1847,8 @@ export class Repository {
 
       if (createdAtCol && !keys.includes(createdAtCol.propertyKey)) {
         colsSql.push(quoteIdent(createdAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-        attemptedParam.set(createdAtCol.propertyKey, `$${values.length}`);
+        params.push("clock_timestamp()");
+        attemptedParam.set(createdAtCol.propertyKey, "clock_timestamp()");
       }
       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
         colsSql.push(quoteIdent(createdByCol.sqlName));
@@ -1847,9 +1858,8 @@ export class Repository {
       }
       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-        attemptedParam.set(updatedAtCol.propertyKey, `$${values.length}`);
+        params.push("clock_timestamp()");
+        attemptedParam.set(updatedAtCol.propertyKey, "clock_timestamp()");
       }
       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedByCol.sqlName));
@@ -1957,7 +1967,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         entityId,
         entityUuid,
         action: AuditAction.INSERT,
-        changedAt: now,
+        changedAt: DAL_NOW,
         version: 1,
         changedBy: actor,
         delta,
@@ -2824,7 +2834,7 @@ WHERE agg.n > 0`;
   //         entityId,
   //         entityUuid,
   //         action,
-  //         changedAt: now,
+  //         changedAt: DAL_NOW,
   //         version: newVersion,
   //         changedBy: actor,
   //         delta,
@@ -2890,7 +2900,6 @@ WHERE agg.n > 0`;
 
     const setClauses: string[] = [];
     const values: unknown[] = [];
-    const now = new Date();
 
     // Add audit stamping
     if (auditable && actor !== undefined) {
@@ -2898,8 +2907,7 @@ WHERE agg.n > 0`;
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
 
       if (updatedAtCol) {
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-        values.push(now);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol) {
         setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -2919,6 +2927,15 @@ WHERE agg.n > 0`;
       const colMeta = meta.columns[sqlName];
       if (!colMeta) {
         throw new UnknownColumnError(`update: unknown column/property ${key}`);
+      }
+      if (value === (DAL_NOW as unknown)) {
+        if (!acceptsDalNow(colMeta)) {
+          throw new ValidationError(`${meta.entityClassName}.${key}: DAL_NOW requires a timestamp column`);
+        }
+        setClauses.push(`${quoteIdent(sqlName)} = ${DAL_NOW_SQL}`);
+        paramRefByProp.set(key, DAL_NOW_SQL);
+        userFieldCount++;
+        continue;
       }
       const ref = `$${values.length + 1}`;
       setClauses.push(`${quoteIdent(sqlName)} = ${ref}`);
@@ -3101,7 +3118,7 @@ SELECT * FROM upd`;
         entityId,
         entityUuid,
         action: AuditAction.UPDATE,
-        changedAt: now,
+        changedAt: DAL_NOW,
         version: newVersion,
         changedBy: actor,
         delta,
@@ -3161,7 +3178,6 @@ SELECT * FROM upd`;
     const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
-    const now = new Date();
     const setClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -3171,16 +3187,14 @@ SELECT * FROM upd`;
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
 
     if (deletedAtCol) {
-      setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (deletedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${values.length + 1}`);
       values.push(actor);
     }
     if (updatedAtCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -3259,7 +3273,7 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.SOFT_DELETE,
-        changedAt: now,
+        changedAt: DAL_NOW,
         version: newVersion,
         changedBy: actor,
         delta,
@@ -3320,7 +3334,6 @@ SELECT * FROM w`;
     const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
-    const now = new Date();
     const setClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -3336,8 +3349,7 @@ SELECT * FROM w`;
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
     }
     if (updatedAtCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -3416,7 +3428,7 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.RESTORE,
-        changedAt: now,
+        changedAt: DAL_NOW,
         version: newVersion,
         changedBy: actor,
         delta,
@@ -3534,7 +3546,7 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.HARD_DELETE,
-        changedAt: new Date(),
+        changedAt: DAL_NOW,
         version: oldVersion,
         changedBy: actor,
         delta,
@@ -3621,7 +3633,6 @@ SELECT * FROM w`;
     // Build the cloned record
     const clonedRecord: Record<string, unknown> = {};
     const newUuid = newUuidV7();
-    const now = new Date();
 
     for (const [, colMeta] of Object.entries(meta.columns)) {
       const sqlName = colMeta.sqlName;
@@ -3634,7 +3645,7 @@ SELECT * FROM w`;
         switch (colMeta.auditableType) {
           case AuditableFieldType.CREATED_AT:
           case AuditableFieldType.UPDATED_AT:
-            clonedRecord[sqlName] = now;
+            clonedRecord[sqlName] = DAL_NOW;
             continue;
           case AuditableFieldType.CREATED_BY:
           case AuditableFieldType.UPDATED_BY:
@@ -3670,7 +3681,7 @@ SELECT * FROM w`;
     }
     const clonedAtField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_AT);
     if (clonedAtField) {
-      clonedRecord[clonedAtField.sqlName] = now;
+      clonedRecord[clonedAtField.sqlName] = DAL_NOW;
     }
     const clonedByField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_BY);
     if (clonedByField && actor !== undefined) {
@@ -3684,10 +3695,14 @@ SELECT * FROM w`;
       [clonedRecord[col.sqlName]] = await this.allocateAndRender(this.db, spec, col.length, 1, actor!);
     }
 
-    // Build and execute INSERT
+    // Build and execute INSERT — sentinel values render as SQL literals
+    // and drop out of the bound-parameter list.
     const columns = Object.keys(clonedRecord);
-    const values = Object.values(clonedRecord);
-    const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+    const rawValues = Object.values(clonedRecord);
+    const values: unknown[] = [];
+    const placeholders = rawValues
+      .map((v) => (v === (DAL_NOW as unknown) ? DAL_NOW_SQL : `$${values.push(v)}`))
+      .join(", ");
     const columnNames = columns.map((c) => quoteIdent(c)).join(", ");
 
     const ret = buildReturningClause(entity, options.returning);
@@ -3709,7 +3724,7 @@ SELECT * FROM w`;
         entityId: auditEntityId(insertedRow),
         entityUuid: newUuid,
         action: AuditAction.CLONE,
-        changedAt: now,
+        changedAt: DAL_NOW,
         version: 1,
         changedBy: actor,
         delta,
@@ -3821,7 +3836,6 @@ SELECT * FROM w`;
     const allKeys = [...keys, ...auditCols];
     const colsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
 
-    const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
 
     // TEMP TABLE strategy: stream payload into a temp table, detect unique
@@ -3859,6 +3873,13 @@ SELECT * FROM w`;
             const sqlName = getColumnName(entity, k);
             const colMeta = meta.columns[sqlName];
             const rawVal = rec[k] ?? null;
+            if (rawVal === (DAL_NOW as unknown)) {
+              if (!acceptsDalNow(colMeta)) {
+                throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+              }
+              params.push(DAL_NOW_SQL);
+              continue;
+            }
             const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
             values.push(pgVal);
             params.push(`$${values.length}`);
@@ -3868,8 +3889,10 @@ SELECT * FROM w`;
             const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
             if (!col) continue;
             if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-              values.push(now);
-            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              params.push(DAL_NOW_SQL);
+              continue;
+            }
+            if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
               values.push(actor);
             } else if (col.auditableType === AuditableFieldType.VERSION) {
               values.push(1);
@@ -4177,7 +4200,6 @@ WHERE agg.n > 0`;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
 
-    const now = new Date();
 
     const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
@@ -4247,16 +4269,14 @@ WHERE agg.n > 0`;
       const setClauses: string[] = [];
       const setValues: unknown[] = [];
       if (deletedAtCol) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (deletedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
         setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${setValues.length}`);
       }
       if (updatedAtCol && auditable && actor !== undefined) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
@@ -4330,13 +4350,13 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'SOFT_DELETE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'SOFT_DELETE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
       if (owned) await client.query("COMMIT");
@@ -4485,10 +4505,10 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         await client.query(
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `o.${quoteIdent("id")}, ` : ""}o.uuid, 'HARD_DELETE', $1, $2, o.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `o.${quoteIdent("id")}, ` : ""}o.uuid, 'HARD_DELETE', clock_timestamp(), $1, o.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_build_object(\n              ${deltaExpr}\n            )\n` +
           `          FROM ${quoteIdent(tmpOldName)} o`,
-          [new Date(), actor],
+          [actor],
         );
       }
 
@@ -4542,7 +4562,6 @@ WHERE agg.n > 0`;
       "restoreMany",
     );
 
-    const now = new Date();
     const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
     const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
@@ -4599,8 +4618,7 @@ WHERE agg.n > 0`;
       if (deletedAtCol) setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = NULL`);
       if (deletedByCol) setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
       if (updatedAtCol && auditable && actor !== undefined) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
@@ -4664,13 +4682,13 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'RESTORE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'RESTORE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
       if (owned) await client.query("COMMIT");
@@ -4807,7 +4825,6 @@ WHERE agg.n > 0`;
       );
 
       // 2. Batch INSERT into temp table
-      const now = new Date();
       const allTmpKeys = [...matchCols.map((c) => c.propertyKey), ...updateKeys];
       if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
@@ -4832,23 +4849,40 @@ WHERE agg.n > 0`;
             const colMeta = meta.columns[sqlName];
             if (matchProps.has(k)) {
               values.push(jsValueToPgParam(rec[k], matchCols.find((c) => c.propertyKey === k)!.hints));
+              params.push(`$${values.length}`);
             } else if (auditable && actor !== undefined) {
               const col = Object.values(meta.columns).find((c) => c.propertyKey === k);
               if (col?.auditableType === AuditableFieldType.UPDATED_AT) {
-                values.push(now);
+                params.push(DAL_NOW_SQL);
               } else if (col?.auditableType === AuditableFieldType.UPDATED_BY) {
                 values.push(actor);
+                params.push(`$${values.length}`);
               } else {
                 const rawVal = rec[k] ?? null;
-                const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-                values.push(pgVal);
+                if (rawVal === (DAL_NOW as unknown)) {
+                  if (!acceptsDalNow(col)) {
+                    throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+                  }
+                  params.push(DAL_NOW_SQL);
+                } else {
+                  const pgVal = col ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(col)) : rawVal;
+                  values.push(pgVal);
+                  params.push(`$${values.length}`);
+                }
               }
             } else {
               const rawVal = rec[k] ?? null;
-              const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-              values.push(pgVal);
+              if (rawVal === (DAL_NOW as unknown)) {
+                if (!acceptsDalNow(colMeta)) {
+                  throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+                }
+                params.push(DAL_NOW_SQL);
+              } else {
+                const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+                values.push(pgVal);
+                params.push(`$${values.length}`);
+              }
             }
-            params.push(`$${values.length}`);
           }
           if (versionGuard.guard) {
             values.push(versionGuard.versions[i + bi]);
@@ -4945,14 +4979,14 @@ WHERE agg.n > 0`;
 
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'UPDATE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'UPDATE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
 
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
       if (owned) await client.query("COMMIT");

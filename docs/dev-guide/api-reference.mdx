@@ -2609,6 +2609,10 @@ Mirrors the SDK `ConfigType` and the BE `type` column.
 
 **Type:** `typeof DalErrorCodes[keyof typeof DalErrorCodes]`
 
+### `DalNow`
+
+**Type:** `symbol`
+
 ### `DecimalInput`
 
 Anything coercion functions accept: Decimal, native number, bigint, or a decimal string.
@@ -3680,6 +3684,27 @@ passed via `ctx.schemas` / `--schema` in tooling.
 
 **Type:** `readonly [typeof SequenceEntity, typeof SequenceCounterEntity]`
 
+### `DAL_NOW`
+
+`DAL_NOW` — write-path marker that renders `clock_timestamp()` as a SQL
+literal (not a bound parameter) in generated INSERT/UPDATE statements.
+Pass it as a column value on `insert`/`update`/bulk paths for columns
+that mean "DB-clock at write instant" (`used_at`, `sent_at`,
+`status_changed_at`, …). `Symbol.for` keeps identity stable across
+duplicated library copies (remote module bundles ship their own dal).
+
+Audit clocks (`created_at`, `updated_at`, `deleted_at`, audit
+`changed_at`) never need it — the write path stamps them itself.
+Rejected on non-timestamp columns.
+
+**Type:** `typeof DAL_NOW`
+
+### `DAL_NOW_SQL`
+
+SQL text the sentinel renders as. Single clock function — the doctrine.
+
+**Type:** `"clock_timestamp()"`
+
 ### `DalErrorCodes`
 
 Stable error codes for DAL optimistic concurrency control.
@@ -4259,6 +4284,15 @@ both. Shared internals still dedupe through the bundler's shared chunks.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `acceptsDalNow(col): boolean`
+
+True when `colMeta` describes a timestamp-ish column that may carry
+ the marker. Accepts `instant` jsType or a timestamp/date pgType.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `{ jsType: unknown; pgType: string } \| undefined` |  |
 
 ### `actionColorClass(color): string`
 

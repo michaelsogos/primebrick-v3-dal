@@ -104,6 +104,10 @@ export {
   pgValueToJsValue,
   entityDateToApiIso,
   hydrateEntityDateFieldsFromJson,
+  DAL_NOW,
+  DAL_NOW_SQL,
+  acceptsDalNow,
+  type DalNow,
   type ColumnPgPersistenceHints,
 } from "./meta/column-pg-io.js";
 

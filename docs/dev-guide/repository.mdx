@@ -159,7 +159,7 @@ const created = await dal.add(CustomerEntity, {
   is_active: true,
 }, { actor: "system" });
 // INSERT INTO customers (name, email, is_active, created_at, created_by, updated_at, updated_by, version)
-// VALUES ($1, $2, $3, now(), $4, now(), $4, 1) RETURNING *
+// VALUES ($1, $2, $3, clock_timestamp(), $4, clock_timestamp(), $4, 1) RETURNING *
 // created.version === 1
 ```
 

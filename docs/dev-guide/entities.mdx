@@ -271,13 +271,13 @@ explicit `defaultSql`/`default` on the same decorator):
 
 | Column | Injected `defaultSql` | Why |
 |--------|-----------------------|-----|
-| `created_at`, `updated_at` | `now()` | audit timestamps are DB-filled |
+| `created_at`, `updated_at` | `clock_timestamp()` | audit timestamps are DB-filled at the write instant |
 | `created_by`, `updated_by` | `'system'` | safety net — a write that somehow lacks actor attribution blames `system` |
 | `version` | `1` | optimistic-lock counter starts at 1 |
 | `uuid` on `@Key`/`@Unique` | `uuidv7()` / `gen_random_uuid()` | identity generation |
 
-Volatile expressions (`now()`, `uuidv7()`) are physical-only — never
-served as form prefill. Constant literals (`'system'`, `1`, `false`,
+Volatile expressions (`clock_timestamp()`, `uuidv7()`) are physical-only —
+never served as form prefill. Constant literals (`'system'`, `1`, `false`,
 `'literal'`) ARE derived into the served `MetaColumn.default` (see
 [entity metadata](/dev-guide/entity-metadata)) — the create form shows
 them as the initial value, a `*.meta.ts` authored `default` or a

@@ -1411,7 +1411,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
   for (const [propKey, reg] of colMap) {
     const propertyKey = String(propKey);
     // Semantic defaults — decorator/type driven, never name driven:
-    //   @AuditableField(CREATED_AT|UPDATED_AT) → now()
+    //   @AuditableField(CREATED_AT|UPDATED_AT) → clock_timestamp()
     //   @AuditableField(CREATED_BY|UPDATED_BY) → 'system'  (a write that
     //     somehow lacks actor attribution blames 'system' — the safety net
     //     the physical schema has carried since 0001, now entity-declared)
@@ -1423,7 +1423,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         reg.auditableType === AuditableFieldType.CREATED_AT ||
         reg.auditableType === AuditableFieldType.UPDATED_AT
       ) {
-        reg.defaultSql = "now()";
+        reg.defaultSql = "clock_timestamp()";
       } else if (
         reg.auditableType === AuditableFieldType.CREATED_BY ||
         reg.auditableType === AuditableFieldType.UPDATED_BY

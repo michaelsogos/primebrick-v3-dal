@@ -84,6 +84,33 @@ function isVectorColumn(h: ColumnPgPersistenceHints): boolean {
 }
 
 /**
+ * `DAL_NOW` — write-path marker that renders `clock_timestamp()` as a SQL
+ * literal (not a bound parameter) in generated INSERT/UPDATE statements.
+ * Pass it as a column value on `insert`/`update`/bulk paths for columns
+ * that mean "DB-clock at write instant" (`used_at`, `sent_at`,
+ * `status_changed_at`, …). `Symbol.for` keeps identity stable across
+ * duplicated library copies (remote module bundles ship their own dal).
+ *
+ * Audit clocks (`created_at`, `updated_at`, `deleted_at`, audit
+ * `changed_at`) never need it — the write path stamps them itself.
+ * Rejected on non-timestamp columns.
+ */
+export const DAL_NOW = Symbol.for("primebrick.dal.now");
+export type DalNow = symbol;
+
+/** SQL text the sentinel renders as. Single clock function — the doctrine. */
+export const DAL_NOW_SQL = "clock_timestamp()";
+
+/** True when `colMeta` describes a timestamp-ish column that may carry
+ *  the marker. Accepts `instant` jsType or a timestamp/date pgType. */
+export function acceptsDalNow(col: { jsType?: unknown; pgType?: string } | undefined): boolean {
+  if (!col) return false;
+  if (col.jsType === "instant") return true;
+  const t = (col.pgType ?? "").toLowerCase();
+  return t.startsWith("timestamp") || t === "date" || t === "timestamptz";
+}
+
+/**
  * Value to pass to `node-pg` query parameters.
  * `Date` → passthrough (timestamptz) or `YYYY-MM-DD` (SQL `date`);
  * `Decimal` → plain numeric string; `Vector`/`number[]` → `'[…]'` literal;
