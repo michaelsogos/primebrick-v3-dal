@@ -44,18 +44,17 @@ import { getSchemaDomain } from "../meta/schema-domain.js";
 import { ValidationError } from "../errors/errors.js";
 import { Filter, field } from "../query/dsl.js";
 
-/** The module's owned schema — domain when configured, else the
- *  `DATABASE_SCHEMA` env contract (same source initDal feeds). Throws
- *  when neither exists: a route surface without an owned schema cannot
- *  host builtins. */
-function ownedNamespace(): string {
-  const ns =
-    getSchemaDomain()?.primary ??
-    process.env.DATABASE_SCHEMA?.split(",")[0]?.trim();
+/** The module's owned schema — the explicit decl-context schema wins,
+ *  else the configured domain primary (post-initDal runtime paths).
+ *  The schema is service identity declared as CODE — env is never a
+ *  source. Throws when neither exists: a route surface without an owned
+ *  schema cannot host builtins. */
+function ownedNamespace(declSchema?: string): string {
+  const ns = declSchema ?? getSchemaDomain()?.primary;
   if (!ns) {
     throw new ValidationError(
-      "builtin sequence decl: no schema domain and no DATABASE_SCHEMA — " +
-        "the module's owned schema is required at construction",
+      "builtin sequence decl: no owned schema — the decl context must " +
+        "carry the module's declared schemas (or a configured domain)",
     );
   }
   return ns;
@@ -151,11 +150,11 @@ function sequenceMeta(ns: string): EntityMeta {
 // ─── the service (dal-owned — DomainService lives here) ─────────────────
 
 export class SequencesService extends DomainService<SequenceEntity & Record<string, unknown>> {
-  constructor(actor: () => string) {
+  constructor(actor: () => string, ownedSchema?: string) {
     super({
       entity: SequenceEntity,
       actor,
-      list: { meta: sequenceMeta(ownedNamespace()), defaultSort: SEQUENCE_DEFAULT_SORT },
+      list: { meta: sequenceMeta(ownedNamespace(ownedSchema)), defaultSort: SEQUENCE_DEFAULT_SORT },
     });
   }
 
@@ -604,14 +603,18 @@ function assertReviveCoherence(row: {
 
 export interface BuiltinDeclCtx {
   actor: () => string;
+  /** The module's declared schema list (code const, [0] = owned). Carried
+   *  through the cross-package ctx so builtin decls resolve their i18n
+   *  namespace without env and without waiting for the dal domain. */
+  schemas?: readonly string[];
 }
 
 /** Nav contribution — the `sequences` leaf under the module's "settings"
  *  sibling, appended LAST by createMicroservice (arrays carry the order
  *  at every level). label keys derive from the module's own schema
  *  namespace — never authored. */
-export function builtinSequenceNav() {
-  const ns = ownedNamespace();
+export function builtinSequenceNav(ctx: BuiltinDeclCtx) {
+  const ns = ownedNamespace(ctx.schemas?.[0]);
   return {
     sibling_id: "settings",
     sibling_label_key: `${ns}.settings.nav.label`,
@@ -627,13 +630,13 @@ export function builtinSequenceNav() {
  *  return type is structural — dal cannot import the SDK's
  *  EntityRouteDecl; makeServiceRoutes consumes the shape. */
 export function builtinSequenceEntityDecl(ctx: BuiltinDeclCtx): Record<string, unknown> {
-  const ns = ownedNamespace();
+  const ns = ownedNamespace(ctx.schemas?.[0]);
   const meta = sequenceMeta(ns);
   const P = (op: string, scope: string) => `${ns}.sequence.${op}.${scope}`;
   return {
     entityName: "sequence",
     spec: { tag: "sequences", label: "sequence" },
-    service: new SequencesService(ctx.actor),
+    service: new SequencesService(ctx.actor, ns),
     meta,
     permissions: {
       meta: [P("read", "all"), P("read", "single")],
@@ -750,8 +753,8 @@ function vAnalyzeBody(raw: unknown): {
  *  The return type is structural — dal cannot import the SDK's RpcRoute;
  *  makeServiceRoutes consumes the shape. */
 export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>[] {
-  const ns = ownedNamespace();
-  const svc = new SequencesService(ctx.actor);
+  const ns = ownedNamespace(ctx.schemas?.[0]);
+  const svc = new SequencesService(ctx.actor, ns);
   const P = (op: string, scope: string) => `${ns}.sequence.${op}.${scope}`;
   return [
     {

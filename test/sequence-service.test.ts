@@ -50,7 +50,6 @@ describe("SequencesService — governed setCounter + read-only forecast", () => 
       max: 2,
       applicationName: "dal-test-seqs-service",
     });
-    process.env.DATABASE_SCHEMA = "public";
     svc = new SequencesService(() => ACTOR);
   });
 
@@ -156,7 +155,6 @@ describe("SequencesService — analyze (governed read-only pre-check)", () => {
       max: 2,
       applicationName: "dal-test-seqs-analyze",
     });
-    process.env.DATABASE_SCHEMA = "public";
     svc = new SequencesService(() => ACTOR);
   });
 

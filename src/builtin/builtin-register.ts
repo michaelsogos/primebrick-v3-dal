@@ -30,7 +30,7 @@ export interface BuiltinDeclFactory {
    *  by createMicroservice (array position IS the order at every level;
    *  builtins always sort after every module-authored leaf). The sibling
    *  is auto-created when the module declares none. */
-  nav?: () => BuiltinNavContribution;
+  nav?: (ctx: BuiltinDeclCtx) => BuiltinNavContribution;
 }
 
 export interface BuiltinNavContribution {
@@ -63,5 +63,5 @@ registerBuiltinEntityDeclFactory({
   id: "dal.sequences",
   make: (ctx) => [builtinSequenceEntityDecl(ctx)],
   rpc: (ctx) => builtinSequenceRpc(ctx),
-  nav: () => builtinSequenceNav(),
+  nav: (ctx) => builtinSequenceNav(ctx),
 });

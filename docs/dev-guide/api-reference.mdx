@@ -1219,11 +1219,12 @@ The contract every entity service must satisfy — enforced on the router.
 |----------|------|-------------|
 | cfg | `EntityServiceConfig<SequenceEntity & Record<string, unknown>>` |  |
 
-#### `SequencesService(actor)`
+#### `SequencesService(actor, ownedSchema)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | actor | `() => string` |  |
+| ownedSchema | `string` |  |
 
 #### `SequencesService.update(uuid, body, tx): Promise<SequenceEntity & Record<string, unknown>>`
 
@@ -1695,6 +1696,9 @@ markers); ports that do not persist a row may return `0n`.
 | Field | Type | Description |
 |-------|------|-------------|
 | actor | `() => string` |  |
+| schemas | `readonly string[]` | The module's declared schema list (code const, [0] = owned). Carried
+ through the cross-package ctx so builtin decls resolve their i18n
+ namespace without env and without waiting for the dal domain. |
 
 ### `BulkCustomAction`
 
@@ -5956,6 +5960,22 @@ through unchanged.
 |-----------|------|-------------|
 | n | `number` |  |
 
+### `PublicEntity(tableName): (ctor: Function) => void`
+
+`@PublicEntity("user_profiles")` — declares an entity on the cross-service
+`public` schema: the shared platform surface (shared-table contracts and
+BE-owned business entities). This is the ONLY alternative to
+primary-schema resolution available to module code — free-form schema
+pins are reserved for dal-internal machinery (translation entities).
+
+Self-limiting by construction: a service whose declared schema domain
+does not include `public` fails `resolveEntitySchema` at boot
+(SchemaDomainViolationError) — microservices cannot opt into `public`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| tableName | `string` |  |
+
 ### `quoteIdent(ident): string`
 
 | Parameter | Type | Description |
@@ -6569,6 +6589,23 @@ Wire form — `"…d"` suffixed string.
 | entity | `EntityClass` |  |
 | conditions | `ListFilterCondition[] \| null \| undefined` |  |
 | options | `ListFilterOptions` |  |
+
+### `TranslationEntity(schema): (ctor: Function) => void`
+
+`@TranslationEntity(schema)` — declares a concrete `translations` table
+entity pinned to a module schema. This is the dal's ONLY schema-pinning
+decorator: it hardcodes the table name and rejects classes that do not
+extend TranslationEntityBase, so it cannot be repurposed to pin
+arbitrary entities. Works as a class decorator for static declarations
+(`@TranslationEntity("public")`) and as a callable decorator factory for
+runtime-synthesized subclasses (`TranslationEntity(code)(cls)`).
+
+Module entities use `@Entity` (primary-schema resolution) or
+`@PublicEntity` (`public`) — never this.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `string` |  |
 
 ### `translationKeyGrammarError(key): string \| null`
 

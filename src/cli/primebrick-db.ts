@@ -84,16 +84,20 @@ function mergeBuiltinEntities(registry: readonly EntityClass[]): EntityClass[] {
 }
 
 /**
- * `--schema` (comma list, first = primary) or `DATABASE_SCHEMA` env —
- * the same contract modules declare at runtime. Configures the schema
- * domain so un-pinned entities (builtins) resolve to the module's owned
- * schema instead of the `public` fallback.
+ * `--schema` (comma list, first = primary) — REQUIRED for check/compare.
+ * Schema identity lives in module code (`OWNED_SCHEMAS`), never in env:
+ * the service boot contract reserves DATABASE_SCHEMA as a violation, so
+ * this CLI cannot read it either (single source of truth). Configures the
+ * schema domain so un-pinned entities (builtins) resolve to the module's
+ * owned schema instead of the `public` fallback.
  */
 function applyDomainFlag(flags: Record<string, string>): void {
-  const raw = flags["schema"] ?? process.env.DATABASE_SCHEMA;
-  if (!raw) return;
+  const raw = need(flags, "schema");
   const schemas = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  if (schemas.length === 0) return;
+  if (schemas.length === 0) {
+    console.error("--schema resolved to an empty schema list");
+    process.exit(2);
+  }
   configureSchemaDomain(schemas);
 }
 

@@ -17,9 +17,7 @@ import { builtinSequenceEntityDecl } from "../src/builtin/sequence-decl.js";
  * replaces the DB default (no disambiguation).
  */
 
-process.env.DATABASE_SCHEMA ??= "crm";
-
-const decl = builtinSequenceEntityDecl({ actor: () => "seq-validator-test" }) as {
+const decl = builtinSequenceEntityDecl({ actor: () => "seq-validator-test", schemas: ["crm"] }) as {
   schemas: {
     createBody: (b: unknown) => { entity: Record<string, unknown> };
     updateBody: (b: unknown) => { entity: Record<string, unknown> };
