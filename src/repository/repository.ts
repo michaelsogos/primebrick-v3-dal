@@ -36,6 +36,8 @@ import {
   validateSequencePartitions,
   sequencePartitionKey,
   derivePeriodKey,
+  reviveExpireAt,
+  reviveAddInterval,
   renderSequenceValue,
   renderSequenceRange,
   type SequenceDecl,
@@ -159,6 +161,26 @@ interface MatchCondition {
   value: unknown;
   hints: ColumnPgPersistenceHints;
 }
+
+/** Resolved sequence-row spec — identity + parsed pattern + bigint
+ *  counters + row-owned sez defaults + the series columns the binding
+ *  resolution reads. `pattern` arrives as text, exits parsed. */
+interface SequenceRowSpec {
+  uuid: string;
+  name: string;
+  pattern: SequencePattern;
+  step: bigint;
+  start: bigint;
+  tz: string | null;
+  sez: string | null;
+  sez2: string | null;
+  sez3: string | null;
+  binding_key: string | null;
+  default_from: Date | null;
+}
+
+/** Raw SQL projection — pattern still text, bigint possibly un-parsed. */
+type SequenceRowSpecRaw = Omit<SequenceRowSpec, "pattern"> & { pattern: string };
 
 /** Render `a = $i AND b = $j ...` for the identity conditions (shared by all CTEs + the write). */
 function identityWhere(conditions: MatchCondition[], paramStart: number, alias?: string): string {
@@ -1174,19 +1196,52 @@ export class Repository {
     return typeof (this.db as PoolClient).release !== "function";
   }
 
+  /** Resolved sequence-row spec — what allocation needs after the row is
+   *  read: identity + parsed pattern + bigint counters + row-owned sez
+   *  defaults + the series columns. */
+  private static readonly SEQ_SPEC_COLS =
+    `"uuid","name","pattern","step","start","tz","sez","sez2","sez3","binding_key","default_from"`;
+
   /** Fetch a sequence row by uuid — null when absent/soft-deleted. */
   private async querySequence(
     q: Queryable,
     by: { uuid: string },
-  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null } | null> {
+  ): Promise<SequenceRowSpec | null> {
     const table = getQualifiedTableName(SequenceEntity);
-    const r = await q.query<{ uuid: string; name: string; pattern: string; step: bigint; start: bigint; tz: string | null }>(
-      `SELECT "uuid","name","pattern","step","start","tz" FROM ${table}
+    const r = await q.query<SequenceRowSpecRaw>(
+      `SELECT ${Repository.SEQ_SPEC_COLS} FROM ${table}
         WHERE "uuid" = $1 AND "deleted_at" IS NULL`,
       [by.uuid],
     );
     const row = r.rows[0];
     if (!row) return null;
+    return this.sequenceRowSpec(row);
+  }
+
+  /** Series resolution — the binding names a LINE of rows, not a uuid:
+   *  `binding_key` survives revives; `default_from <= at` picks the
+   *  generation that owns the document's period. NULL default_from is
+   *  eligible (legacy-adopted rows) but loses to any anchored row. */
+  private async querySequenceSeries(
+    q: Queryable,
+    binding_key: string,
+    at: Date,
+  ): Promise<SequenceRowSpec | null> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const r = await q.query<SequenceRowSpecRaw>(
+      `SELECT ${Repository.SEQ_SPEC_COLS} FROM ${table}
+        WHERE "binding_key" = $1 AND "deleted_at" IS NULL
+          AND ("default_from" IS NULL OR "default_from" <= $2)
+        ORDER BY "default_from" DESC NULLS LAST
+        LIMIT 1`,
+      [binding_key, at],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return this.sequenceRowSpec(row);
+  }
+
+  private sequenceRowSpec(row: SequenceRowSpecRaw): SequenceRowSpec {
     return {
       uuid: row.uuid,
       name: row.name,
@@ -1197,6 +1252,11 @@ export class Repository {
       step: BigInt(row.step),
       start: BigInt(row.start),
       tz: row.tz,
+      sez: row.sez ?? null,
+      sez2: row.sez2 ?? null,
+      sez3: row.sez3 ?? null,
+      binding_key: row.binding_key ?? null,
+      default_from: row.default_from ?? null,
     };
   }
 
@@ -1205,7 +1265,7 @@ export class Repository {
   private async loadSequence(
     q: Queryable,
     by: { uuid: string },
-  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+  ): Promise<SequenceRowSpec> {
     const spec = await this.querySequence(q, by);
     if (!spec) throw new SequenceNotFoundError(by.uuid);
     return spec;
@@ -1215,21 +1275,40 @@ export class Repository {
    *  DO NOTHING, then re-read the STORED row: an operator-managed row
    *  under the same deterministic uuid always wins over the decl. The
    *  uuid is derived (`sequenceBoundUuid(seed)`) — the row identity is
-   *  known before it exists, so uuid is the ONLY functional key. */
+   *  known before it exists, so uuid is the ONLY functional key.
+   *  `binding_key` (system-owned, never a write key) names the series
+   *  the row belongs to; revive anchors are computed here, never taken
+   *  from the wire. */
   private async materializeSequenceRow(
     q: Queryable,
     uuid: string,
     name: string,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    binding_key: string | null = null,
+  ): Promise<SequenceRowSpec> {
     const table = getQualifiedTableName(SequenceEntity);
+    const now = new Date();
+    const tz = decl.tz ?? "UTC";
+    const expire_at = decl.revive_every ? reviveExpireAt(now, decl.revive_every, tz) : null;
+    const switch_at = expire_at
+      ? (decl.revive_grace ? reviveAddInterval(expire_at, decl.revive_grace, tz) : expire_at)
+      : null;
     await q.query(
       `INSERT INTO ${table}
-         ("uuid","name","pattern","step","start","tz","created_at","created_by","updated_at","updated_by","version")
-       VALUES ($1, $2, $3, $4, $5, $6, now(), $7, now(), $7, 1)
+         ("uuid","name","pattern","step","start","tz","sez","sez2","sez3",
+          "binding_key","revive_every","revive_grace","revive_slot",
+          "expire_at","switch_at","default_from",
+          "created_at","created_by","updated_at","updated_by","version")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+               now(),$17,now(),$17,1)
        ON CONFLICT ("uuid") DO NOTHING`,
-      [uuid, name, decl.pattern, decl.step, decl.start, decl.tz ?? null, actor],
+      [
+        uuid, name, decl.pattern, decl.step, decl.start, decl.tz ?? null,
+        decl.sez ?? null, decl.sez2 ?? null, decl.sez3 ?? null,
+        binding_key, decl.revive_every ?? null, decl.revive_grace ?? null,
+        decl.revive_slot ?? null, expire_at, switch_at, now, actor,
+      ],
     );
     const spec = await this.querySequence(q, { uuid });
     if (!spec) throw new SequenceNotFoundError(uuid);
@@ -1247,27 +1326,80 @@ export class Repository {
     bound: SequenceBound,
     decl: SequenceDecl,
     actor: string,
-  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
+    at: Date,
+  ): Promise<SequenceRowSpec> {
     const hash = sha256Hex(`${decl.pattern}|${decl.step}|${decl.start}|${decl.tz ?? ""}`).slice(0, 16);
-    return this.materializeSequenceRow(
-      q,
-      sequenceBoundUuid(`${bound.name}|expr|${hash}`),
-      `${bound.name}@expr_${hash}`.slice(0, 100),
-      decl,
-      actor,
-    );
+    const binding_key = `${bound.name}@expr_${hash}`.slice(0, 130);
+    const found = await this.querySequenceSeries(q, binding_key, at);
+    if (found) return found;
+    const uuid = sequenceBoundUuid(`${bound.name}|expr|${hash}`);
+    const legacy = await this.querySequence(q, { uuid });
+    if (legacy) return this.adoptSequenceRow(q, uuid, binding_key);
+    return this.materializeSequenceRow(q, uuid, binding_key.slice(0, 100), decl, actor, binding_key);
   }
 
-  /** The field's declared default: strict lookup, self-provisioning from
-   *  the @SequenceField decl when the registry row is absent — an
-   *  operator-edited row stays authoritative via ON CONFLICT. */
+  /** Adopt a pre-binding_key bound row into its series — stamps
+   *  `binding_key` + `default_from` (the row's own created_at) so the
+   *  uuid identity is preserved while the binding gains series
+   *  resolution. Idempotent (`binding_key IS NULL`). */
+  private async adoptSequenceRow(
+    q: Queryable,
+    uuid: string,
+    binding_key: string,
+  ): Promise<SequenceRowSpec> {
+    const table = getQualifiedTableName(SequenceEntity);
+    await q.query(
+      `UPDATE ${table} SET "binding_key" = $1,
+         "default_from" = COALESCE("default_from", "created_at")
+       WHERE "uuid" = $2 AND "binding_key" IS NULL`,
+      [binding_key, uuid],
+    );
+    const spec = await this.querySequence(q, { uuid });
+    if (!spec) throw new SequenceNotFoundError(uuid);
+    return spec;
+  }
+
+  /** The field's declared default — the binding names a SERIES of rows
+   *  (`binding_key` survives revives); `default_from <= at` picks the
+   *  generation that owns the document's period. Empty series → adopt
+   *  the legacy deterministic row, else materialize generation 0. */
   private async loadOrMaterializeBound(
     q: Queryable,
     bound: SequenceBound,
     actor: string,
-  ): Promise<{ uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null }> {
-    const found = await this.querySequence(q, { uuid: bound.uuid });
-    return found ?? this.materializeSequenceRow(q, bound.uuid, bound.name, bound, actor);
+    at: Date,
+  ): Promise<SequenceRowSpec> {
+    const found = await this.querySequenceSeries(q, bound.name, at);
+    if (found) return found;
+    const legacy = await this.querySequence(q, { uuid: bound.uuid });
+    if (legacy) return this.adoptSequenceRow(q, bound.uuid, bound.name);
+    return this.materializeSequenceRow(q, bound.uuid, bound.name, bound, actor, bound.name);
+  }
+
+  /** Merge directive-supplied sez slots with the row's owned defaults —
+   *  owned slots are immutable at claim time (a directive that pins a
+   *  DIFFERENT value for an owned slot is a construction error, never a
+   *  silent override). */
+  private mergeSequencePartitions(
+    spec: SequenceRowSpec,
+    partitions: SequencePartitions,
+  ): SequencePartitions {
+    const merged: Record<string, string> = {};
+    for (const slot of ["sez", "sez2", "sez3"] as const) {
+      const owned = spec[slot];
+      const given = partitions[slot];
+      if (owned !== null) {
+        if (given !== undefined && given !== owned) {
+          throw new ValidationError(
+            `sequence.${slot}: row owns slot value "${owned}" — directives cannot override an owned slot`,
+          );
+        }
+        merged[slot] = owned;
+      } else if (given !== undefined) {
+        merged[slot] = given;
+      }
+    }
+    return merged as SequencePartitions;
   }
 
   /** Resolve the sequence spec for a directive (or null = field default). */
@@ -1276,20 +1408,13 @@ export class Repository {
     bound: SequenceBound,
     dir: SequenceDirective | null,
     actor: string,
-  ): Promise<{
-    uuid: string;
-    pattern: SequencePattern;
-    step: bigint;
-    start: bigint;
-    tz: string | null;
-    partitions: SequencePartitions;
-    at?: Date;
-  }> {
-    const base = (spec: {
-      uuid: string; name: string; pattern: SequencePattern; step: bigint; start: bigint; tz: string | null;
-    }, ctx: { partitions: SequencePartitions; at?: Date }) => ({ ...spec, ...ctx });
+  ): Promise<SequenceRowSpec & { partitions: SequencePartitions; at?: Date }> {
+    const base = (
+      spec: SequenceRowSpec,
+      ctx: { partitions: SequencePartitions; at?: Date },
+    ) => ({ ...spec, partitions: this.mergeSequencePartitions(spec, ctx.partitions), ...(ctx.at ? { at: ctx.at } : {}) });
     if (dir === null) {
-      return base(await this.loadOrMaterializeBound(q, bound, actor), { partitions: {} });
+      return base(await this.loadOrMaterializeBound(q, bound, actor, new Date()), { partitions: {} });
     }
     const s = dir.seq;
     if (typeof s === "string") {
@@ -1304,7 +1429,7 @@ export class Repository {
     if ("uuid" in s) {
       return base(await this.loadSequence(q, { uuid: s.uuid }), ctx);
     }
-    return base(await this.materializeExprSequence(q, bound, s, actor), ctx);
+    return base(await this.materializeExprSequence(q, bound, s, actor, ctx.at ?? new Date()), ctx);
   }
 
   /** Claim `count` values on the resolved spec and render them. */

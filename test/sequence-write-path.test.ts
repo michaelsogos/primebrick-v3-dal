@@ -464,4 +464,65 @@ describe("Repository — sequenceAnalyze read-only pre-check", () => {
     expect(a.ambiguous).not.toContain("other.seq");
     expect(a.ambiguous).not.toContain(SEQ_NAME); // self never reported
   });
+describe("Repository — binding series resolution (reviver)", () => {
+  it("legacy bound row is adopted: binding_key + default_from stamped on first lookup", async () => {
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-00001");
+    const seqs = await seqRows();
+    expect(seqs[0]!.binding_key).toBe(SEQ_NAME);
+    expect(seqs[0]!.default_from).not.toBeNull();
+  });
+
+  it("empty series materializes gen-0 WITH binding_key + default_from", async () => {
+    await getTestPool().query(`DELETE FROM sequences`);
+    await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    const rows = await seqRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.binding_key).toBe(SEQ_NAME);
+    expect(rows[0]!.default_from).not.toBeNull();
+  });
+
+  it("series picks the generation owning `at` — latest default_from <= now wins", async () => {
+    // gen-1 successor anchored in the past, reviving pattern — the
+    // write resolves it even though the detUuid row is the legacy seed.
+    await getTestPool().query(
+      `INSERT INTO sequences (uuid, name, pattern, step, start, binding_key, default_from)
+       VALUES (uuidv7(), 'dal_test_seq.code#27', 'NEW-{seq:4}/{sez}', 1, 1, $1, now() - interval '1 day')`,
+      [SEQ_NAME],
+    );
+    await getTestPool().query(`UPDATE sequences SET sez = '27' WHERE binding_key = $1 AND name LIKE '%#27'`, [SEQ_NAME]);
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("NEW-0001/27");
+  });
+
+  it("a successor with FUTURE default_from does not serve yet — old gen wins now", async () => {
+    await getTestPool().query(
+      `INSERT INTO sequences (uuid, name, pattern, step, start, binding_key, default_from)
+       VALUES (uuidv7(), 'dal_test_seq.code#27', 'NEW-{seq:4}', 1, 1, $1, now() + interval '1 day')`,
+      [SEQ_NAME],
+    );
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-00001"); // still the legacy generation
+  });
+
+  it("row-owned sez merges into the allocation ctx — owned slots immutable", async () => {
+    await getTestPool().query(
+      `UPDATE sequences SET pattern = 'TST-{seq:4}/{sez}', sez = '26' WHERE uuid = $1`,
+      [SEQ_UUID],
+    );
+    const row = await repo.add(SeqTestEntity, { label: "a" }, { actor: ACTOR });
+    expect(row.code).toBe("TST-0001/26");
+    // pinned uuid + a DIFFERENT sez for the owned slot → construction error
+    await expect(
+      repo.add(SeqTestEntity, { code: { seq: { uuid: SEQ_UUID, sez: "27" } }, label: "x" }, { actor: ACTOR }),
+    ).rejects.toThrow(/owns slot value/);
+    // same value re-stated is fine
+    const ok = await repo.add(
+      SeqTestEntity,
+      { code: { seq: { uuid: SEQ_UUID, sez: "26" } }, label: "ok" },
+      { actor: ACTOR },
+    );
+    expect(ok.code).toBe("TST-0002/26");
+  });
+});
 });
