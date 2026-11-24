@@ -1,0 +1,72 @@
+---
+title: Sequences & revive
+description: The builtin sequence entity — generation rows, the revive contract (default_from anchor → derived expire/switch), and the create-form flag taxonomy.
+---
+
+# Sequences & revive
+
+`sequence` is a builtin entity (`src/builtin/sequence-decl.ts`) served on
+every module schema — one row is **one generation** of a counter: the
+`{seq}`/`{sez}` pattern, the current `value_actual`/`value_next`, and the
+revive axis that defines when a successor generation takes over.
+
+## Column taxonomy — why the form shows exactly 13 fields
+
+The create sheet census is the writable contract and nothing else:
+
+| Group | Columns | Flag → surface effect |
+|-------|---------|------------------------|
+| Identity | `name`, `step`, `start`, `pattern`, `tz`, `description_key` | normal write keys |
+| Sez literals | `sez`, `sez2`, `sez3` | `immutable` — editable on create, frozen on update |
+| Revive axis | `revive_every`, `revive_slot`, `revive_grace`, `default_from` | `revive_every`/`revive_slot`/`default_from` are `immutable`; `revive_grace` is editable operational slack. The three gated fields carry `depends_on.disabled_when{revive_every, set:false}` — disabled until the cadence holds a value |
+| Computed anchors | `expire_at`, `switch_at` | `audited` — server-derived, render in the audit accordion only |
+| Lifecycle audit | `revived_from`, `revived_at`, `revived_by` | `audited` — written by the revive job, never user input |
+| Machine key | `binding_key` | `hidden` — `<table>.<field>` binding identity for `format:"sequence"` columns; `name` already displays it |
+
+`default_visible:false` governs the **list** only — it never removes a
+column from the synthesized form. A server-computed column stays out of
+forms via `audited` or `hidden`, by construction.
+
+## The revive contract
+
+- **`revive_every`** — closed `'N (day|week|month|quarter|year)[s]'`
+  varchar (`parseReviveInterval` in core), not a pg `interval`. Renders
+  `format:"revive_interval"` → `ReviveIntervalInput`.
+- **`default_from`** — the generation's anchor instant (input; the form
+  seeds `{kind:"next_day_start_local"}` = tomorrow 00:00 local → UTC).
+  The binding lookup serves the row as default only from this instant
+  (`default_from ≤ at`), so future-dated generations are legal.
+- **`expire_at`** — server-derived: first calendar boundary after the
+  anchor in the row's `tz` (`reviveExpireAt`). `"1 month"` → the 1st of
+  next month; `"1 year"` → next Jan 1. Never user input.
+- **`switch_at`** — `expire_at + revive_grace` — the cutoff after which
+  the successor serves claims; the expired row still answers until then
+  (operational slack for in-flight emitters).
+- **`revive_slot`** — closed badge enum `{sez, sez2, sez3}`: which slot
+  literal the job advances when cloning the generation.
+- **`sez` values are literals** — the charset forbids `{}`, so
+  `{yyyy}`-style expressions can't exist as values. The job advances the
+  literal via `derivePeriodLabel` (`"2026"`→`"2027"`, `"2026-Q1"`→`"2026-Q2"`,
+  `"2026-12"`→`"2027-01"`): the rendered value round-trips as the next
+  parse input.
+
+## Validation — one contract, three surfaces
+
+`sequenceReviveShapeIssues` (core, `field-validation.ts`) is the single
+predicate — `revive_slot` must be a `{sez*}` token of the pattern, the
+slotted row value must be advanceable by `revive_every`, and the axis
+can't exist without the cadence. It runs as:
+
+1. **Form** — `meta.form.validators = ["sequence_revive_shape"]` → the
+   synthesized record-sheet form flags issues live.
+2. **Wire** — `assertReviveCoherence` delegates to it; issues ride
+   `ValidationError.issues` → `extra.issues` on the 400.
+3. **Service** — the merged-row check on update (immutable columns can't
+   change, but the rule stays one).
+
+## The observer
+
+The job-handler `sequence_revive` job sweeps `WHERE expire_at <= now()`;
+each expired generation is cloned — successor gets the advanced sez
+literal, fresh anchors, `revived_from/at/by` stamped — and the old row
+serves until `switch_at`.
