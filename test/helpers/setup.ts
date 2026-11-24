@@ -280,6 +280,19 @@ export async function setupTestSchema(): Promise<void> {
       start           bigint NOT NULL,
       tz              varchar(100),
       description_key varchar(200),
+      sez             varchar(200),
+      sez2            varchar(200),
+      sez3            varchar(200),
+      binding_key     varchar(130),
+      revive_every    varchar(30),
+      revive_grace    varchar(30),
+      revive_slot     varchar(10),
+      expire_at       timestamptz,
+      switch_at       timestamptz,
+      default_from    timestamptz,
+      revived_from    uuid,
+      revived_at      timestamptz,
+      revived_by      varchar(100),
       created_at      timestamptz NOT NULL DEFAULT now(),
       created_by      varchar(100),
       updated_at      timestamptz NOT NULL DEFAULT now(),
@@ -300,6 +313,21 @@ export async function setupTestSchema(): Promise<void> {
     END $$;
     DROP INDEX IF EXISTS sequences_code_uq;
     ALTER TABLE sequences DROP COLUMN IF EXISTS label_key;
+    -- revive columns on already-provisioned test schemas
+    ALTER TABLE sequences
+      ADD COLUMN IF NOT EXISTS sez          varchar(200),
+      ADD COLUMN IF NOT EXISTS sez2         varchar(200),
+      ADD COLUMN IF NOT EXISTS sez3         varchar(200),
+      ADD COLUMN IF NOT EXISTS binding_key  varchar(130),
+      ADD COLUMN IF NOT EXISTS revive_every varchar(30),
+      ADD COLUMN IF NOT EXISTS revive_grace varchar(30),
+      ADD COLUMN IF NOT EXISTS revive_slot  varchar(10),
+      ADD COLUMN IF NOT EXISTS expire_at    timestamptz,
+      ADD COLUMN IF NOT EXISTS switch_at    timestamptz,
+      ADD COLUMN IF NOT EXISTS default_from timestamptz,
+      ADD COLUMN IF NOT EXISTS revived_from uuid,
+      ADD COLUMN IF NOT EXISTS revived_at   timestamptz,
+      ADD COLUMN IF NOT EXISTS revived_by   varchar(100);
 
     CREATE TABLE IF NOT EXISTS sequence_counters (
       uuid             uuid PRIMARY KEY DEFAULT uuidv7(),

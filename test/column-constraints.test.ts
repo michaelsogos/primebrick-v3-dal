@@ -285,7 +285,7 @@ describe("withColumnConstraints", () => {
   it("throws on census options_source + allow_create:true (closed vocabulary)", () => {
     const meta = baseMeta();
     meta.columns[1] = { ...meta.columns[1]!, options_source: "census.emits", allow_create: true };
-    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/allow_create:true on a census options_source/);
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/allow_create:true on a closed options_source/);
   });
 
   it("accepts census options_source with allow_create absent/false", () => {
