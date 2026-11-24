@@ -86,6 +86,35 @@ describe("sequence write validator — revive contract", () => {
     expect(() => decl.schemas.createBody({ entity: { ...VALID, revive_every: "1 year" } })).toThrow(/revive_slot/);
   });
 
+  it("revive_every accepts an 'at <RFC3339>' pin — 'until' is axis-bound to grace", () => {
+    const out = decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, pattern: "ORD-{seq:5}/{yyyy}/{sez}", sez: "26", revive_every: "at 2027-06-16T00:00:00Z", revive_slot: "sez" },
+    });
+    expect(out.entity.revive_every).toBe("at 2027-06-16T00:00:00Z");
+    // 'until' literal on the cadence axis → rejected
+    expect(() => decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, pattern: "ORD-{seq:5}/{yyyy}/{sez}", sez: "26", revive_every: "until 2027-06-16T00:00:00Z", revive_slot: "sez" },
+    })).toThrow(/at <RFC3339>/);
+    // ambiguous literal — no offset → rejected
+    expect(() => decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, pattern: "ORD-{seq:5}/{yyyy}/{sez}", sez: "26", revive_every: "at 2027-06-16", revive_slot: "sez" },
+    })).toThrow(/RFC3339/);
+    // 'at' on a period-free pattern — no grain to advance the sez by
+    expect(() => decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, sez: "26", revive_every: "at 2027-06-16T00:00:00Z", revive_slot: "sez" },
+    })).toThrow(/sequence_revive_at_needs_period/);
+  });
+
+  it("revive_grace accepts 'N unit' and 'until <RFC3339>' — 'at' rejected", () => {
+    const out = decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, sez: "26", revive_every: "1 year", revive_slot: "sez", revive_grace: "until 2027-01-15T00:00:00Z" },
+    });
+    expect(out.entity.revive_grace).toBe("until 2027-01-15T00:00:00Z");
+    expect(() => decl.schemas.createBody({
+      entity: { ...PATTERN_SEZ, sez: "26", revive_every: "1 year", revive_slot: "sez", revive_grace: "at 2027-06-16T00:00:00Z" },
+    })).toThrow(/until <RFC3339>/);
+  });
+
   it("revive_slot must be a used sez slot the pattern declares", () => {
     // sez2 not in pattern → rejected (the core shape predicate's contract)
     expect(() => decl.schemas.createBody({

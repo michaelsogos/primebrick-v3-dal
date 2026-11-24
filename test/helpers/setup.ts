@@ -313,6 +313,10 @@ export async function setupTestSchema(): Promise<void> {
     END $$;
     DROP INDEX IF EXISTS sequences_code_uq;
     ALTER TABLE sequences DROP COLUMN IF EXISTS label_key;
+    -- revive spec columns carry instant literals ('at'/'until' RFC3339)
+    ALTER TABLE sequences
+      ALTER COLUMN revive_every TYPE varchar(40),
+      ALTER COLUMN revive_grace TYPE varchar(40);
     -- revive columns on already-provisioned test schemas
     ALTER TABLE sequences
       ADD COLUMN IF NOT EXISTS sez          varchar(200),

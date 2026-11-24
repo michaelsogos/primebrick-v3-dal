@@ -23,7 +23,8 @@ import {
   sequencePartitionKey,
   sequenceReviveShapeIssues,
   derivePeriodKey,
-  parseReviveInterval,
+  parseReviveSpec,
+  parseGraceSpec,
   reviveExpireAt,
   reviveAddInterval,
   renderSequenceValue,
@@ -99,7 +100,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
       sez3: { label_key: F("revive_slot_values.sez3"), color: "teal-500" },
     } } },
     // Overlap window — editable operational slack (moves only `switch_at`).
-    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_interval", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } } },
+    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_offset", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } } },
     // Row-owned sezionale defaults — write at create, frozen afterwards:
     // the owned slots are the revive axis identity.
     { key: "sez", label_key: F("sez"), type: "text", order: 14, default_visible: false, immutable: true },
@@ -472,11 +473,17 @@ const SEQUENCE_WRITE_KEYS = new Set([
   "version",
 ]);
 
-function vReviveInterval(v: unknown, field: string): string | null {
+function vReviveSpec(v: unknown, field: "revive_every" | "revive_grace"): string | null {
   if (v === null || v === undefined || v === "") return null;
-  const s = vString(v, field, 30);
-  if (!parseReviveInterval(s)) {
-    bad(field, `must be 'N (day|week|month|quarter|year)[s]' — got "${s}"`);
+  const s = vString(v, field, 40);
+  const ok = field === "revive_every" ? parseReviveSpec(s) : parseGraceSpec(s);
+  if (!ok) {
+    bad(
+      field,
+      field === "revive_every"
+        ? `must be 'N (day|week|month|quarter|year)[s]' or 'at <RFC3339>' — got "${s}"`
+        : `must be 'N (day|week|month|quarter|year)[s]' or 'until <RFC3339>' — got "${s}"`,
+    );
   }
   return s;
 }
@@ -553,11 +560,11 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
     if (rec.revive_slot !== undefined) bad("revive_slot", "immutable after create");
     if (rec.default_from !== undefined) bad("default_from", "immutable after create");
   } else {
-    if (opt("revive_every")) out.revive_every = vReviveInterval(rec.revive_every, "revive_every");
+    if (opt("revive_every")) out.revive_every = vReviveSpec(rec.revive_every, "revive_every");
     if (opt("revive_slot")) out.revive_slot = vReviveSlot(rec.revive_slot);
     if (opt("default_from")) out.default_from = vInstant(rec.default_from, "default_from");
   }
-  if (opt("revive_grace")) out.revive_grace = vReviveInterval(rec.revive_grace, "revive_grace");
+  if (opt("revive_grace")) out.revive_grace = vReviveSpec(rec.revive_grace, "revive_grace");
   if (!partial) {
     assertReviveCoherence(out as Parameters<typeof assertReviveCoherence>[0]);
   }
@@ -584,8 +591,25 @@ function reviveAnchors(body: Record<string, unknown>): Record<string, unknown> {
   const tz = (body.tz as string | null | undefined) ?? "UTC";
   const anchor = (body.default_from as Date | undefined) ?? new Date();
   const expire_at = reviveExpireAt(anchor, every, tz);
+  // An interval always lands strictly after the anchor by construction;
+  // an `'at'` pin can die on arrival (past instant, or before the row
+  // even starts serving) — that's a contract error, not an anchor.
+  if (expire_at <= anchor) {
+    const err = new ValidationError(
+      `sequence: expire_at ${expire_at.toISOString()} must fall after default_from ${anchor.toISOString()} — an 'at' pin before the row starts serving is dead on arrival`,
+    ) as ValidationError & { issues?: unknown[] };
+    err.issues = [{ path: "revive_every", code: "schema_mismatch", message: "app.common.validation.sequence_expire_before_default_from" }];
+    throw err;
+  }
   const grace = body.revive_grace as string | null | undefined;
   const switch_at = grace ? reviveAddInterval(expire_at, grace, tz) : expire_at;
+  if (switch_at < expire_at) {
+    const err = new ValidationError(
+      `sequence: switch_at ${switch_at.toISOString()} cannot precede expire_at ${expire_at.toISOString()} — an 'until' pin before the revive has no window`,
+    ) as ValidationError & { issues?: unknown[] };
+    err.issues = [{ path: "revive_grace", code: "schema_mismatch", message: "app.common.validation.sequence_switch_before_expire" }];
+    throw err;
+  }
   return { expire_at, switch_at, default_from: anchor };
 }
 

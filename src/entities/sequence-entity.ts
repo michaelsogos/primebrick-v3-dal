@@ -107,19 +107,20 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "varchar", length: 130, nullable: true })
   binding_key?: string | null;
 
-  /** Revive cadence `'N (day|week|month|quarter|year)[s]'` — the row is
-   *  cloned on a chained calendar; NULL = never revives. Stored as
-   *  varchar to keep the closed wire format verbatim (PG `interval`
-   *  output normalizes '3 months'→'3 mons'/'1 week'→'7 days', breaking
-   *  round-trip). IMMUTABLE post-create — the period contract is the
-   *  row's identity. */
-  @Column({ pgType: "varchar", length: 30, nullable: true })
+  /** Revive spec `'N (day|week|month|quarter|year)[s]' | 'at <RFC3339>'`
+   *  — cadence-derived expiry, or an explicit pin on the `expire_at`
+   *  axis (the literal never propagates: the clone sanitizes it to NULL
+   *  and the successor lives as the permanent final generation). Stored
+   *  as varchar to keep the closed wire format verbatim (PG `interval`
+   *  output normalizes '3 months'→'3 mons', breaking round-trip). */
+  @Column({ pgType: "varchar", length: 40, nullable: true })
   revive_every?: string | null;
 
-  /** Overlap window `'N unit'` — how long the retired row survives
-   *  `expire_at` so backdated `at` still resolves it. Editable — moves
-   *  only `switch_at`. */
-  @Column({ pgType: "varchar", length: 30, nullable: true })
+  /** Overlap spec `'N unit' | 'until <RFC3339>'` — how long the retired
+   *  row survives `expire_at` so backdated `at` still resolves it, or a
+   *  direct `switch_at` pin (literal sanitized to NULL on successors).
+   *  Editable — moves only `switch_at`. */
+  @Column({ pgType: "varchar", length: 40, nullable: true })
   revive_grace?: string | null;
 
   /** Which sez slot the period label advances at revive — must be a

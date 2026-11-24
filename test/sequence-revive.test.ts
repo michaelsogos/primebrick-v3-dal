@@ -26,19 +26,20 @@ const SEQ_UUID = sequenceBoundUuid(SEQ_NAME);
 const ACTOR = "revive-actor";
 
 async function seedReviving(opts: {
-  name?: string; sez?: string; every?: string; slot?: string;
-  expire?: string; sw?: string;
+  name?: string; pattern?: string; sez?: string; every?: string;
+  grace?: string | null; slot?: string; expire?: string; sw?: string;
 } = {}): Promise<string> {
   await getTestPool().query(
     `INSERT INTO sequences
-       (uuid, name, pattern, step, start, tz, sez, revive_every, revive_slot, expire_at, switch_at, default_from, binding_key)
-     VALUES ($1, $2, $3, 1, 1, 'UTC', $4, $5, $6, $7::timestamptz, $8::timestamptz, '2025-01-01', $9)`,
+       (uuid, name, pattern, step, start, tz, sez, revive_every, revive_grace, revive_slot, expire_at, switch_at, default_from, binding_key)
+     VALUES ($1, $2, $3, 1, 1, 'UTC', $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, '2025-01-01', $10)`,
     [
       SEQ_UUID,
       opts.name ?? SEQ_NAME,
-      "TST-{seq:5}/{sez}",
+      opts.pattern ?? "TST-{seq:5}/{sez}",
       opts.sez ?? "26",
       opts.every ?? "1 year",
+      opts.grace ?? null,
       opts.slot ?? "sez",
       opts.expire ?? "2027-01-01T00:00:00Z",
       opts.sw ?? "2027-01-11T00:00:00Z",
@@ -142,5 +143,45 @@ describe("sequenceRevive — atomic generation handover", () => {
     });
     expect(rep.revived).toHaveLength(0);
     expect(await seqRows()).toHaveLength(1);
+  });
+
+  it("'at' pin: fires once — sez advances by the pattern's own grain, axes sanitize to NULL", async () => {
+    // pattern carries a {yyyy} date token → period_kind 'year'
+    await seedReviving({
+      pattern: "TST-{seq:5}/{yyyy}/{sez}",
+      every: "at 2027-06-16T00:00:00Z",
+      expire: "2027-06-16T00:00:00Z",
+      sw: "2027-06-16T00:00:00Z",
+    });
+    const rep = await repo.sequenceRevive({ actor: ACTOR, now: new Date("2027-06-20T00:00:00Z") });
+    expect(rep.revived).toHaveLength(1);
+    const next = (await seqRows()).find((r) => r.revived_from === SEQ_UUID)!;
+    expect(next.sez).toBe("27"); // '1 year' — the pattern grain, never the literal
+    expect(next.revive_every).toBeNull();
+    expect(next.revive_grace).toBeNull();
+    expect(next.expire_at).toBeNull();
+    expect(next.switch_at).toBeNull();
+    expect((next.default_from as Date).toISOString()).toBe("2027-06-16T00:00:00.000Z");
+    // the NULL-axis successor is the permanent final generation — the
+    // sweep never picks it up again
+    const again = await repo.sequenceRevive({ actor: ACTOR, now: new Date("2028-01-01T00:00:00Z") });
+    expect(again.revived).toHaveLength(0);
+    expect(await seqRows()).toHaveLength(2);
+  });
+
+  it("'until' grace pin: successor gets NULL grace — switches at its own expire", async () => {
+    await seedReviving({ grace: "until 2027-01-20T00:00:00Z", sw: "2027-01-20T00:00:00Z" });
+    const rep = await repo.sequenceRevive({ actor: ACTOR, now: new Date("2027-01-05T00:00:00Z") });
+    expect(rep.revived).toHaveLength(1);
+    const next = (await seqRows()).find((r) => r.revived_from === SEQ_UUID)!;
+    expect(next.revive_grace).toBeNull();
+    // no grace propagated → switch_at = own expire (interval cadence kept)
+    expect(next.revive_every).toBe("1 year");
+    expect((next.expire_at as Date).toISOString()).toBe("2028-01-01T00:00:00.000Z");
+    expect((next.switch_at as Date).toISOString()).toBe("2028-01-01T00:00:00.000Z");
+    // the literal itself still governed the PREDECESSOR's switch
+    const prev = (await seqRows()).find((r) => r.uuid === SEQ_UUID)!;
+    expect((prev.switch_at as Date).toISOString()).toBe("2027-01-20T00:00:00.000Z");
+    expect(prev.deleted_at).toBeNull(); // Jan-20 not reached at now=Jan-5
   });
 });

@@ -41,6 +41,9 @@ import {
   derivePeriodKey,
   reviveExpireAt,
   reviveAddInterval,
+  reviveAdvanceSpec,
+  parseReviveSpec,
+  parseGraceSpec,
   derivePeriodLabel,
   renderSequenceValue,
   renderSequenceRange,
@@ -990,12 +993,12 @@ export class Repository {
     // documents dated into them resolve correctly).
     for (;;) {
       const due = await q.query<{
-        uuid: string; name: string; tz: string | null;
+        uuid: string; name: string; tz: string | null; pattern: string;
         sez: string | null; sez2: string | null; sez3: string | null;
         revive_every: string; revive_grace: string | null; revive_slot: string;
         expire_at: Date; binding_key: string | null;
       }>(
-        `SELECT s."uuid", s."name", s."tz", s."sez", s."sez2", s."sez3",
+        `SELECT s."uuid", s."name", s."tz", s."pattern", s."sez", s."sez2", s."sez3",
                 s."revive_every", s."revive_grace", s."revive_slot",
                 s."expire_at", s."binding_key"
            FROM ${table} s
@@ -1006,7 +1009,8 @@ export class Repository {
               SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
             )
           ORDER BY s."expire_at"
-          LIMIT 1`,
+          LIMIT 1
+          FOR UPDATE OF s`,
         spec.now !== undefined
           ? (spec.only_uuid ? [now, spec.only_uuid] : [now])
           : (spec.only_uuid ? [spec.only_uuid] : []),
@@ -1014,11 +1018,28 @@ export class Repository {
       const prev = due.rows[0];
       if (!prev) break;
       const slot = prev.revive_slot as "sez" | "sez2" | "sez3";
-      const nextSlotValue = derivePeriodLabel(prev[slot] as string, prev.revive_every);
+      // The sez advance interval — the authored cadence, or the pattern's
+      // own grain under an `'at'` pin. `FOR UPDATE` above serializes this
+      // read against concurrent in-tempo edits of the predecessor row.
+      const adv = reviveAdvanceSpec(prev.revive_every, parseSequencePattern(prev.pattern).period_kind);
+      if (!adv) {
+        throw new ValidationError(
+          `sequenceRevive: predecessor ${prev.uuid} revive spec "${prev.revive_every}" cannot advance — stored contract broken`,
+        );
+      }
+      const nextSlotValue = derivePeriodLabel(prev[slot] as string, `${adv.count} ${adv.unit}`);
       const nextSez = { sez: prev.sez, sez2: prev.sez2, sez3: prev.sez3, [slot]: nextSlotValue };
       const tz = prev.tz ?? "UTC";
-      const expire_at = reviveExpireAt(prev.expire_at, prev.revive_every, tz);
-      const switch_at = prev.revive_grace ? reviveAddInterval(expire_at, prev.revive_grace, tz) : expire_at;
+      // Explicit-instant literals never propagate: an 'at' pin fires once —
+      // the successor inherits NULL axes and lives as the permanent final
+      // generation; an 'until' grace pin likewise resolves to immediate
+      // switch at the successor's own expire.
+      const pinned = parseReviveSpec(prev.revive_every)?.kind === "at";
+      const graceLiteral = prev.revive_grace && parseGraceSpec(prev.revive_grace)?.kind === "at";
+      const succ_every = pinned ? null : prev.revive_every;
+      const succ_grace = pinned || graceLiteral ? null : prev.revive_grace;
+      const expire_at = pinned ? null : reviveExpireAt(prev.expire_at, prev.revive_every, tz);
+      const switch_at = !succ_every || !succ_grace ? expire_at : reviveAddInterval(expire_at as Date, succ_grace, tz);
       const baseName = prev.name.replace(/#[^#]*$/, "");
       const label = [nextSez.sez, nextSez.sez2, nextSez.sez3].filter((v) => v !== null).join("-");
       const name = `${baseName}#${label}`.slice(0, 100);
@@ -1030,7 +1051,7 @@ export class Repository {
             "revived_from","revived_at","revived_by",
             "created_at","created_by","updated_at","updated_by","version")
          SELECT uuidv7(), $1, "pattern", "step", "start", "tz", $2, $3, $4,
-                "binding_key", "revive_every", "revive_grace", "revive_slot",
+                "binding_key", $13, $14, "revive_slot",
                 $5, $6, $7, $8, ${spec.now !== undefined ? "$9" : "clock_timestamp()"}, $10,
                 clock_timestamp(), $11, clock_timestamp(), $11, 1
            FROM ${table} WHERE "uuid" = $12
@@ -1039,6 +1060,7 @@ export class Repository {
           name, nextSez.sez, nextSez.sez2, nextSez.sez3,
           expire_at, switch_at, prev.expire_at,
           prev.uuid, now, spec.actor, spec.actor, prev.uuid,
+          succ_every, succ_grace,
         ],
       );
       const to_uuid = ins.rows[0]?.uuid;
