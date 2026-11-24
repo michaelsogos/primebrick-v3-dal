@@ -1078,6 +1078,113 @@ export class Repository {
     return { revived, switched: switched.rows.map((r) => r.uuid) };
   }
 
+  /** Guarded revive-axis edit — the ATOMIC in-tempo contract. The row is
+   *  locked `FOR UPDATE` first — symmetric serialization with the sweep's
+   *  own `FOR UPDATE` due-set read: whoever takes the lock first wins, and
+   *  the loser re-evaluates post-commit (the clone's re-read sees the moved
+   *  `expire_at` and drops the row; our re-read sees the successor). With
+   *  the lock held for the whole tx, code-side checks are atomic — no
+   *  check-then-write window:
+   *
+   *   - expire axis (`every` present): editable only while the row is
+   *     still in tempo — `expire_at > now` AND no successor exists
+   *     (`revived_from`). Once cloned, the moment is history.
+   *   - switch axis (`grace` present): editable only while
+   *     `switch_at > now` — the grace window is exactly what this edits.
+   *
+   *  `every → NULL` is "revive off": clears `expire_at`/`switch_at`/
+   *  `revive_slot` — the row becomes the permanent final generation.
+   *  The optimistic-lock `version` is enforced HERE (the generic update
+   *  may be skipped on axes-only bodies) and bumped only when
+   *  `bumpVersion` — mixed bodies leave the single bump to `update()`.
+   *  Throws `OptimisticLockError` on stale version, `sequence_revive_closed`
+   *  when the guard refuses. Caller MUST run inside a transaction. */
+  async sequenceReviveAxesUpdate(spec: {
+    uuid: string;
+    version: number;
+    /** `undefined` → axis untouched; `null` → revive off. */
+    every?: string | null;
+    /** `undefined` → axis untouched; `null` → immediate switch at expire. */
+    grace?: string | null;
+    expire_at: Date | null;
+    switch_at: Date | null;
+    /** Axes-only writes bump the version themselves. */
+    bumpVersion: boolean;
+    actor: string;
+  }): Promise<void> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const db = this.db as Queryable;
+    const everyEdit = spec.every !== undefined;
+    const graceEdit = spec.grace !== undefined;
+
+    // 1. Take the row lock — serializes against the sweep's due-set lock.
+    const cur = await db.query<{
+      version: string; expire_at: Date | null; switch_at: Date | null; has_successor: boolean;
+    }>(
+      `SELECT s."version"::text AS version, s."expire_at", s."switch_at",
+              EXISTS(
+                SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
+              ) AS has_successor
+         FROM ${table} s
+        WHERE s."uuid" = $1 AND s."deleted_at" IS NULL
+        FOR UPDATE`,
+      [spec.uuid],
+    );
+    const row = cur.rows[0];
+    if (!row) {
+      throw new NotFoundError(
+        `SequenceEntity: row ${spec.uuid} vanished (deleted) between read and revive-axis update`,
+      );
+    }
+    if (Number(row.version) !== spec.version) {
+      throw new OptimisticLockError(
+        `SequenceEntity: optimistic concurrency violation — expected version ${spec.version}, row is at version ${row.version}`,
+      );
+    }
+
+    // 2. In-tempo guards — evaluated under the held lock.
+    const closed = (axis: string): never => {
+      const err = new ValidationError(
+        `sequence: revive axis closed — the persisted moment already passed or a successor exists; the edit is out of tempo`,
+      ) as ValidationError & { issues?: unknown[] };
+      err.issues = [{
+        path: axis,
+        code: "schema_mismatch",
+        message: "app.common.validation.sequence_revive_closed",
+      }];
+      throw err;
+    };
+    const now = Date.now();
+    if (
+      everyEdit &&
+      !(row.expire_at !== null && row.expire_at.getTime() > now && !row.has_successor)
+    ) {
+      closed("revive_every");
+    }
+    if (graceEdit && !(row.switch_at !== null && row.switch_at.getTime() > now)) {
+      closed("revive_grace");
+    }
+
+    // 3. The write — the lock makes the checked state still current.
+    await db.query(
+      `UPDATE ${table} SET
+         "revive_every" = CASE WHEN $2 THEN $3 ELSE "revive_every" END,
+         "revive_slot"  = CASE WHEN $2 AND $3 IS NULL THEN NULL ELSE "revive_slot" END,
+         "expire_at"    = CASE WHEN $2 THEN $4 ELSE "expire_at" END,
+         "revive_grace" = CASE WHEN $5 THEN $6 ELSE "revive_grace" END,
+         "switch_at"    = CASE WHEN $2 OR $5 THEN $7 ELSE "switch_at" END,
+         "updated_at"   = clock_timestamp(),
+         "updated_by"   = $8,
+         "version"      = "version" + $9::int
+       WHERE "uuid" = $1`,
+      [
+        spec.uuid, everyEdit, spec.every ?? null, spec.expire_at,
+        graceEdit, spec.grace ?? null, spec.switch_at, spec.actor,
+        spec.bumpVersion ? 1 : 0,
+      ],
+    );
+  }
+
   /** Read-only column-usage analysis for a sequence pattern — the
    *  operator's pre-check before `sequenceSet` (or a fresh bind): scans a
    *  physical text column inside the module's own schema with a

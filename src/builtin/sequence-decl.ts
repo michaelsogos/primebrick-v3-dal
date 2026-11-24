@@ -86,7 +86,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // identity; the wire validator rejects them regardless).
     // `format:"revive_interval"` — the numeric+unit composite control
     // emitting the closed `'N unit'` varchar canonical.
-    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10, immutable: true },
+    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10 },
     // When the row starts serving as the binding default — a create-only
     // anchor (the generation's identity), gated on `revive_every` via
     // `depends_on` (disabled while the cadence is unset). `expire_at`
@@ -283,36 +283,112 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     }
   }
 
-  /** Update path coherence — the wire validator owns shape/immutability;
-   *  this owns the revive contract against the MERGED row (stored +
-   *  accepted patch), so pattern/sez edits can never leave a reviving
-   *  row pointing at a slot it can't advance. `version` is excluded —
-   *  it rides the optimistic-lock lane, not the contract. */
+  /** Update path — revive axes are editable WHILE IN TEMPO: the persisted
+   *  moments (`expire_at`/`switch_at`) recompute here, and the atomic
+   *  guard lives in `sequenceReviveAxesUpdate`'s WHERE (the sweep locks
+   *  the row `FOR UPDATE`, this UPDATE locks it back — whoever commits
+   *  second sees the other through the guard predicates).
+   *
+   *  Recompute rules — anchored at NOW (mid-generation edits; the
+   *  create-time `default_from` anchor is history):
+   *   - `revive_every='N unit'` → `expire_at` = next calendar boundary;
+   *   - `revive_every='at <ISO>'` → the literal pin (must stay future);
+   *   - `revive_every→NULL`    → revive off — clears expire/switch/slot
+   *     (permanent final generation);
+   *   - `switch_at` always recomputes when an axis moves: `expire+grace`,
+   *     an `'until'` literal verbatim, `expire_at` when grace is NULL.
+   *
+   *  `version` rides the optimistic-lock lane via `super.update` inside
+   *  the SAME tx — a lost race rolls the guarded write back with it. */
   override async update(
     uuid: string,
     body: Record<string, unknown> & { version: number },
     tx?: import("../repository/repository.js").Repository,
   ): Promise<SequenceEntity & Record<string, unknown>> {
+    const everyEdit = "revive_every" in body;
+    const graceEdit = "revive_grace" in body;
     const stored = await this.get(uuid, { throwIfNotFound: true });
     const pick = <T>(k: string): T | null | undefined =>
       k in body ? (body[k] as T | null) : (stored[k] as T | null | undefined);
+    const mergedEvery = everyEdit
+      ? (body.revive_every as string | null)
+      : (stored.revive_every ?? null);
+    // Revive-off clears the slot in the same write — the merged view the
+    // coherence contract sees.
+    const mergedSlot =
+      everyEdit && body.revive_every === null ? null : (stored.revive_slot ?? null);
     assertReviveCoherence({
       pattern: (pick<string>("pattern") ?? stored.pattern) as string,
       sez: pick<string>("sez"),
       sez2: pick<string>("sez2"),
       sez3: pick<string>("sez3"),
-      revive_every: stored.revive_every ?? null,
-      revive_slot: stored.revive_slot ?? null,
+      revive_every: mergedEvery,
+      revive_slot: mergedSlot,
     });
-    // `revive_grace` edit moves only `switch_at` (Q7 — operational slack,
-    // not identity): recompute the derived anchor here, never a write key.
-    if ("revive_grace" in body && stored.expire_at) {
-      const grace = body.revive_grace as string | null;
-      body.switch_at = grace
-        ? reviveAddInterval(stored.expire_at as Date, grace, (stored.tz as string) ?? "UTC")
-        : stored.expire_at;
+    if (!everyEdit && !graceEdit) return super.update(uuid, body, tx);
+
+    const tz = (stored.tz as string | null) ?? "UTC";
+    const now = new Date();
+    // Entity reads surface timestamptz as ISO strings — coerce before math.
+    const asDate = (v: unknown): Date | null => (v ? new Date(v as string) : null);
+    let expire_at = asDate(stored.expire_at);
+    if (everyEdit) {
+      const every = body.revive_every as string | null;
+      if (every === null) {
+        expire_at = null;
+      } else {
+        const spec = parseReviveSpec(every); // wire-validated upstream
+        expire_at = spec?.kind === "at" ? spec.at : reviveExpireAt(now, every, tz);
+        if (expire_at.getTime() <= now.getTime()) {
+          const err = new ValidationError(
+            `sequence: 'at' pin ${expire_at.toISOString()} is not in the future — the row would die on arrival`,
+          ) as ValidationError & { issues?: unknown[] };
+          err.issues = [{ path: "revive_every", code: "schema_mismatch", message: "app.common.validation.sequence_revive_pin_past" }];
+          throw err;
+        }
+      }
     }
-    return super.update(uuid, body, tx);
+    const mergedGrace = graceEdit
+      ? (body.revive_grace as string | null)
+      : ((stored.revive_grace as string | null | undefined) ?? null);
+    const switch_at =
+      expire_at === null
+        ? null
+        : mergedGrace
+          ? reviveAddInterval(expire_at, mergedGrace, tz)
+          : expire_at;
+    if (expire_at !== null && switch_at !== null && switch_at.getTime() < expire_at.getTime()) {
+      const err = new ValidationError(
+        `sequence: switch_at ${switch_at.toISOString()} cannot precede expire_at ${expire_at.toISOString()}`,
+      ) as ValidationError & { issues?: unknown[] };
+      err.issues = [{ path: "revive_grace", code: "schema_mismatch", message: "app.common.validation.sequence_switch_before_expire" }];
+      throw err;
+    }
+
+    const run = async (t: import("../repository/repository.js").Repository) => {
+      // The axes ride the guarded write; the rest (name, description_key,
+      // version, audit) goes through the standard update in the same tx.
+      const { revive_every: _e, revive_grace: _g, ...rest } = body;
+      const otherFields = Object.keys(rest).some((k) => k !== "version");
+      await t.sequenceReviveAxesUpdate({
+        uuid,
+        version: body.version,
+        ...(everyEdit ? { every: body.revive_every as string | null } : {}),
+        ...(graceEdit ? { grace: body.revive_grace as string | null } : {}),
+        expire_at,
+        switch_at,
+        bumpVersion: !otherFields,
+        actor: this.cfg.actor?.() ?? "system",
+      });
+      if (!otherFields) {
+        // Axes-only — the guarded write already bumped the version; the
+        // generic update has no user fields to set (it would throw
+        // "no fields to update"). Re-read the row inside the tx.
+        return this.get(uuid, { throwIfNotFound: true }) as Promise<SequenceEntity & Record<string, unknown>>;
+      }
+      return super.update(uuid, rest as typeof body, t);
+    };
+    return tx ? run(tx) : this.svc.transaction(run);
   }
 
   /** Create path — the wire validator already ran `assertReviveCoherence`
@@ -552,18 +628,19 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
       out[k] = vSezValue(rec[k], k);
     }
   }
-  // `revive_every`/`revive_slot`/`default_from` are IMMUTABLE post-create —
-  // the period contract is the row's identity (Q7). `revive_grace` stays
-  // editable: operational slack that only moves `switch_at`.
+  // `revive_slot`/`default_from` are IMMUTABLE post-create — the slot
+  // choice and the serve anchor are the row's identity. The revive
+  // AXES (`revive_every`/`revive_grace`) are editable while in tempo —
+  // the service's guarded write owns the moment contract (`FOR UPDATE`
+  // serialization vs the sweep); `revive_every→NULL` is "revive off".
   if (partial) {
-    if (rec.revive_every !== undefined) bad("revive_every", "immutable after create");
     if (rec.revive_slot !== undefined) bad("revive_slot", "immutable after create");
     if (rec.default_from !== undefined) bad("default_from", "immutable after create");
   } else {
-    if (opt("revive_every")) out.revive_every = vReviveSpec(rec.revive_every, "revive_every");
     if (opt("revive_slot")) out.revive_slot = vReviveSlot(rec.revive_slot);
     if (opt("default_from")) out.default_from = vInstant(rec.default_from, "default_from");
   }
+  if (opt("revive_every")) out.revive_every = vReviveSpec(rec.revive_every, "revive_every");
   if (opt("revive_grace")) out.revive_grace = vReviveSpec(rec.revive_grace, "revive_grace");
   if (!partial) {
     assertReviveCoherence(out as Parameters<typeof assertReviveCoherence>[0]);

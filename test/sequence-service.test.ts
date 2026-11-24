@@ -192,3 +192,125 @@ describe("SequencesService — analyze (governed read-only pre-check)", () => {
     expect(a.in_use).toBe(1n);
   });
 });
+
+async function seedRevivingSvc(opts: {
+  pattern?: string; sez?: string;
+  every?: string | null; grace?: string | null; slot?: string | null;
+  expire?: string | null; sw?: string | null; from?: string;
+} = {}): Promise<string> {
+  const r = await getTestPool().query(
+    `INSERT INTO sequences
+       (uuid, name, pattern, step, start, tz, sez, revive_every, revive_grace, revive_slot,
+        expire_at, switch_at, default_from)
+     VALUES (uuidv7(), 'svc.revive', $1, 1, 1, 'UTC', $2, $3, $4, $5, $6::timestamptz, $7::timestamptz, $8::timestamptz)
+     RETURNING uuid`,
+    [
+      opts.pattern ?? "TST-{seq:5}/{sez}",
+      opts.sez ?? "26",
+      opts.every === undefined ? "1 year" : opts.every,
+      opts.grace === undefined ? null : opts.grace,
+      opts.slot === undefined ? "sez" : opts.slot,
+      opts.expire === undefined ? "2999-01-01T00:00:00Z" : opts.expire,
+      opts.sw === undefined ? "2999-01-11T00:00:00Z" : opts.sw,
+      opts.from ?? "2026-01-01T00:00:00Z",
+    ],
+  );
+  return r.rows[0]!.uuid as string;
+}
+
+describe("SequencesService.update — revive axes editable while in tempo", () => {
+  let svc: SequencesService;
+
+  beforeAll(async () => {
+    await setupTestSchema();
+    getDal({
+      connectionString: process.env.DATABASE_URL!,
+      schemas: ["public"],
+      max: 2,
+      applicationName: "dal-test-seqs-axes",
+    });
+    svc = new SequencesService(() => ACTOR);
+  });
+
+  afterAll(async () => {
+    await resetDal();
+    await closeTestPool();
+  });
+
+  beforeEach(async () => {
+    await truncateTestTables();
+  });
+
+  const read = async (uuid: string) =>
+    (await getTestPool().query(`SELECT * FROM sequences WHERE uuid = $1`, [uuid])).rows[0] as Record<string, unknown>;
+
+  it("interval edit → expire_at recomputes to the next boundary from now", async () => {
+    const uuid = await seedRevivingSvc();
+    await svc.update(uuid, { revive_every: "2 years", version: 1 });
+    const row = await read(uuid);
+    const exp = new Date(row.expire_at as string);
+    expect(exp.getTime()).toBeGreaterThan(Date.now());
+    expect(exp.getUTCDate()).toBe(1); // calendar boundary, not rolling
+    expect(exp.getUTCMonth()).toBe(0);
+    expect(row.revive_every).toBe("2 years");
+  });
+
+  it("'at' pin → expire_at is the literal verbatim", async () => {
+    const uuid = await seedRevivingSvc({ pattern: "TST-{seq:5}/{yyyy}/{sez}" });
+    await svc.update(uuid, { revive_every: "at 2027-06-16T00:00:00Z", version: 1 });
+    const row = await read(uuid);
+    expect((row.expire_at as Date).toISOString()).toBe("2027-06-16T00:00:00.000Z");
+    expect(row.revive_every).toBe("at 2027-06-16T00:00:00Z");
+  });
+
+  it("revive off — every→NULL clears expire/switch/slot (permanent generation)", async () => {
+    const uuid = await seedRevivingSvc();
+    await svc.update(uuid, { revive_every: null, version: 1 });
+    const row = await read(uuid);
+    expect(row.revive_every).toBeNull();
+    expect(row.revive_slot).toBeNull();
+    expect(row.expire_at).toBeNull();
+    expect(row.switch_at).toBeNull();
+  });
+
+  it("closed — expire already passed refuses the expire-axis edit", async () => {
+    const uuid = await seedRevivingSvc({ expire: "2020-01-01T00:00:00Z", sw: "2999-01-11T00:00:00Z" });
+    await expect(svc.update(uuid, { revive_every: "2 years", version: 1 })).rejects.toThrow(/closed|tempo/i);
+  });
+
+  it("closed — a successor already exists refuses the expire-axis edit", async () => {
+    const uuid = await seedRevivingSvc();
+    // materialize a successor row pointing at uuid
+    await getTestPool().query(
+      `INSERT INTO sequences (uuid, name, pattern, step, start, revived_from)
+       VALUES (uuidv7(), 'svc.revive#27', 'TST-{seq:5}/{sez}', 1, 1, $1)`,
+      [uuid],
+    );
+    await expect(svc.update(uuid, { revive_every: "2 years", version: 1 })).rejects.toThrow(/closed|tempo/i);
+  });
+
+  it("grace edit during the grace window — successor exists, switch still future → allowed", async () => {
+    const uuid = await seedRevivingSvc({ grace: "10 days", expire: "2020-01-01T00:00:00Z", sw: "2999-01-11T00:00:00Z" });
+    await getTestPool().query(
+      `INSERT INTO sequences (uuid, name, pattern, step, start, revived_from)
+       VALUES (uuidv7(), 'svc.revive#27', 'TST-{seq:5}/{sez}', 1, 1, $1)`,
+      [uuid],
+    );
+    await svc.update(uuid, { revive_grace: "30 days", version: 1 });
+    const row = await read(uuid);
+    expect(row.revive_grace).toBe("30 days");
+    expect((row.switch_at as Date).toISOString()).toBe("2020-01-31T00:00:00.000Z"); // expire+30d
+  });
+
+  it("'until' pin → switch_at literal; pin before expire is a contract error", async () => {
+    const uuid = await seedRevivingSvc({ grace: "10 days" });
+    await svc.update(uuid, { revive_grace: "until 2999-02-01T00:00:00Z", version: 1 });
+    expect(((await read(uuid)).switch_at as Date).toISOString()).toBe("2999-02-01T00:00:00.000Z");
+    await expect(svc.update(uuid, { revive_grace: "until 2000-01-01T00:00:00Z", version: 2 })).rejects.toThrow(/precede|before/i);
+  });
+
+  it("past 'at' pin dies on arrival — contract error before the guarded write", async () => {
+    const uuid = await seedRevivingSvc({ pattern: "TST-{seq:5}/{yyyy}/{sez}" });
+    await expect(svc.update(uuid, { revive_every: "at 2020-01-01T00:00:00Z", version: 1 })).rejects.toThrow(/not in the future|arrival/i);
+  });
+});

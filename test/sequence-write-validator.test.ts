@@ -139,15 +139,22 @@ describe("sequence write validator — revive contract", () => {
     expect(() => decl.schemas.createBody({ entity: { ...VALID, sez: "26" } })).toThrow(/sequence_sez_not_in_pattern/);
   });
 
-  it("update: revive_every/revive_slot/default_from/sez* are immutable — rejected outright", () => {
-    for (const k of ["revive_every", "revive_slot", "default_from", "sez", "sez2", "sez3"]) {
+  it("update: revive_slot/default_from/sez* are immutable — rejected outright", () => {
+    for (const k of ["revive_slot", "default_from", "sez", "sez2", "sez3"]) {
       expect(() => decl.schemas.updateBody({ entity: { [k]: "1 year", version: 1n } }), k).toThrow(/immutable/);
     }
   });
 
-  it("update: revive_grace stays editable, validated as 'N unit'", () => {
-    const out = decl.schemas.updateBody({ entity: { revive_grace: "10 days", version: 1n } });
-    expect(out.entity).toMatchObject({ revive_grace: "10 days" });
+  it("update: revive_every/revive_grace editable — spec-validated both modes", () => {
+    const out = decl.schemas.updateBody({ entity: { revive_every: "6 months", revive_grace: "10 days", version: 1n } });
+    expect(out.entity).toMatchObject({ revive_every: "6 months", revive_grace: "10 days" });
+    // instant literals accepted on their own axis
+    const lit = decl.schemas.updateBody({ entity: { revive_every: "at 2027-06-16T00:00:00Z", revive_grace: "until 2027-08-01T00:00:00Z", version: 1n } });
+    expect(lit.entity).toMatchObject({ revive_every: "at 2027-06-16T00:00:00Z", revive_grace: "until 2027-08-01T00:00:00Z" });
+    // cross-axis keywords still rejected; NULL clears the axis (revive off)
+    expect(() => decl.schemas.updateBody({ entity: { revive_every: "until 2027-01-01T00:00:00Z", version: 1n } })).toThrow();
     expect(() => decl.schemas.updateBody({ entity: { revive_grace: "later", version: 1n } })).toThrow();
+    const off = decl.schemas.updateBody({ entity: { revive_every: null, version: 1n } });
+    expect(off.entity.revive_every).toBeNull();
   });
 });
