@@ -84,7 +84,8 @@ export interface DalConfig {
 
   /**
    * Declared schema domain — the ONLY PostgreSQL schemas this service may
-   * touch (from `DATABASE_SCHEMA`). `schemas[0]` is the owned/primary schema
+   * touch (the service's `OWNED_SCHEMAS` const in code — never env).
+   * `schemas[0]` is the owned/primary schema
    * (patch registry, config_entries live here). Entity operations resolving
    * outside this set throw SchemaDomainViolationError. Required.
    */

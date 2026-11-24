@@ -20,7 +20,7 @@ export * from "./schema-diff/index.js";
 // Migration engine (runtime apply, registry, provenance manifest, drift check)
 export * from "./migrations/index.js";
 
-// Schema sovereignty domain (declared DATABASE_SCHEMA set + guards)
+// Schema sovereignty domain (OWNED_SCHEMAS-declared set + guards)
 export {
   configureSchemaDomain,
   resetSchemaDomain,

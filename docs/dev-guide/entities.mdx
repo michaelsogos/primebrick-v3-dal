@@ -32,23 +32,44 @@ decorators to opt into soft delete, audit trail, and optimistic locking.
 
 ## Decorator reference
 
-### `@Entity(tableName?, schema?)`
+### `@Entity(tableName?)` — closed schema model
 
 Maps a class to a database table. If `tableName` is omitted, the table name
-defaults to the class name. If `schema` is set, it overrides the Dal gateway's
-default `search_path` schema for this entity only.
+defaults to the class name. **Module entities never name a schema**: the
+schema is the service's primary (`OWNED_SCHEMAS[0]`), resolved at runtime.
+Schema identity is immutable product data, declared once in code
+(`OWNED_SCHEMAS` in the service's `db/dal.ts`) — it can never come from
+env, a request, or a decorator argument in module code.
 
 ```typescript
-@Entity("customers")                  // table "customers" in the Dal's primary schema (schemas[0])
-@Entity("customers", "billing")       // table "billing.customers" (schema override)
+@Entity("customers")                  // table "customers" in the service's primary schema
 @Entity()                             // table name === class name
 export class CustomerEntity { ... }
 ```
 
-The schema pin (explicit or the `schemas[0]` default) must belong to the
-`DalConfig.schemas` domain — an entity pinned elsewhere throws
+Two closed alternatives cover the only legitimate non-primary placements:
+
+```typescript
+@PublicEntity("service_registry")     // shared platform contract — schema `public`
+export class ServiceRegistryEntity { ... }
+
+@TranslationEntity("system")          // i18n perimeter — must extend TranslationEntityBase
+export class SystemTranslationEntity extends TranslationEntityBase { ... }
+```
+
+| Decorator | Resolves to | Who may use it |
+|-----------|-------------|----------------|
+| `@Entity(name)` | the service's **primary** schema | every module entity — the default |
+| `@PublicEntity(name)` | `public` | platform/shared contract entities — **self-limiting**: a service whose domain lacks `public` throws `SchemaDomainViolationError` at boot, so only the platform backend can use it |
+| `@TranslationEntity(schema)` | the translation perimeter (`public`/`system`/`custom`/`<service>`) | dal-internal machinery only — hardcodes table `translations` and throws unless the class extends `TranslationEntityBase`; the pin capability cannot be repurposed |
+
+The resolved schema (primary default or a marker's fixed target) must belong
+to the service's declared schema domain — an entity resolving elsewhere throws
 `SchemaDomainViolationError` at `getDal()` (boot) and on every entity
-operation, before SQL is generated.
+operation, before SQL is generated. The raw `schema` pin on `@Entity` is a
+dal-internal mechanism (dynamic translation classes, legacy builtins) — not a
+module-code API; a lint rule flags any module-code usage outside the dal
+allowlist.
 
 The table name is also exposed via `Reflect.defineMetadata("primebrick:tableName", ...)`
 so external tooling (e.g. the SDK's `CacheKeyBuilder`) can read it without
@@ -389,7 +410,7 @@ meta carries NO `display_field`, NO `display_name`, and NO pinned column
 facet is injected into served meta through `DomainService.relationFacet`.
 
 ```typescript
-@Entity("customer_links", "crm")
+@Entity("customer_links")
 @Relation({
   parent_field: "parent_customer_uuid", // @Ref column — edge source
   child_field:  "child_customer_uuid",  // @Ref column — edge target
@@ -424,7 +445,7 @@ child-side ("the parent IS a ‹label›"); a NULL inverse label means the type 
 self-inverse by construction (e.g. partner).
 
 ```typescript
-@Entity("customer_link_types", "crm")
+@Entity("customer_link_types")
 @Dict({ directional: { forward_label_field: "label_key", inverse_label_field: "inverse_label_key" } })
 export class CustomerLinkTypeEntity extends DictEntityBase {
   @Column({ length: 100, nullable: false }) label_key!: string;

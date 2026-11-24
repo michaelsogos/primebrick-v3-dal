@@ -10,10 +10,9 @@
  *   - the decl is produced ONLY here — a module that declares
  *     `entityName:"sequence"` itself is rejected at boot by
  *     makeServiceRoutes;
- *   - the schema/namespace is NEVER authored — it resolves to the
- *     module's `domain.primary` (or `DATABASE_SCHEMA` when the domain
- *     isn't configured yet — makeServiceRoutes runs at import time,
- *     before initDal);
+ *   - the schema/namespace is NEVER authored — it resolves from the
+ *     decl-factory `ctx.schemas` (`ServiceRoutesInput.schemas` — the
+ *     module's OWNED_SCHEMAS — or `--schema` in tooling);
  *   - permission strings derive as `<ns>.sequence.<op>.<scope>` — the
  *     decl type is readonly string[], no static enum is needed.
  */

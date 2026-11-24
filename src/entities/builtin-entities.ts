@@ -16,8 +16,8 @@ import { SequenceCounterEntity } from "./sequence-counter-entity.js";
  *     (sequence registry routes) at boot, like the health route.
  *
  * Schema resolution: the classes carry NO `@Entity` schema pin — the
- * effective schema is the consuming module's `domain.primary`
- * (`schemas[0]` from `DATABASE_SCHEMA`), or `--schema` in tooling.
+ * effective schema is the consuming module's `OWNED_SCHEMAS[0]` (primary),
+ * passed via `ctx.schemas` / `--schema` in tooling.
  */
 export const BUILTIN_ENTITIES = [
   SequenceEntity,
