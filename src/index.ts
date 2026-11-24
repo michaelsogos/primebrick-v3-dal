@@ -283,6 +283,7 @@ export {
   getDal,
   resetDal,
   makePartitionMaintenanceJob,
+  makeSequenceReviveJob,
   type DalConfig,
   type TimeoutOverrideOptions,
 } from "./dal/dal.js";

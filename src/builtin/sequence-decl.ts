@@ -359,6 +359,19 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     return { uuid: spec.uuid, period_key, partition_key, counter: saved.counter };
   }
 
+  /** `sequence-revive` RPC — operator-triggered revive of ONE row: runs
+   *  the same atomic primitive the JH job fires (`sequenceRevive` with
+   *  `only_uuid`), under the caller's actor (`revived_by` attribution).
+   *  A not-due row is a clean no-op report — the contract is "catch up
+   *  if expired", never a forced generation skip. Phase B always sweeps
+   *  the whole table. */
+  async revive(spec: { uuid: string }) {
+    const row = await this.get(spec.uuid, { throwIfNotFound: true });
+    return this.svc.transaction((tx) =>
+      tx.sequenceRevive({ actor: this.cfg.actor?.() ?? "system", only_uuid: row.uuid as string }),
+    );
+  }
+
   /** `sequence-analyze` RPC — read-only column-usage scan for the
    *  pattern (the operator's pre-check before `sequence-set` or a fresh
    *  bind). Delegates to the repository primitive inside a governed tx —
@@ -781,6 +794,44 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
       },
       body: vSetBody,
       handler: async (c: { body: Parameters<SequencesService["setCounter"]>[0] }) => svc.setCounter(c.body),
+    },
+    {
+      method: "POST",
+      path: "/api/v1/actions/sequence-revive",
+      permissions: [P("revive", "single")],
+      auth: "user",
+      mfa: { action: "sequence.revive", target_resource: "sequence" },
+      entity_op: {
+        entity: "sequence",
+        op: "sequence_revive",
+        cta: {
+          icon: "sequence-numeric-right",
+          confirm_key: `${ns}.actions.sequence_revive_confirm`,
+        },
+      },
+      openapi: {
+        summary: "Revive a sequence generation",
+        description:
+          "Operator-triggered revive of one sequence row: runs the same atomic " +
+          "primitive the job fires (successor clone + chained catch-up + " +
+          "grace-windowed switch). A not-due row is a clean no-op report — " +
+          "never a forced generation skip. `revived_by` carries the caller.",
+        tags: ["sequences"],
+        requestSchema: {
+          type: "object",
+          required: ["uuid"],
+          properties: { uuid: { type: "string" } },
+        },
+        responseSchema: {
+          type: "object",
+          properties: {
+            revived: { type: "array", items: { type: "object" } },
+            switched: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      body: (raw: unknown) => ({ uuid: vString(vObjectBody(raw).uuid, "uuid", 40) }),
+      handler: async (c: { body: { uuid: string } }) => svc.revive(c.body),
     },
     {
       method: "POST",

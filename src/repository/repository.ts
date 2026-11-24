@@ -38,6 +38,7 @@ import {
   derivePeriodKey,
   reviveExpireAt,
   reviveAddInterval,
+  derivePeriodLabel,
   renderSequenceValue,
   renderSequenceRange,
   type SequenceDecl,
@@ -943,6 +944,111 @@ export class Repository {
     const row = r.rows[0];
     if (!row) throw new ValidationError("sequenceSet: upsert returned no row — identity constraint unreachable");
     return { counter_uuid: row.uuid, period_key, partition_key, counter: row.counter };
+  }
+
+  /** The reviver — phase A creates the successor of every expired
+   *  reviving row (`expire_at <= now`, no successor yet — idempotent
+   *  re-fires), chaining until the CURRENT generation owns now (a late
+   *  job catches the chain up, one real period at a time — never
+   *  fabricates history); phase B physically retires rows whose
+   *  `switch_at` passed (soft-delete — history stays queryable).
+   *
+   *  Successor construction, atomic with its INSERT:
+   *    - `revive_slot`'s value advances via `derivePeriodLabel`
+   *      (parse-and-preserve: "2026"→"2027", "26"→"27", "2026-Q1"→"2026-Q2");
+   *    - `name` = base (trailing `#…` stripped) + `#` + the new slot
+   *      values — `MySeq` → `MySeq#27` → `MySeq#28`;
+   *    - `expire_at` = next calendar boundary after the predecessor's
+   *      (chained calendar — a late fire never compresses periods);
+   *    - `switch_at` = new expire + grace (grace absent → expire);
+   *    - `default_from` = the predecessor's expire boundary — the
+   *      `at`-axis seam series resolution serves;
+   *    - `binding_key`/`pattern`/`step`/`start`/`tz`/revive config carry
+   *      over — the series and the cadence outlive the row;
+   *    - `revived_from`/`revived_at`/`revived_by` = who/what/when.
+   *  `only_uuid` scopes the run to one row (the governed revive RPC);
+   *  phase B always sweeps the whole table — a switched row retires on
+   *  schedule regardless of what the caller asked about. */
+  async sequenceRevive(spec: {
+    actor: string;
+    now?: Date;
+    only_uuid?: string;
+  }): Promise<{
+    revived: Array<{ from_uuid: string; to_uuid: string; name: string }>;
+    switched: string[];
+  }> {
+    const q = this.db as Queryable;
+    const now = spec.now ?? new Date();
+    const table = getQualifiedTableName(SequenceEntity);
+    const revived: Array<{ from_uuid: string; to_uuid: string; name: string }> = [];
+    // Phase A — loop until no due row lacks a successor: each pass
+    // advances the chain one real period, so a long-slept job lands on
+    // the generation that owns `now` (skipped periods are real rows —
+    // documents dated into them resolve correctly).
+    for (;;) {
+      const due = await q.query<{
+        uuid: string; name: string; tz: string | null;
+        sez: string | null; sez2: string | null; sez3: string | null;
+        revive_every: string; revive_grace: string | null; revive_slot: string;
+        expire_at: Date; binding_key: string | null;
+      }>(
+        `SELECT s."uuid", s."name", s."tz", s."sez", s."sez2", s."sez3",
+                s."revive_every", s."revive_grace", s."revive_slot",
+                s."expire_at", s."binding_key"
+           FROM ${table} s
+          WHERE s."revive_every" IS NOT NULL AND s."deleted_at" IS NULL
+            AND s."expire_at" IS NOT NULL AND s."expire_at" <= $1
+            ${spec.only_uuid ? `AND s."uuid" = $2` : ""}
+            AND NOT EXISTS (
+              SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
+            )
+          ORDER BY s."expire_at"
+          LIMIT 1`,
+        spec.only_uuid ? [now, spec.only_uuid] : [now],
+      );
+      const prev = due.rows[0];
+      if (!prev) break;
+      const slot = prev.revive_slot as "sez" | "sez2" | "sez3";
+      const nextSlotValue = derivePeriodLabel(prev[slot] as string, prev.revive_every);
+      const nextSez = { sez: prev.sez, sez2: prev.sez2, sez3: prev.sez3, [slot]: nextSlotValue };
+      const tz = prev.tz ?? "UTC";
+      const expire_at = reviveExpireAt(prev.expire_at, prev.revive_every, tz);
+      const switch_at = prev.revive_grace ? reviveAddInterval(expire_at, prev.revive_grace, tz) : expire_at;
+      const baseName = prev.name.replace(/#[^#]*$/, "");
+      const label = [nextSez.sez, nextSez.sez2, nextSez.sez3].filter((v) => v !== null).join("-");
+      const name = `${baseName}#${label}`.slice(0, 100);
+      const ins = await q.query<{ uuid: string }>(
+        `INSERT INTO ${table}
+           ("uuid","name","pattern","step","start","tz","sez","sez2","sez3",
+            "binding_key","revive_every","revive_grace","revive_slot",
+            "expire_at","switch_at","default_from",
+            "revived_from","revived_at","revived_by",
+            "created_at","created_by","updated_at","updated_by","version")
+         SELECT uuidv7(), $1, "pattern", "step", "start", "tz", $2, $3, $4,
+                "binding_key", "revive_every", "revive_grace", "revive_slot",
+                $5, $6, $7, $8, $9, $10,
+                now(), $11, now(), $11, 1
+           FROM ${table} WHERE "uuid" = $12
+         RETURNING "uuid"`,
+        [
+          name, nextSez.sez, nextSez.sez2, nextSez.sez3,
+          expire_at, switch_at, prev.expire_at,
+          prev.uuid, now, spec.actor, spec.actor, prev.uuid,
+        ],
+      );
+      const to_uuid = ins.rows[0]?.uuid;
+      if (!to_uuid) throw new ValidationError(`sequenceRevive: predecessor ${prev.uuid} vanished mid-run`);
+      revived.push({ from_uuid: prev.uuid, to_uuid, name });
+    }
+    // Phase B — physical retirement: switch_at passed → soft-delete.
+    const switched = await q.query<{ uuid: string }>(
+      `UPDATE ${table} SET "deleted_at" = $1, "deleted_by" = $2
+        WHERE "switch_at" IS NOT NULL AND "switch_at" <= $1
+          AND "deleted_at" IS NULL
+        RETURNING "uuid"`,
+      [now, spec.actor],
+    );
+    return { revived, switched: switched.rows.map((r) => r.uuid) };
   }
 
   /** Read-only column-usage analysis for a sequence pattern — the

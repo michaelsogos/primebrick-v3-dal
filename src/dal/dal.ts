@@ -768,6 +768,53 @@ export class Dal {
   ): Promise<PartitionMaintenanceReport> {
     return this.withClient((client) => runPartitionMaintenance(client, entities), options);
   }
+
+  // ─── Sequence revive ─────────────────────────────────────────────────
+
+  /**
+   * Sequence reviver — one transaction: phase A creates the successor of
+   * every expired reviving row (chained until the current generation
+   * owns now), phase B soft-deletes rows whose `switch_at` passed.
+   * Called by the service's `jobs.due.system.<svc>.sequence-revive`
+   * consumer — identical for every service because the builtin
+   * `sequences` table lives in the module's own schema.
+   */
+  async sequenceRevive(spec: {
+    actor: string;
+    now?: Date;
+    only_uuid?: string;
+  }, options?: TimeoutOverrideOptions): Promise<{
+    revived: Array<{ from_uuid: string; to_uuid: string; name: string }>;
+    switched: string[];
+  }> {
+    return this.transaction((tx) => tx.sequenceRevive(spec), options);
+  }
+}
+
+/**
+ * Sequence-revive job factory — the ONE wiring a service passes to
+ * `createMicroservice({ sequenceRevive })`. The builtin `sequences`
+ * table mounts unconditionally with dal-pg, so `needed` is always true
+ * for a dal-backed service (the run short-circuits on an empty due
+ * set); `run` resolves the DAL singleton lazily at fire time, so the
+ * option can be built before `initDal()` runs.
+ */
+export function makeSequenceReviveJob(): {
+  needed: boolean;
+  run: () => Promise<unknown>;
+  i18nNs: () => string;
+} {
+  return {
+    needed: true,
+    run: () => getDal().sequenceRevive({ actor: "system" }),
+    // Same namespace rule as the maintenance twin — the callable's
+    // label keys ride the OWNING schema's translations table (`public`
+    // translates as `app`, every other schema owns itself).
+    i18nNs: () => {
+      const schema = getDal().config.schemas[0];
+      return schema === "public" ? "app" : schema;
+    },
+  };
 }
 
 /**
