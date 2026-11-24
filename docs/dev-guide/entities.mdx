@@ -85,15 +85,84 @@ Marks exactly one column as the primary key. Used by `update`/`delete`/
 @Key() id!: bigint;
 ```
 
-### `@Unique()`
+### `@Unique()` + `@UniqueIndex(spec)` — unique indexes
 
-Marks a column as having a unique index. Used by `clone()` to identify columns
-that must be excluded from the copy (a new value is generated for them). The
-canonical example is `uuid`:
+Two decorators with split responsibilities — one source of truth per concern:
+
+| Decorator | Level | Carries |
+|---|---|---|
+| `@UniqueIndex({ name, where?, aliveOnly?, nullsNotDistinct? })` | class (repeatable) | **all index options** — name, partial predicate, tombstone semantics, NULLS NOT DISTINCT |
+| `@Unique(name?, order?)` | column | **membership + position** only — never options |
+
+**Bare form** — `@Unique()` marks a single-column unique index auto-named
+`<table>_<column>_uq`. Used by `clone()` to identify columns that must be
+excluded from the copy (a new value is generated for them). The canonical
+example is `uuid`:
 
 ```typescript
 @Unique() uuid!: UUID;
 ```
+
+**Named form** — every named membership must reference a class-level
+`@UniqueIndex` declaration with the same name. A column may join N indexes:
+`@Unique` accumulates, it never overwrites.
+
+```typescript
+@Entity("service_registry")
+@UniqueIndex({ name: "service_registry_code_uq_scaler",   where: "is_behind_scaler = true" })
+@UniqueIndex({ name: "service_registry_code_base_url_uq", where: "is_behind_scaler = false" })
+export class ServiceRegistryEntity extends Deletable(Auditable(EntityBase)) {
+  @Unique("service_registry_code_uq_scaler", 0)
+  @Unique("service_registry_code_base_url_uq", 0)
+  @Column({ length: 100, nullable: false })
+  code!: string;
+
+  @Unique("service_registry_code_base_url_uq", 1)
+  @Column({ nullable: false })
+  base_url!: string;
+}
+```
+
+**`aliveOnly` — the Deletable default (D1=B).** On any entity with
+`deletableType === DELETED_AT`, unique indexes are emitted as
+`... WHERE deleted_at IS NULL` **by default**: a tombstoned row never blocks
+re-creation of the value — the systemic bug where soft-delete permanently
+burns a unique key. Explicit `aliveOnly: false` opts out when tombstones
+*must* conflict (e.g. identity composites where a soft-deleted twin means
+"restore, never duplicate" — `ai_cerebellum`, `ai_models`). The opt-out
+**requires the named class-level path** — a deliberate choice is always a
+named, reviewable choice. `aliveOnly: true` on a non-Deletable entity throws
+(no `deleted_at` column to predicate on).
+
+**`where` — partial predicates.** Raw SQL, emitted as
+`(<where>) AND (deleted_at IS NULL)` when aliveOnly also resolves — that
+order matches `pg_get_indexdef` normalization. Rules enforced at meta-build:
+
+- only the entity's own columns may appear (identifiers outside
+  `WHERE_KEYWORDS` + declared columns → `TypeError`);
+- `deleted_at` is forbidden inside `where` — use `aliveOnly` (tombstone
+  semantics live in the option, never smuggled into the predicate);
+- where-alone when aliveOnly suffices is unreachable by construction.
+
+**`nullsNotDistinct`** — PG15+ `NULLS NOT DISTINCT`: NULL members conflict
+instead of stacking (e.g. composite identities with a nullable member like
+`ai_models.dtype`).
+
+**Construction enforcement** — `getEntityPersistenceMeta` throws, so bad
+decls can never reach DDL:
+
+- `@Unique("name")` with no matching `@UniqueIndex({name})` → options cannot
+  be smuggled per-column;
+- `@UniqueIndex({name})` with zero member columns → dead declaration;
+- any of the where/aliveOnly violations above.
+
+**Emission + drift.** Unique groups surface as `SchemaIndexMeta` entries and
+are emitted as `CREATE UNIQUE INDEX` (never table constraints — `WHERE` and
+`NULLS NOT DISTINCT` are not expressible in `UNIQUE(...)` constraint syntax).
+Compare treats constraint-backed live indexes correctly: a same-named live
+constraint is dropped via `ALTER TABLE ... DROP CONSTRAINT`, and predicate
+comparison is whitespace/parens/case-insensitive (`normWhere`), so a live
+`((a) AND (b))` norm-matches an emitted `(a) AND (b)`.
 
 ### `@IsNotColumn()`
 
@@ -312,7 +381,7 @@ export class AuditLogEntity {
 Declares a secondary (non-unique) index. Bare `@Index()` → single-column
 btree auto-named `<table>_<column>_idx`. Columns sharing the same `name`
 form a composite index ordered by `order`. Unique indexes stay on
-`@Unique()`.
+`@Unique()`/`@UniqueIndex`.
 
 ```typescript
 export type IndexOptions = {

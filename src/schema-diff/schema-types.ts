@@ -51,6 +51,10 @@ export type SchemaIndexMeta = {
    *  database introspection; used as the normalized-comparison fallback
    *  for expression indexes. */
   definition?: string;
+  /** Database side only: the index backs a declared UNIQUE/PK constraint
+   *  (`pg_constraint.conindid`) — a drop must emit `ALTER TABLE … DROP
+   *  CONSTRAINT`, plain `DROP INDEX` errors on constraint-backing indexes. */
+  isConstraint?: boolean;
 };
 
 export type SchemaForeignKeyMeta = {

@@ -72,6 +72,9 @@ export type SchemaMetaDiffV2 = {
         databaseUsing?: string | null;
         entityColumns: string[];
         databaseColumns: string[];
+        /** The live index backs a UNIQUE/PK constraint — drop via
+         *  `ALTER TABLE … DROP CONSTRAINT`, not `DROP INDEX`. */
+        databaseIsConstraint?: boolean;
       }[];
       /** FK constraint names declared only on the entity side */
       onlyInEntityForeignKeys: string[];
@@ -226,13 +229,14 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     for (const [nm, ei] of eIdx) {
       const di = dIdx.get(nm);
       if (!di) continue;
-      if (ei.using !== di.using || !sameIndexKeys(ei, di) || (ei.where ?? "") !== (di.where ?? "")) {
+      if (ei.using !== di.using || !sameIndexKeys(ei, di) || normWhere(ei.where) !== normWhere(di.where)) {
         indexMismatches.push({
           name: nm,
           entityUsing: ei.using ?? null,
           databaseUsing: di.using ?? null,
           entityColumns: ei.columns,
           databaseColumns: di.columns,
+          ...(di.isConstraint ? { databaseIsConstraint: true } : {}),
         });
       }
     }

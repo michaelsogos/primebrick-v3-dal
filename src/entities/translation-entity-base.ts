@@ -5,6 +5,7 @@ import {
   Column,
   Key,
   Unique,
+  UniqueIndex,
   AuditTrail,
 } from "../meta/entity-decorators.js";
 import { Auditable, Deletable, EntityBase } from "./entity-base.js";
@@ -43,6 +44,7 @@ import { ValidationError } from "../errors/errors.js";
  */
 @Entity("translations")
 @AuditTrail()
+@UniqueIndex({ name: "translations_key_language_uidx" })
 export abstract class TranslationEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()

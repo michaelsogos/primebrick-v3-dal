@@ -144,10 +144,11 @@ export async function buildDatabaseSnapshot(
     // secondary indexes (non-PK) — matched by constraint/index name downstream
     const { rows: idxRows } = await db.query<{
       name: string; using: string; is_unique: boolean; def: string;
-      key_defs: string[] | null;
+      key_defs: string[] | null; is_constraint: boolean;
     }>(
       `SELECT c.relname AS name, am.amname AS using, i.indisunique AS is_unique,
               pg_get_indexdef(i.indexrelid) AS def,
+              (con.oid IS NOT NULL) AS is_constraint,
               (SELECT array_agg(pg_get_indexdef(i.indexrelid, k.n, false) ORDER BY k.n)
                  FROM generate_series(1, i.indnkeyatts) AS k(n)) AS key_defs
        FROM pg_index i
@@ -155,6 +156,7 @@ export async function buildDatabaseSnapshot(
        JOIN pg_am am    ON am.oid = c.relam
        JOIN pg_class t  ON t.oid  = i.indrelid
        JOIN pg_namespace n ON n.oid = t.relnamespace
+       LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
        WHERE n.nspname = $1 AND t.relname = $2 AND NOT i.indisprimary`,
       [schema, name]
     );
@@ -174,6 +176,10 @@ export async function buildDatabaseSnapshot(
         ...(exprs.length ? { expressions: exprs } : {}),
         where: parseIndexPredicate(r.def),
         definition: r.def,
+        // Constraint-backing index (declared as UNIQUE/PK constraint, not
+        // CREATE INDEX) — drops must go through `ALTER TABLE … DROP
+        // CONSTRAINT`, `DROP INDEX` would error on it.
+        ...(r.is_constraint ? { isConstraint: true } : {}),
       };
     });
 

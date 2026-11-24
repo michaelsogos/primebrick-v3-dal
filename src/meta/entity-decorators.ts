@@ -103,12 +103,11 @@ type ColumnRegistration = {
   /** `@Retention(duration)` — this column is the expiry axis */
   isRetention?: boolean;
   retentionOpts?: { duration: string };
-  /** Composite unique index name — columns sharing the same name form a composite unique index. */
-  uniqueIndexName?: string;
-  /** Order priority within a composite unique index (0-based). Lower = first in index. */
-  uniqueIndexOrder?: number;
-  /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
-  uniqueNullsNotDistinct?: boolean;
+  /** Named unique-index memberships — `@Unique(name, order)` accumulates:
+   *  one column may join N indexes (e.g. a solo-unique AND a composite).
+   *  The index's options live ONLY on the matching class-level
+   *  `@UniqueIndex({name, …})` declaration. */
+  uniques?: { name: string; order: number }[];
   nullable?: boolean;
   /** `nullable` was explicitly declared via `@Column({ nullable })`.
    *  Decorator-imposed values (@Key/@Unique/@Partition/@DeletableField/
@@ -263,6 +262,11 @@ type ClassEntityMeta = {
    *  `false` silences the entity entirely; `{except:[...]}` silences the
    *  listed write actions. Absent = emitting (the default by design). */
   events?: import("../entity/events.js").EntityEventsConfig;
+  /** `@UniqueIndex({name, …})` class-level unique-index declarations —
+   *  the single source for index options; `@Unique(name, order)` column
+   *  memberships reference these names. Merged parent-first via
+   *  collectMetaChain (subclass re-declares a name to override). */
+  uniqueIndexes?: Map<string, UniqueIndexSpec>;
 };
 
 /** Options for `@Partition()` — the RANGE partition key declaration.
@@ -290,6 +294,17 @@ export type PartitionChildOfOptions = {
   /** The parent's referenced column — default "uuid". */
   parentRef?: string;
 };
+
+/** SQL keywords/functions that may appear in a partial-index `where`
+ *  predicate without being column references — used by the construction
+ *  check that every remaining identifier is a declared entity column. */
+const WHERE_KEYWORDS = new Set([
+  "and", "or", "not", "is", "null", "true", "false", "in", "exists",
+  "between", "like", "ilike", "similar", "to", "case", "when", "then",
+  "else", "end", "distinct", "all", "any", "some", "array", "now",
+  "current_setting", "current_date", "current_timestamp", "coalesce",
+  "nullif", "cast", "count", "lower", "upper", "length",
+]);
 
 const META = new WeakMap<Function, ClassEntityMeta>();
 
@@ -380,6 +395,27 @@ function collectCalculatedRegistrations(
     for (const [propKey, reg] of m.calculated) merged.set(propKey, reg);
   }
   return merged;
+}
+
+/** Unique-index member groups — named `@Unique(name)` memberships grouped by
+ *  index name, plus a `__single__:<col>` group per bare `@Unique()` column.
+ *  Shared by the partition-key rule and the @UniqueIndex validation. */
+function collectUniqueMemberGroups(
+  columns: EntityPersistenceMeta["columns"],
+): Map<string, Set<string>> {
+  const groups = new Map<string, Set<string>>();
+  for (const c of Object.values(columns)) {
+    if (!c.isUnique) continue;
+    if (c.uniques?.length) {
+      for (const u of c.uniques) {
+        (groups.get(u.name) ?? groups.set(u.name, new Set()).get(u.name)!).add(c.sqlName);
+      }
+    } else {
+      const g = `__single__:${c.sqlName}`;
+      (groups.get(g) ?? groups.set(g, new Set()).get(g)!).add(c.sqlName);
+    }
+  }
+  return groups;
 }
 
 /** Registers every implicit column + `design:type` / nullability when not already set by decorators. */
@@ -571,29 +607,41 @@ export function IsNotColumn(): PropertyDecorator {
   };
 }
 
-/** Unique constraint options for composite unique indexes. */
-export type UniqueOptions = {
-  /**
-   * Composite unique index name. Columns sharing the same `indexName` form a
-   * composite unique index, ordered by `orderPriority` (ascending).
-   * If omitted, the column gets a single-column unique index (legacy behavior).
-   */
-  indexName?: string;
-  /**
-   * Order priority within a composite unique index (0-based).
-   * Lower values come first in the index. Only meaningful when `indexName` is set.
-   */
-  orderPriority?: number;
+/** Class-level unique-index declaration — the ONLY place index options
+ *  live. Referenced by `@Unique(name, order)` column memberships.
+ *
+ *  Enforcement (construction-time, in `getEntityPersistenceMeta`):
+ *  - a `@Unique(name, …)` membership with no matching `@UniqueIndex({name})`
+ *    throws — index options cannot be smuggled per-column;
+ *  - a `@UniqueIndex` with zero member columns throws;
+ *  - `where` may only reference the entity's own columns, and must NOT
+ *    contain a `deleted_at` predicate (declare `aliveOnly` instead);
+ *  - `aliveOnly` is only meaningful on Deletable entities. */
+export type UniqueIndexSpec = {
+  /** Index name — deterministic, matches `pg_indexes.indexname`. */
+  name: string;
+  /** Partial-index predicate (raw SQL, entity columns only, no `deleted_at`
+   *  terms — those come from `aliveOnly`). Emitted as `(where) AND (deleted_at
+   *  IS NULL)` when aliveOnly also resolves. */
+  where?: string;
+  /** Append `AND deleted_at IS NULL` — DEFAULT true on Deletable entities
+   *  (a full unique would let a tombstone block re-creation of the value
+   *  forever). Explicit `false` opts out; explicit `true` on a non-Deletable
+   *  entity is a construction error (no `deleted_at` column to predicate). */
+  aliveOnly?: boolean;
   /** PG15+ `NULLS NOT DISTINCT` — NULL members of the unique group are
-   *  treated as equal (they conflict instead of stacking). Declare on any
-   *  member of the group; convention is the order-0 member. */
+   *  treated as equal (they conflict instead of stacking). */
   nullsNotDistinct?: boolean;
 };
 
-/** Unique constraint (PostgreSQL: unique index in generated patches). */
+/** Unique constraint (PostgreSQL: unique index in generated patches).
+ *
+ *  Bare `@Unique()` → auto-named single-column index `<table>_<column>_uq`.
+ *  `@Unique(name, order)` → membership in the class-level `@UniqueIndex({name})`
+ *  declaration (accumulates — one column may join N indexes). */
 export function Unique(): PropertyDecorator;
-export function Unique(indexName: string, orderPriority: number, opts?: UniqueOptions): PropertyDecorator;
-export function Unique(indexName?: string, orderPriority?: number, opts?: UniqueOptions): PropertyDecorator {
+export function Unique(indexName: string, orderPriority: number): PropertyDecorator;
+export function Unique(indexName?: string, orderPriority?: number): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
@@ -602,14 +650,23 @@ export function Unique(indexName?: string, orderPriority?: number, opts?: Unique
     // @Column({ nullable: true }) wins (e.g. composite uniques where a
     // member is genuinely nullable, like ai_models.dtype).
     if (col.nullable === undefined) col.nullable = false;
-    const effName = indexName ?? opts?.indexName;
-    const effOrder = orderPriority ?? opts?.orderPriority;
-    if (effName !== undefined) {
-      col.uniqueIndexName = effName;
-      col.uniqueIndexOrder = effOrder ?? 0;
+    if (indexName !== undefined) {
+      col.uniques ??= [];
+      const existing = col.uniques.find((u) => u.name === indexName);
+      if (existing) existing.order = orderPriority ?? 0;
+      else col.uniques.push({ name: indexName, order: orderPriority ?? 0 });
     }
-    if (opts?.nullsNotDistinct !== undefined) col.uniqueNullsNotDistinct = opts.nullsNotDistinct;
+  };
+}
 
+/** Class-level unique-index declaration — see {@link UniqueIndexSpec}.
+ *  Repeatable: one decorator per index. */
+export function UniqueIndex(spec: UniqueIndexSpec): (ctor: Function) => void {
+  return function <T extends Function>(ctor: T): T {
+    if (!spec?.name) throw new TypeError("@UniqueIndex requires a name");
+    const m = ensureMeta(ctor);
+    (m.uniqueIndexes ??= new Map()).set(spec.name, { ...spec });
+    return ctor;
   };
 }
 
@@ -1123,12 +1180,10 @@ export type EntityPersistenceMeta = {
       sqlName: string;
       isKey: boolean;
       isUnique: boolean;
-      /** Composite unique index name (if part of a composite unique). */
-      uniqueIndexName?: string;
-      /** Order priority within a composite unique index (0-based). */
-      uniqueIndexOrder?: number;
-      /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
-      uniqueNullsNotDistinct?: boolean;
+      /** Named unique-index memberships (`@Unique(name, order)` accumulated
+       *  — the column may join N indexes; options resolve via the class-level
+       *  `@UniqueIndex({name})` decl in `uniqueIndexes`). */
+      uniques?: { name: string; order: number }[];
       nullable?: boolean;
       /** `nullable` was explicitly declared via `@Column({ nullable })` —
        *  decorator-imposed values and the implicit `?? false` fallback are
@@ -1193,6 +1248,10 @@ export type EntityPersistenceMeta = {
     refColumn: string;
     parentRefColumn: string;
   };
+  /** Resolved `@UniqueIndex` class-level declarations — keyed by name; the
+   *  single source for unique-index options (`where`/`aliveOnly`/
+   *  `nullsNotDistinct`). Column `uniques[]` memberships reference these. */
+  uniqueIndexes?: UniqueIndexSpec[];
   /** Resolved index declarations — from `@Index()` columns, grouped + ordered. */
   indexes?: {
     name: string;
@@ -1292,7 +1351,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (
       reg.defaultSql === undefined &&
       inferredPgType === "uuid" &&
-      (reg.isKey || (reg.isUnique && reg.uniqueIndexName === undefined))
+      (reg.isKey || (reg.isUnique && reg.uniques === undefined))
     ) {
       // uuid key/unique columns always default to uuidv7() — the
       // canonical generated identity (PG18 native, time-ordered).
@@ -1316,9 +1375,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       inferredPgType,
       usePostgresIdentity,
     };
-    if (reg.uniqueIndexName !== undefined) entry.uniqueIndexName = reg.uniqueIndexName;
-    if (reg.uniqueIndexOrder !== undefined) entry.uniqueIndexOrder = reg.uniqueIndexOrder;
-    if (reg.uniqueNullsNotDistinct !== undefined) entry.uniqueNullsNotDistinct = reg.uniqueNullsNotDistinct;
+    if (reg.uniques !== undefined) entry.uniques = [...reg.uniques];
     if (reg.pgType !== undefined) entry.pgType = reg.pgType;
     // NOT NULL by default: `design:type` inference was removed because it is
     // transpiler-dependent (esbuild/tsx never emits it; bun collapses unions).
@@ -1421,12 +1478,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     }
     // PostgreSQL: every unique constraint on a partitioned table must
     // contain the partition key. Single-column uniques are a group of one.
-    const groups = new Map<string, Set<string>>();
-    for (const c of Object.values(columns)) {
-      if (!c.isUnique) continue;
-      const g = c.uniqueIndexName ?? `__single__:${c.sqlName}`;
-      (groups.get(g) ?? groups.set(g, new Set()).get(g)!).add(c.sqlName);
-    }
+    const groups = collectUniqueMemberGroups(columns);
     for (const [group, cols] of groups) {
       if (!cols.has(pc.sqlName)) {
         throw new TypeError(
@@ -1607,6 +1659,63 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     });
   }
 
+  // ── @UniqueIndex merge + construction enforcement ──────────────────────
+  // Options live ONLY on the class decl; column `@Unique(name)` entries are
+  // pure membership+order. Both directions are validated here so an
+  // undeclared/memberless index can never reach DDL emission.
+  const uniqueIndexDecls = new Map<string, UniqueIndexSpec>();
+  for (const m of collectMetaChain(ctor)) {
+    if (m.uniqueIndexes) for (const [n, s] of m.uniqueIndexes) uniqueIndexDecls.set(n, s);
+  }
+  const memberGroups = collectUniqueMemberGroups(columns);
+  const deletable = Object.values(columns).some(
+    (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+  );
+  const columnNames = new Set(Object.keys(columns));
+  for (const [name, spec] of uniqueIndexDecls) {
+    const members = memberGroups.get(name);
+    if (!members || members.size === 0) {
+      throw new TypeError(
+        `${entityClassName}: @UniqueIndex("${name}") declares no member columns — ` +
+          `add @Unique("${name}", <order>) on the participating column(s)`,
+      );
+    }
+    if (spec.where !== undefined) {
+      if (/\bdeleted_at\b/i.test(spec.where)) {
+        throw new TypeError(
+          `${entityClassName}: @UniqueIndex("${name}").where must not reference "deleted_at" — ` +
+            `declare aliveOnly instead (tombstone semantics live in the option, not the predicate)`,
+        );
+      }
+      const unknownCols = [...spec.where.matchAll(/\b[a-z_][a-z0-9_]*\b/gi)]
+        .map((m2) => m2[0].toLowerCase())
+        .filter((id) => !WHERE_KEYWORDS.has(id) && !columnNames.has(id));
+      if (unknownCols.length) {
+        throw new TypeError(
+          `${entityClassName}: @UniqueIndex("${name}").where references column(s) not on the entity: ` +
+            `${[...new Set(unknownCols)].join(", ")} — partial-index predicates may only use the table's own columns`,
+        );
+      }
+    }
+    if (spec.aliveOnly === true && !deletable) {
+      throw new TypeError(
+        `${entityClassName}: @UniqueIndex("${name}").aliveOnly is only meaningful on Deletable entities ` +
+          `(no "deleted_at" column to predicate on)`,
+      );
+    }
+  }
+  for (const c of Object.values(columns)) {
+    for (const u of c.uniques ?? []) {
+      if (!uniqueIndexDecls.has(u.name)) {
+        throw new TypeError(
+          `${entityClassName}.${c.propertyKey}: @Unique("${u.name}") has no matching class-level ` +
+            `@UniqueIndex({name:"${u.name}", …}) declaration — index options (where/aliveOnly/nullsNotDistinct) ` +
+            `are declared once at class level, never per-column`,
+        );
+      }
+    }
+  }
+
   return {
     entityClassName,
     tableSchema: effectiveSchema,
@@ -1619,6 +1728,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     auditRetention: inherited((m) => m.auditRetention),
     events: inherited((m) => m.events),
     partitionChildOf,
+    uniqueIndexes: uniqueIndexDecls.size ? [...uniqueIndexDecls.values()] : undefined,
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,
     columns,

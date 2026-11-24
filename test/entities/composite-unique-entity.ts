@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import { Entity, Column, Key, Unique, type UUID } from "../../src/index.js";
+import { Entity, Column, Key, Unique, UniqueIndex, type UUID } from "../../src/index.js";
 
 /**
  * Composite-unique test entity — @Unique group (grp_a, grp_b) to verify that
@@ -9,6 +9,7 @@ import { Entity, Column, Key, Unique, type UUID } from "../../src/index.js";
  * Non-auditable: no version guard required on writes.
  */
 @Entity("dal_test_composite")
+@UniqueIndex({ name: "dal_test_composite_ab_uidx" })
 export class CompositeUniqueEntity {
   @Key()
   id!: bigint;

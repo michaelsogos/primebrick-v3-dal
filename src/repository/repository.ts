@@ -1984,26 +1984,29 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
    * Unique groups of the entity, derived purely from metadata:
    * - `@Unique()` single-column → group keyed by the column's sqlName.
    * - `@Unique(name, order)` → all columns sharing `name`, ordered by `order`.
+   *   A column may join N named groups (e.g. solo-unique AND composite).
    */
   private uniqueConflictGroups(
     meta: EntityPersistenceMeta,
   ): { name: string; cols: EntityPersistenceMeta["columns"][string][] }[] {
     type Col = EntityPersistenceMeta["columns"][string];
     const groups: { name: string; cols: Col[] }[] = [];
-    const named = new Map<string, Col[]>();
+    const named = new Map<string, { col: Col; order: number }[]>();
     for (const c of Object.values(meta.columns)) {
       if (!c.isUnique) continue;
-      if (c.uniqueIndexName) {
-        const arr = named.get(c.uniqueIndexName) ?? [];
-        arr.push(c);
-        named.set(c.uniqueIndexName, arr);
+      if (c.uniques?.length) {
+        for (const u of c.uniques) {
+          const arr = named.get(u.name) ?? [];
+          arr.push({ col: c, order: u.order });
+          named.set(u.name, arr);
+        }
       } else {
         groups.push({ name: c.sqlName, cols: [c] });
       }
     }
     for (const [name, cols] of named) {
-      cols.sort((a, b) => (a.uniqueIndexOrder ?? 0) - (b.uniqueIndexOrder ?? 0));
-      groups.push({ name, cols });
+      cols.sort((a, b) => a.order - b.order);
+      groups.push({ name, cols: cols.map((x) => x.col) });
     }
     return groups;
   }
@@ -2038,8 +2041,18 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     const pk = findPkColumn(meta);
 
     const groups = this.uniqueConflictGroups(meta);
-    const groupOf = new Map<string, { name: string; cols: typeof meta.columns[string][] }>();
-    for (const g of groups) for (const c of g.cols) groupOf.set(c.propertyKey, g);
+    // A column may belong to N unique groups (e.g. solo-unique AND composite).
+    // matchBy expands to the UNION of every group containing the prop —
+    // fail-closed identity (the prop alone does not uniquely identify a row
+    // when its only uniques are scoped, e.g. partial-index predicates).
+    const groupColsOf = new Map<string, Map<string, EntityPersistenceMeta["columns"][string]>>();
+    for (const g of groups) {
+      for (const c of g.cols) {
+        const m = groupColsOf.get(c.propertyKey) ?? new Map();
+        for (const gc of g.cols) m.set(gc.sqlName, gc);
+        groupColsOf.set(c.propertyKey, m);
+      }
+    }
 
     const requested = matchBy == null ? [] : typeof matchBy === "string" ? [matchBy] : [...matchBy];
     const required = new Set<string>();
@@ -2050,14 +2063,14 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
           `matchBy: '${prop}' is not a column of ${entityName}`,
         );
       }
-      const g = groupOf.get(prop);
-      if (prop !== pk?.propertyKey && !g) {
+      const gCols = groupColsOf.get(prop);
+      if (prop !== pk?.propertyKey && !gCols) {
         throw new MatchSelectorError(
           `matchBy: '${prop}' on ${entityName} is not a @Unique/@Key column — ` +
             `writes must uniquely identify the target row(s)`,
         );
       }
-      if (g) for (const c of g.cols) required.add(c.propertyKey);
+      if (gCols) for (const c of gCols.values()) required.add(c.propertyKey);
       else required.add(prop);
     }
     return required;

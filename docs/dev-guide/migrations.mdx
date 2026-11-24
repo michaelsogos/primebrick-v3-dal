@@ -90,7 +90,16 @@ transitions the next run picks up:
 - **tables / columns** — presence, rename heuristics;
 - **type** (`typeMismatches`) and **nullability** (`nullabilityMismatches`);
 - **indexes** (`onlyInEntityIndexes`, `onlyInDatabaseIndexes`,
-  `indexMismatches` — columns, uniqueness, method, predicate);
+  `indexMismatches` — columns, uniqueness, method, predicate). Predicate
+  comparison is `normWhere`-normalized (whitespace, parens and case
+  stripped), so a live `((a) AND (b))` equals an emitted `(a) AND (b)`.
+  An entity index is satisfied by ANY live index with identical columns,
+  uniqueness, method and normalized predicate — a different catalog name
+  never triggers a duplicate CREATE. Live indexes the decls don't know
+  are reported as `onlyInDatabaseIndexes` WARNs and are **never dropped**
+  automatically. Same-named live indexes backed by a `UNIQUE` constraint
+  (`pg_constraint`) are dropped via `ALTER TABLE … DROP CONSTRAINT`, not
+  `DROP INDEX`;
 - **foreign keys** (`onlyInEntityForeignKeys`, `onlyInDatabaseForeignKeys`,
   `foreignKeyMismatches`);
 - **column DEFAULTs** (`defaultMismatches`) — `pg_attrdef` introspection

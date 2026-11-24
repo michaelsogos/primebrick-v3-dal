@@ -109,22 +109,6 @@ function createTableSql(t: SchemaTableMeta): string[] {
   const pkCols = cols.filter((c) => c.isPrimaryKey).map((c) => c.name);
   if (t.partition && !pkCols.includes(t.partition.column)) pkCols.push(t.partition.column);
   if (pkCols.length) parts.push(`  PRIMARY KEY (${pkCols.map(quoteIdent).join(", ")})`);
-  // composite uniques → table-level UNIQUE groups (single-col uniques get indexes instead)
-  const groups = new Map<string, { col: string; order: number }[]>();
-  for (const c of cols) {
-    if (!c.isUnique || c.isPrimaryKey) continue;
-    const name = `${t.name}_uq`; // group key for constraint emission — named via uniqueIndexName if present
-    const key = (c as { uniqueIndexName?: string }).uniqueIndexName ?? `${name}_${c.name}`;
-    const g = groups.get(key) ?? [];
-    g.push({ col: c.name, order: (c as { uniqueIndexOrder?: number }).uniqueIndexOrder ?? 0 });
-    groups.set(key, g);
-  }
-  for (const [gname, gcols] of groups) {
-    if (gcols.length > 1) {
-      const ordered = gcols.sort((a, b) => a.order - b.order).map((c) => quoteIdent(c.col));
-      parts.push(`  CONSTRAINT ${quoteIdent(slugifyIdent(gname))} UNIQUE (${ordered.join(", ")})`);
-    }
-  }
   // FKs inline on new tables
   for (const f of t.foreignKeys ?? []) {
     parts.push(
@@ -178,24 +162,10 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     }
 
     // indexes (new table → plain CREATE INDEX, always fast on empty tables).
-    // Composite @Unique groups land here (isUnique + multi-column); single-col
-    // uniques are emitted per-column below. Expression-bearing indexes
-    // (@Relation pair-unique) always take indexDdl — their key list lives in
-    // `expressions`, so the single-column shortcut would silently drop them.
+    // Every unique declaration (bare @Unique singles, @UniqueIndex groups)
+    // lands here via indexDdl — where/nullsNotDistinct ride the index meta.
     for (const ix of t.indexes ?? []) {
-      if (ix.isUnique && ix.columns.length <= 1 && !(ix.expressions?.length)) continue;
       safe.push(indexDdl(ix, t, false));
-    }
-    // single-column uniques not covered by composite UNIQUE constraints
-    const grouped = new Set<string>();
-    for (const ix of t.indexes ?? []) {
-      if (ix.isUnique && ix.columns.length > 1) for (const c of ix.columns) grouped.add(c);
-    }
-    for (const c of cols_sorted(t)) {
-      if (c.isUnique && !c.isPrimaryKey && !grouped.has(c.name)) {
-        const ix = slugifyIdent(`${t.name}_${c.name}_uq`);
-        safe.push(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdent(ix)} ON ${fq} (${quoteIdent(c.name)});`);
-      }
     }
     safe.push("");
 
@@ -308,9 +278,14 @@ export function buildSqlPatchFromMetaDiff(entitySnap: SchemaSnapshot, diff: Sche
     for (const m of tab.indexMismatches) {
       const ix = (tmeta.indexes ?? []).find((i) => i.name === m.name);
       if (!ix) continue;
+      // Constraint-backing indexes can't be dropped with DROP INDEX —
+      // PG requires removing the owning constraint.
+      const drop = m.databaseIsConstraint
+        ? `ALTER TABLE ${fq} DROP CONSTRAINT IF EXISTS ${quoteIdent(m.name)};`
+        : `DROP INDEX IF EXISTS ${quoteIdent(tmeta.schema)}.${quoteIdent(m.name)};`;
       review.push(
         `-- REVIEW index "${m.name}" redefined (entity using=${m.entityUsing} cols=${m.entityColumns.join(",")} vs db using=${m.databaseUsing} cols=${m.databaseColumns.join(",")})`,
-        `DROP INDEX IF EXISTS ${quoteIdent(tmeta.schema)}.${quoteIdent(m.name)};`,
+        drop,
         indexDdl(ix, tmeta, false)
       );
     }

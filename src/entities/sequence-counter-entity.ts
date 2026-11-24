@@ -5,6 +5,7 @@ import {
   Entity,
   Key,
   Unique,
+  UniqueIndex,
 } from "../meta/entity-decorators.js";
 import { Auditable, EntityBase } from "./entity-base.js";
 import { ValidationError } from "../errors/errors.js";
@@ -33,6 +34,7 @@ import { ValidationError } from "../errors/errors.js";
  * SEALED: same `new.target` construction guard as SequenceEntity.
  */
 @Entity("sequence_counters", { events: false })
+@UniqueIndex({ name: "sequence_counters_identity" })
 export class SequenceCounterEntity extends Auditable(EntityBase) {
   constructor() {
     if (new.target !== SequenceCounterEntity) {
