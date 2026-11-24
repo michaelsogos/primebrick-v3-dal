@@ -390,18 +390,40 @@ export type IndexOptions = {
   using?: IndexMethod; // access method — default btree
   opclass?: string;    // e.g. "vector_cosine_ops" (hnsw), "gin_trgm_ops" (gin)
   where?: string;      // partial-index predicate, e.g. "deleted_at IS NULL"
+  sort?: "asc" | "desc";          // per-member direction — default "asc"
+  nulls?: "first" | "last";       // per-member NULL placement — default PG
+                                  //   (asc→last, desc→first)
+  with?: Record<string, unknown>; // index-level storage params
+                                  //   (e.g. { m: 16, ef_construction: 64 })
 };
 ```
 
 ```typescript
 @Column({ nullable: false })
-@Index({ using: "hnsw", opclass: "vector_cosine_ops" })
+@Index({ using: "hnsw", opclass: "vector_cosine_ops",
+         with: { m: 16, ef_construction: 64 } })
 embedding!: number[];
 
 @Column()
 @Index({ where: "deleted_at IS NULL" })
 email!: string;
 ```
+
+**Class-level spec form** — for indexes on mixin-owned columns (`created_at`,
+`deleted_at`) that have no property to decorate in the concrete class:
+
+```typescript
+@Index({ name: "job_runs_created_idx", columns: [
+  { column: "created_at", sort: "desc" },
+] })
+export class JobRunEntity extends Deletable(Auditable(EntityBase)) { ... }
+```
+
+`columns` is a positional member list — `{ column | expression, sort?, nulls?,
+opclass? }`; group-level `using`/`where`/`with` still come from `IndexOptions`.
+Emitted DDL renders per-member `col [opclass] [ASC|DESC] [NULLS FIRST|LAST]`
+— the canonical form — so a live `DESC NULLS LAST` index compares equal to
+its declaration instead of drifting.
 
 ### `@ForeignKey(target, opts?)` — REFERENCES constraint
 

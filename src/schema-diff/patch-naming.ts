@@ -40,6 +40,26 @@ export function patchSlugFromDiff(diff: SchemaMetaDiffV2): string {
   if (drift.length > 0) {
     return slugifyPatchSegment(`drift_${drift.map(([k]) => k).join("__")}`);
   }
+  const defs = Object.entries(diff.tables).filter(
+    ([, t]) => (t.defaultMismatches?.length ?? 0) > 0
+  );
+  if (defs.length > 0) {
+    return slugifyPatchSegment(`defaults_${defs.map(([k]) => k).join("__")}`);
+  }
+  const idx = Object.entries(diff.tables).filter(
+    ([, t]) =>
+      (t.onlyInEntityIndexes?.length ?? 0) > 0 || (t.indexMismatches?.length ?? 0) > 0
+  );
+  if (idx.length > 0) {
+    return slugifyPatchSegment(`indexes_${idx.map(([k]) => k).join("__")}`);
+  }
+  const fks = Object.entries(diff.tables).filter(
+    ([, t]) =>
+      (t.onlyInEntityForeignKeys?.length ?? 0) > 0 || (t.foreignKeyMismatches?.length ?? 0) > 0
+  );
+  if (fks.length > 0) {
+    return slugifyPatchSegment(`fks_${fks.map(([k]) => k).join("__")}`);
+  }
   return "noop";
 }
 

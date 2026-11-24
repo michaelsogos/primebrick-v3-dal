@@ -3,10 +3,12 @@ import { describe, it, expect } from "vitest";
 import {
   Entity,
   Column,
+  Index,
   Key,
   Unique,
   UniqueIndex,
   EntityBase,
+  Auditable,
   Deletable,
   getEntityPersistenceMeta,
   buildEntitySnapshot,
@@ -103,6 +105,72 @@ class DeletedAtWhereEntity extends Deletable(EntityBase) {
 class AliveNonDeletableEntity {
   @Key() id!: bigint;
   @Unique("uq_alive_idx", 0) code!: string;
+}
+
+// ── @Index sort/nulls/with fixtures ─────────────────────────────────────
+
+/** Composite "filter + timestamp DESC" — the auth_events/job_runs shape. */
+@Entity("ix_desc")
+class DescCompositeEntity {
+  @Key() id!: bigint;
+  @Index({ name: "ix_desc_kind_at", order: 0 })
+  kind!: string;
+  @Index({ name: "ix_desc_kind_at", order: 1, sort: "desc" })
+  event_at!: Date;
+}
+
+/** crm.sequences shape — desc + explicit NULLS LAST + partial predicate. */
+@Entity("ix_desc_nulls")
+class DescNullsLastEntity extends Deletable(EntityBase) {
+  @Key() id!: bigint;
+  @Index({ name: "ix_desc_nulls", order: 0, where: "deleted_at IS NULL" })
+  binding_key!: string;
+  @Index({ name: "ix_desc_nulls", order: 1, sort: "desc", nulls: "last", where: "deleted_at IS NULL" })
+  default_from?: Date;
+}
+
+/** hnsw vector index — using/opclass/with storage params. */
+@Entity("ix_vector")
+class VectorIdxEntity {
+  @Key() id!: bigint;
+  @Index({ using: "hnsw", opclass: "vector_cosine_ops", with: { m: "16", ef_construction: "64" } })
+  embedding!: number[];
+}
+
+/** diverging `with` across members — construction-time violation. */
+@Entity("ix_bad_with")
+class BadWithEntity {
+  @Key() id!: bigint;
+  @Index({ name: "ix_bad", order: 0, with: { m: "16" } })
+  a!: string;
+  @Index({ name: "ix_bad", order: 1, with: { m: "32" } })
+  b!: string;
+}
+
+/** Class-level spec on a mixin column — the job_runs/audit-column shape. */
+@Entity("ix_spec")
+@Index({
+  name: "ix_spec_created",
+  columns: [{ name: "created_at", sort: "desc" }],
+})
+class SpecEntity extends Auditable(EntityBase) {
+  @Key() id!: bigint;
+}
+
+/** Spec colliding with a property-level group — ownership violation. */
+@Entity("ix_spec_collide")
+@Index({ name: "ix_collide", columns: ["a"] })
+class SpecCollideEntity {
+  @Key() id!: bigint;
+  @Index({ name: "ix_collide" })
+  a!: string;
+}
+
+/** Spec column that is not a column — resolution violation. */
+@Entity("ix_spec_badcol")
+@Index({ name: "ix_badcol", columns: ["ghost_col"] })
+class SpecBadColEntity {
+  @Key() id!: bigint;
 }
 
 // ── tests ───────────────────────────────────────────────────────────────
@@ -202,6 +270,64 @@ describe("construction enforcement — fail-loud at meta resolution", () => {
   it("aliveOnly:true on a non-Deletable entity throws", () => {
     expect(() => getEntityPersistenceMeta(AliveNonDeletableEntity)).toThrow(
       /aliveOnly is only meaningful on Deletable entities/,
+    );
+  });
+});
+
+describe("@Index sort/nulls/with — declaration model", () => {
+  it("per-member sort resolves into a parallel array", () => {
+    const meta = getEntityPersistenceMeta(DescCompositeEntity);
+    const ix = meta.indexes!.find((i) => i.name === "ix_desc_kind_at")!;
+    expect(ix.columns).toEqual(["kind", "event_at"]);
+    expect(ix.sort).toEqual(["asc", "desc"]);
+    expect(ix.nulls).toBeUndefined();
+  });
+
+  it("nulls resolves the direction default for undeclared members", () => {
+    const meta = getEntityPersistenceMeta(DescNullsLastEntity);
+    const ix = meta.indexes!.find((i) => i.name === "ix_desc_nulls")!;
+    expect(ix.columns).toEqual(["binding_key", "default_from"]);
+    expect(ix.sort).toEqual(["asc", "desc"]);
+    // binding_key undeclared → asc default "last"; default_from explicit "last"
+    expect(ix.nulls).toEqual(["last", "last"]);
+    expect(ix.where).toBe("deleted_at IS NULL");
+  });
+
+  it("with/opclass/using carry through as index-level options", () => {
+    const meta = getEntityPersistenceMeta(VectorIdxEntity);
+    const ix = meta.indexes!.find((i) => i.name === "ix_vector_embedding_idx")!;
+    expect(ix.using).toBe("hnsw");
+    expect(ix.opclass).toBe("vector_cosine_ops");
+    expect(ix.with).toEqual({ m: "16", ef_construction: "64" });
+  });
+
+  it("diverging `with` across members throws at meta resolution", () => {
+    expect(() => getEntityPersistenceMeta(BadWithEntity)).toThrow(
+      /has inconsistent using\/opclass\/where\/with/,
+    );
+  });
+});
+
+describe("@Index class-level spec — mixin + spec-owned columns", () => {
+  it("resolves a mixin column (created_at) without redeclaring it", () => {
+    const meta = getEntityPersistenceMeta(SpecEntity);
+    const ix = meta.indexes!.find((i) => i.name === "ix_spec_created")!;
+    expect(ix.columns).toEqual(["created_at"]);
+    expect(ix.sort).toEqual(["desc"]);
+    // the audit column stays intact — spec adds the index, not a second column
+    const snap = buildEntitySnapshot([SpecEntity]);
+    expect(Object.values(snap.tables)[0]!.columns["created_at"]!.dataType).toBe("timestamptz");
+  });
+
+  it("spec name colliding with a property group throws", () => {
+    expect(() => getEntityPersistenceMeta(SpecCollideEntity)).toThrow(
+      /collides with a property-level @Index group/,
+    );
+  });
+
+  it("spec column not on the entity throws", () => {
+    expect(() => getEntityPersistenceMeta(SpecBadColEntity)).toThrow(
+      /column "ghost_col" is not a column of the entity/,
     );
   });
 });

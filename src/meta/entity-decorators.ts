@@ -73,6 +73,59 @@ export type IndexOptions = {
   opclass?: string;
   /** Partial-index predicate (raw SQL, e.g. `deleted_at IS NULL`). */
   where?: string;
+  /**
+   * Sort direction of THIS column inside the index (default `"asc"`).
+   * Per-column option — each member carries its own, unlike `using`/`where`.
+   * A bare `ASC` index already serves `ORDER BY col DESC` scans backward;
+   * `desc` matters for composite mixed-order and NULL placement defaults.
+   */
+  sort?: "asc" | "desc";
+  /**
+   * NULL placement of THIS column (`"last"` is the asc default,
+   * `"first"` the desc default). Only declare when diverging —
+   * e.g. `desc`+`nulls:"last"` cannot be served by a plain asc index.
+   */
+  nulls?: "first" | "last";
+  /**
+   * Index storage parameters (`pg_class.reloptions`) — index-level, same
+   * merge rule as `using`/`where` (must be identical on every member).
+   * e.g. `{ m: "16", ef_construction: "64" }` for hnsw.
+   */
+  with?: Record<string, string | number>;
+};
+
+/** One member of a class-level {@link IndexSpec} — position in `columns` IS
+ *  the index order; `sort`/`nulls` are per-column options. */
+export type IndexSpecColumn = {
+  /** Column property key (e.g. `created_at`) — may be a mixin-owned column. */
+  name: string;
+  /** Sort direction (default `"asc"`). */
+  sort?: "asc" | "desc";
+  /** NULL placement (default: last for asc, first for desc). */
+  nulls?: "first" | "last";
+};
+
+/**
+ * Class-level index spec — the form for indexes that cannot be declared
+ * property-side: mixin-owned columns (`created_at`, `deleted_at`, …) or
+ * spec-owned composites. A `columns` array makes it a spec; a spec name
+ * must not collide with a property-level `@Index` group.
+ */
+export type IndexSpec = {
+  /** Index name — deterministic, matches `pg_indexes.indexname`. */
+  name: string;
+  /** Member columns in index order — property keys; a string member is a
+   *  plain asc column, an object member carries `sort`/`nulls`. */
+  columns: (string | IndexSpecColumn)[];
+  /** PG access method. Default `btree`. */
+  using?: IndexMethod;
+  /** Operator class (e.g. `vector_cosine_ops` for hnsw). */
+  opclass?: string;
+  /** Partial-index predicate (raw SQL — `deleted_at` predicates are allowed
+   *  here: this is a filter index, not a tombstone-unique). */
+  where?: string;
+  /** Index storage parameters (`pg_class.reloptions`). */
+  with?: Record<string, string | number>;
 };
 
 export type ForeignKeyAction = "restrict" | "cascade" | "set_null" | "set_default" | "no_action";
@@ -267,6 +320,10 @@ type ClassEntityMeta = {
    *  memberships reference these names. Merged parent-first via
    *  collectMetaChain (subclass re-declares a name to override). */
   uniqueIndexes?: Map<string, UniqueIndexSpec>;
+  /** Class-level `@Index` specs — indexed by name; resolved against the
+   *  merged column map at `getEntityPersistenceMeta` (mixin columns reach
+   *  declaration here because they carry no property to decorate). */
+  indexSpecs?: Map<string, IndexSpec>;
 };
 
 /** Options for `@Partition()` — the RANGE partition key declaration.
@@ -916,21 +973,54 @@ export function Retention(duration: string): PropertyDecorator {
 }
 
 /**
- * Declares a secondary (non-unique) index. Bare `@Index()` → single-column
- * btree auto-named `<table>_<col>_idx`. Same `name` on multiple columns →
- * composite index ordered by `order`. Supports every PG access method:
- * `@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
- * `@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
- * Unique indexes stay on `@Unique()`.
+ * Declares a secondary (non-unique) index — two forms:
+ *
+ * **Property**: bare `@Index()` → single-column btree auto-named
+ * `<table>_<col>_idx`; same `name` on multiple columns → composite ordered
+ * by `order`; index-level options (`using`/`opclass`/`where`/`with`) must be
+ * identical on every member; `sort`/`nulls` are per-member.
+ *
+ * **Class**: `@Index({ name, columns: [...], ... })` — the spec form for
+ * indexes on mixin-owned columns (`created_at`, `deleted_at`, …) or
+ * spec-owned composites; `columns` order IS the index order and each member
+ * may carry `sort`/`nulls`. A spec name must not collide with a
+ * property-level group.
+ *
+ * Unique indexes stay on `@Unique()`/`@UniqueIndex()`.
  */
+export function Index(spec: IndexSpec): ClassDecorator;
 export function Index(): PropertyDecorator;
 export function Index(opts: IndexOptions): PropertyDecorator;
-export function Index(opts?: IndexOptions): PropertyDecorator {
-  return function (target: object, propertyKey: string | symbol) {
+export function Index(opts?: IndexOptions | IndexSpec): ClassDecorator | PropertyDecorator {
+  const isSpec = opts !== undefined && Array.isArray((opts as IndexSpec).columns);
+  return function (target: object | Function, propertyKey?: string | symbol): unknown {
+    if (propertyKey === undefined) {
+      // class target — spec form
+      if (!isSpec) {
+        throw new TypeError(
+          "class-level @Index requires a spec with `columns` — property options belong on columns",
+        );
+      }
+      const spec = opts as IndexSpec;
+      if (!spec.name) throw new TypeError("@Index spec requires a name");
+      if (spec.columns.length === 0) throw new TypeError(`@Index("${spec.name}") declares no columns`);
+      const m = ensureMeta(target as Function);
+      if ((m.indexSpecs ??= new Map()).has(spec.name)) {
+        throw new TypeError(`@Index spec "${spec.name}" is declared twice`);
+      }
+      m.indexSpecs.set(spec.name, { ...spec });
+      return target;
+    }
+    // property target — membership form
+    if (isSpec) {
+      throw new TypeError(
+        "property-level @Index does not take `columns` — a spec with columns belongs on the class",
+      );
+    }
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
-    col.indexOpts = opts ?? {};
-
+    col.indexOpts = (opts ?? {}) as IndexOptions;
+    return undefined;
   };
 }
 
@@ -1259,6 +1349,15 @@ export type EntityPersistenceMeta = {
     using: IndexMethod;
     opclass?: string;
     where?: string;
+    /** Per-column sort directions parallel to `columns` — present when any
+     *  member declares `sort` (absent members resolve `"asc"`). */
+    sort?: ("asc" | "desc")[];
+    /** Per-column NULL placement parallel to `columns` — present when any
+     *  member declares `nulls`; absent members resolve the direction
+     *  default (asc→last, desc→first). */
+    nulls?: ("first" | "last")[];
+    /** Index storage parameters — from `@Index({ with })`. */
+    with?: Record<string, string | number>;
     /** Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the
      *  plain columns — produced by the `@Relation` pair-unique derivation
      *  (`LEAST/GREATEST` unordered-pair keys); never authored by hand. */
@@ -1554,37 +1653,126 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
   // ── @Index resolution: group by name (auto: <table>_<col>_idx), order by `order` ──
   const indexGroups = new Map<
     string,
-    { cols: { sqlName: string; order: number }[]; using: IndexMethod; opclass?: string; where?: string }
+    {
+      cols: { sqlName: string; order: number; sort?: "asc" | "desc"; nulls?: "first" | "last" }[];
+      using: IndexMethod;
+      opclass?: string;
+      where?: string;
+      with?: Record<string, string | number>;
+    }
   >();
   for (const reg of colMap.values()) {
     if (!reg.indexOpts) continue;
     const o = reg.indexOpts;
     const name = o.name ?? `${tableName}_${reg.sqlName}_idx`;
-    const g = indexGroups.get(name) ?? { cols: [], using: o.using ?? "btree", opclass: o.opclass, where: o.where };
+    const g =
+      indexGroups.get(name) ??
+      { cols: [], using: o.using ?? "btree", opclass: o.opclass, where: o.where, with: o.with };
     if (
       (o.using !== undefined && o.using !== g.using) ||
       (o.where !== undefined && o.where !== g.where) ||
-      (o.opclass !== undefined && o.opclass !== g.opclass)
+      (o.opclass !== undefined && o.opclass !== g.opclass) ||
+      (o.with !== undefined &&
+        (g.with === undefined ||
+          !Object.entries(o.with).every(([k, v]) => String(v) === String(g.with![k])) ||
+          Object.keys(o.with).length !== Object.keys(g.with).length))
     ) {
       throw new TypeError(
-        `${entityClassName}.${reg.sqlName}: @Index group "${name}" has inconsistent using/opclass/where across its columns — declare them identically on every member`,
+        `${entityClassName}.${reg.sqlName}: @Index group "${name}" has inconsistent using/opclass/where/with across its columns — declare them identically on every member`,
       );
     }
     if (o.using !== undefined) g.using = o.using;
     if (o.opclass !== undefined) g.opclass = o.opclass;
     if (o.where !== undefined) g.where = o.where;
-    g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0 });
+    if (o.with !== undefined) g.with = o.with;
+    g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0, sort: o.sort, nulls: o.nulls });
     indexGroups.set(name, g);
   }
   let indexes = indexGroups.size
-    ? [...indexGroups.entries()].map(([name, g]) => ({
-        name,
-        columns: g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName)).map((c) => c.sqlName),
-        using: g.using,
-        ...(g.opclass !== undefined ? { opclass: g.opclass } : {}),
-        ...(g.where !== undefined ? { where: g.where } : {}),
-      }))
+    ? [...indexGroups.entries()].map(([name, g]) => {
+        const cols = g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName));
+        return {
+          name,
+          columns: cols.map((c) => c.sqlName),
+          using: g.using,
+          ...(g.opclass !== undefined ? { opclass: g.opclass } : {}),
+          ...(g.where !== undefined ? { where: g.where } : {}),
+          ...(cols.some((c) => c.sort !== undefined)
+            ? { sort: cols.map((c) => c.sort ?? ("asc" as const)) }
+            : {}),
+          // NULL placement resolved against each column's direction
+          // (PG defaults: asc→last, desc→first) — the array is always
+          // complete once any member declares `nulls`.
+          ...(cols.some((c) => c.nulls !== undefined)
+            ? {
+                nulls: cols.map(
+                  (c) => c.nulls ?? ((c.sort ?? "asc") === "desc" ? ("first" as const) : ("last" as const)),
+                ),
+              }
+            : {}),
+          ...(g.with !== undefined ? { with: g.with } : {}),
+        };
+      })
     : undefined;
+
+  // ── class-level @Index specs — columns resolve from the merged column
+  //    map so mixin-owned columns (created_at, deleted_at, …) can carry
+  //    index membership without a re-declared property. ────────────────
+  const indexSpecDecls = new Map<string, IndexSpec>();
+  for (const m of collectMetaChain(ctor)) {
+    if (m.indexSpecs) for (const [n, s] of m.indexSpecs) indexSpecDecls.set(n, s);
+  }
+  if (indexSpecDecls.size) {
+    const columnNames = new Set(Object.keys(columns));
+    const specIndexes = [...indexSpecDecls.values()].map((spec) => {
+      if (indexGroups.has(spec.name)) {
+        throw new TypeError(
+          `${entityClassName}: @Index spec "${spec.name}" collides with a property-level @Index group — ` +
+            `one index is owned by either a class spec or column members, not both`,
+        );
+      }
+      const cols = spec.columns.map((entry) => {
+        const member = typeof entry === "string" ? { name: entry } : entry;
+        const reg = colMap.get(member.name);
+        if (!reg) {
+          throw new TypeError(
+            `${entityClassName}: @Index spec "${spec.name}" column "${member.name}" is not a column of the entity`,
+          );
+        }
+        return { sqlName: reg.sqlName, sort: member.sort, nulls: member.nulls };
+      });
+      if (spec.where !== undefined) {
+        const unknownCols = [...spec.where.matchAll(/\b[a-z_][a-z0-9_]*\b/gi)]
+          .map((m2) => m2[0].toLowerCase())
+          .filter((id) => !WHERE_KEYWORDS.has(id) && !columnNames.has(id));
+        if (unknownCols.length) {
+          throw new TypeError(
+            `${entityClassName}: @Index spec "${spec.name}".where references column(s) not on the entity: ` +
+              `${[...new Set(unknownCols)].join(", ")}`,
+          );
+        }
+      }
+      return {
+        name: spec.name,
+        columns: cols.map((c) => c.sqlName),
+        using: spec.using ?? ("btree" as IndexMethod),
+        ...(spec.opclass !== undefined ? { opclass: spec.opclass } : {}),
+        ...(spec.where !== undefined ? { where: spec.where } : {}),
+        ...(cols.some((c) => c.sort !== undefined)
+          ? { sort: cols.map((c) => c.sort ?? ("asc" as const)) }
+          : {}),
+        ...(cols.some((c) => c.nulls !== undefined)
+          ? {
+              nulls: cols.map(
+                (c) => c.nulls ?? ((c.sort ?? "asc") === "desc" ? ("first" as const) : ("last" as const)),
+              ),
+            }
+          : {}),
+        ...(spec.with !== undefined ? { with: spec.with } : {}),
+      };
+    });
+    indexes = [...(indexes ?? []), ...specIndexes];
+  }
 
   // ── @Relation derived pair-unique index ─────────────────────────────
   // The unordered-pair constraint is DERIVED from the facet — never

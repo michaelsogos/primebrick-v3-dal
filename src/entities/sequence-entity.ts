@@ -4,6 +4,7 @@ import {
   AuditTrail,
   Column,
   Entity,
+  Index,
   Key,
 } from "../meta/entity-decorators.js";
 import { Auditable, Deletable, EntityBase } from "./entity-base.js";
@@ -36,6 +37,15 @@ import { ValidationError } from "../errors/errors.js";
  */
 @Entity("sequences")
 @AuditTrail()
+@Index({
+  name: "sequences_binding_key_default_from_idx",
+  // "current default row per binding": WHERE binding_key=? ORDER BY
+  // default_from DESC NULLS LAST — NULLS LAST is semantically required
+  // (PG renders DESC NULLS FIRST by default; a backward asc scan cannot
+  // serve nulls-last ordering).
+  columns: ["binding_key", { name: "default_from", sort: "desc", nulls: "last" }],
+  where: "deleted_at IS NULL",
+})
 export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   constructor() {
     if (new.target !== SequenceEntity) {

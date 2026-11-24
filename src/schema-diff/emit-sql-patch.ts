@@ -59,14 +59,28 @@ function indexDdl(ix: SchemaIndexMeta, t: { schema: string; name: string }, conc
   // producer today is the @Relation pair-unique derivation.
   const keys = [
     ...(ix.expressions ?? []).map((e) => `(${e})`),
-    ...ix.columns.map((c) => (ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c))),
+    ...ix.columns.map((c, i) => {
+      // Canonical key rendering matching pg_get_indexdef: ASC is bare;
+      // DESC prints itself; NULLS FIRST is printed only on asc keys and
+      // NULLS LAST only on desc keys (each direction's non-default).
+      let s = ix.opclass ? `${quoteIdent(c)} ${ix.opclass}` : quoteIdent(c);
+      const sort = ix.sort?.[i];
+      const nulls = ix.nulls?.[i];
+      if (sort === "desc") s += " DESC";
+      if (nulls === "first" && sort !== "desc") s += " NULLS FIRST";
+      if (nulls === "last" && sort === "desc") s += " NULLS LAST";
+      return s;
+    }),
   ].join(", ");
   const unique = ix.isUnique ? "UNIQUE " : "";
   const using = ix.using === "btree" ? "" : ` USING ${ix.using}`;
   const nnd = ix.isUnique && ix.nullsNotDistinct ? " NULLS NOT DISTINCT" : "";
+  const withClause = ix.with
+    ? ` WITH (${Object.entries(ix.with).map(([k, v]) => `${k}='${v}'`).join(", ")})`
+    : "";
   const where = ix.where ? ` WHERE ${ix.where}` : "";
   const conc = concurrently ? " CONCURRENTLY" : "";
-  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${keys})${nnd}${where};`;
+  return `CREATE ${unique}INDEX${conc} IF NOT EXISTS ${quoteIdent(slugifyIdent(ix.name))} ON ${fq}${using} (${keys})${nnd}${withClause}${where};`;
 }
 
 function fkActionSql(action: string): string {

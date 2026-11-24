@@ -2845,6 +2845,18 @@ host-mounted component root.
 
 Options for `@Index()` — plain (non-unique) secondary indexes of any PG access method.
 
+### `IndexSpec`
+
+Class-level index spec — the form for indexes that cannot be declared
+property-side: mixin-owned columns (`created_at`, `deleted_at`, …) or
+spec-owned composites. A `columns` array makes it a spec; a spec name
+must not collide with a property-level `@Index` group.
+
+### `IndexSpecColumn`
+
+One member of a class-level IndexSpec — position in `columns` IS
+ the index order; `sort`/`nulls` are per-column options.
+
 ### `ISODate`
 
 **Type:** `string & { [isoDateBrand]: "ISODate" }`
@@ -5251,14 +5263,26 @@ bare numeric string), `vector` → `Vector`.
 | instance | `T` |  |
 | meta | `EntityPersistenceMeta` |  |
 
-### `Index(): PropertyDecorator`
+### `Index(spec): ClassDecorator`
 
-Declares a secondary (non-unique) index. Bare `@Index()` → single-column
-btree auto-named `<table>_<col>_idx`. Same `name` on multiple columns →
-composite index ordered by `order`. Supports every PG access method:
-`@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
-`@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
-Unique indexes stay on `@Unique()`.
+Declares a secondary (non-unique) index — two forms:
+
+**Property**: bare `@Index()` → single-column btree auto-named
+`<table>_<col>_idx`; same `name` on multiple columns → composite ordered
+by `order`; index-level options (`using`/`opclass`/`where`/`with`) must be
+identical on every member; `sort`/`nulls` are per-member.
+
+**Class**: `@Index({ name, columns: [...], ... })` — the spec form for
+indexes on mixin-owned columns (`created_at`, `deleted_at`, …) or
+spec-owned composites; `columns` order IS the index order and each member
+may carry `sort`/`nulls`. A spec name must not collide with a
+property-level group.
+
+Unique indexes stay on `@Unique()`/`@UniqueIndex()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `IndexSpec` |  |
 
 ### `isAuditableEntity(meta): boolean`
 

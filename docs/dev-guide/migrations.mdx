@@ -90,9 +90,14 @@ transitions the next run picks up:
 - **tables / columns** — presence, rename heuristics;
 - **type** (`typeMismatches`) and **nullability** (`nullabilityMismatches`);
 - **indexes** (`onlyInEntityIndexes`, `onlyInDatabaseIndexes`,
-  `indexMismatches` — columns, uniqueness, method, predicate). Predicate
-  comparison is `normWhere`-normalized (whitespace, parens and case
-  stripped), so a live `((a) AND (b))` equals an emitted `(a) AND (b)`.
+  `indexMismatches` — columns, uniqueness, method, predicate, member
+  ordering, storage params). Predicate comparison is `normWhere`-normalized
+  (whitespace, parens and case stripped), so a live `((a) AND (b))` equals
+  an emitted `(a) AND (b)`. Member ordering (`ASC|DESC`, `NULLS FIRST|LAST`)
+  is compared against `pg_index.indoption` for plain-column members —
+  indexes declared via expression signatures skip the ordering compare
+  (the signature already encodes member order). `WITH` storage params
+  (`pg_class.reloptions`) diff only when the declaration authors `with`.
   An entity index is satisfied by ANY live index with identical columns,
   uniqueness, method and normalized predicate — a different catalog name
   never triggers a duplicate CREATE. Live indexes the decls don't know

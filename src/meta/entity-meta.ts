@@ -53,6 +53,8 @@ export {
   type PartitionOptions,
   type PartitionChildOfOptions,
   type IndexOptions,
+  type IndexSpec,
+  type IndexSpecColumn,
   type IndexMethod,
   type ForeignKeyOptions,
   type ForeignKeyAction,

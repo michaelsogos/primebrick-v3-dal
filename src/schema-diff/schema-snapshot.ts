@@ -213,11 +213,35 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
         ei.columns.every((c, i) => c === di.columns[i])
       );
     };
+    /** Ordering flags per column — resolves `sort`/`nulls` against PG
+     *  defaults (asc→nulls last, desc→nulls first) so `null`/`asc` decls
+     *  compare equal to a live `indoption=0` column. */
+    const keyFlags = (ix: SchemaIndexMeta): string =>
+      ix.columns
+        .map((_, i) => {
+          const desc = ix.sort?.[i] === "desc";
+          const nullsFirst = ix.nulls?.[i] ? ix.nulls[i] === "first" : desc;
+          return `${desc ? "d" : "a"}${nullsFirst ? "f" : "l"}`;
+        })
+        .join(",");
+    /** Ordering comparison — skipped for expression indexes: `columns` is
+     *  not parallel to `sort`/`nulls` there (the signature covers order). */
+    const sameKeyOrder = (ei: SchemaIndexMeta, di: SchemaIndexMeta): boolean =>
+      entityKeySig(ei) !== null ? true : keyFlags(ei) === keyFlags(di);
+    /** `with` storage params are compared only when the entity declares
+     *  them — live reloptions outside the decl scope are tuning knobs. */
+    const sameWith = (ei: SchemaIndexMeta, di: SchemaIndexMeta): boolean => {
+      if (ei.with === undefined) return true;
+      const dw = di.with ?? {};
+      return Object.entries(ei.with).every(([k, v]) => String(v) === String(dw[k]));
+    };
     const equivIndex = (ei: SchemaIndexMeta, di: SchemaIndexMeta) =>
       !!ei.isUnique === !!di.isUnique &&
       (ei.using ?? "btree") === (di.using ?? "btree") &&
       sameIndexKeys(ei, di) &&
-      normWhere(ei.where) === normWhere(di.where);
+      sameKeyOrder(ei, di) &&
+      normWhere(ei.where) === normWhere(di.where) &&
+      sameWith(ei, di);
     const dIdxList = [...dIdx.values()];
     const onlyInEntityIndexes = [...eIdx.entries()]
       .filter(([k, ei]) => !dIdx.has(k) && !dIdxList.some((di) => equivIndex(ei, di)))
@@ -229,7 +253,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     for (const [nm, ei] of eIdx) {
       const di = dIdx.get(nm);
       if (!di) continue;
-      if (ei.using !== di.using || !sameIndexKeys(ei, di) || normWhere(ei.where) !== normWhere(di.where)) {
+      if (ei.using !== di.using || !sameIndexKeys(ei, di) || normWhere(ei.where) !== normWhere(di.where) || !sameKeyOrder(ei, di) || !sameWith(ei, di)) {
         indexMismatches.push({
           name: nm,
           entityUsing: ei.using ?? null,

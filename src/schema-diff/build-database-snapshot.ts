@@ -145,10 +145,13 @@ export async function buildDatabaseSnapshot(
     const { rows: idxRows } = await db.query<{
       name: string; using: string; is_unique: boolean; def: string;
       key_defs: string[] | null; is_constraint: boolean;
+      indoption: string | null; reloptions: string[] | null;
     }>(
       `SELECT c.relname AS name, am.amname AS using, i.indisunique AS is_unique,
               pg_get_indexdef(i.indexrelid) AS def,
               (con.oid IS NOT NULL) AS is_constraint,
+              i.indoption::text AS indoption,
+              c.reloptions,
               (SELECT array_agg(pg_get_indexdef(i.indexrelid, k.n, false) ORDER BY k.n)
                  FROM generate_series(1, i.indnkeyatts) AS k(n)) AS key_defs
        FROM pg_index i
@@ -168,12 +171,35 @@ export async function buildDatabaseSnapshot(
       const keys = r.key_defs ?? [];
       const plain = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] !== undefined);
       const exprs = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] === undefined);
+      // indoption flags per key position (bit0=DESC, bit1=NULLS FIRST —
+      // PG stores DESC's nulls-first default explicitly). Projected onto
+      // plain-column positions so the arrays parallel `columns`.
+      const opts = (r.indoption ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter((s) => s !== "")
+        .map((s) => parseInt(s, 10) || 0);
+      const plainOpts = keys
+        .map((k, i) => ({ k, opt: opts[i] ?? 0 }))
+        .filter(({ k }) => columns[k.replace(/^"|"$/g, "")] !== undefined)
+        .map(({ opt }) => opt);
+      const sort = plainOpts.map((o) => ((o & 1) !== 0 ? ("desc" as const) : ("asc" as const)));
+      const nulls = plainOpts.map((o) => ((o & 2) !== 0 ? ("first" as const) : ("last" as const)));
+      const withOpts =
+        r.reloptions && r.reloptions.length
+          ? Object.fromEntries(r.reloptions.map((kv) => {
+              const eq = kv.indexOf("=");
+              return [kv.slice(0, eq), kv.slice(eq + 1)];
+            }))
+          : undefined;
       return {
         name: r.name,
         using: r.using,
         isUnique: r.is_unique,
         columns: plain,
         ...(exprs.length ? { expressions: exprs } : {}),
+        ...(plainOpts.some((o) => o !== 0) ? { sort, nulls } : {}),
+        ...(withOpts ? { with: withOpts } : {}),
         where: parseIndexPredicate(r.def),
         definition: r.def,
         // Constraint-backing index (declared as UNIQUE/PK constraint, not

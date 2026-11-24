@@ -3,6 +3,7 @@ import "reflect-metadata";
 import {
   Entity,
   Column,
+  Index,
   Key,
   Unique,
   UniqueIndex,
@@ -61,6 +62,9 @@ export abstract class TranslationEntityBase
 
   /** BCP 47 language tag (e.g. 'it-IT', 'en-GB'). */
   @Unique("translations_key_language_uidx", 1)
+  // language-filtered lookups among live rows — `translations_language_idx`
+  // is the most-used index in the fleet (partial, matching live).
+  @Index({ where: "deleted_at IS NULL" })
   @Column({ length: 10, nullable: false })
   language!: string;
 
