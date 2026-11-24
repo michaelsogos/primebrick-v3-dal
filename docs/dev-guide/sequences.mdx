@@ -18,7 +18,7 @@ The create sheet census is the writable contract and nothing else:
 |-------|---------|------------------------|
 | Identity | `name`, `step`, `start`, `pattern`, `tz`, `description_key` | normal write keys |
 | Sez literals | `sez`, `sez2`, `sez3` | `immutable` — editable on create, frozen on update |
-| Revive axis | `revive_every`, `revive_slot`, `revive_grace`, `default_from` | `revive_every`/`revive_slot`/`default_from` are `immutable`; `revive_grace` is editable operational slack. The three gated fields carry `depends_on.disabled_when{revive_every, set:false}` — disabled until the cadence holds a value |
+| Revive axis | `revive_every`, `revive_slot`, `revive_grace`, `default_from` | `revive_slot`/`default_from` are `immutable` (series identity); the two axes are **editable while in tempo** — the guarded update owns the temporal contract. The three gated fields carry `depends_on.disabled_when{revive_every, set:false}` — disabled until the cadence holds a value |
 | Computed anchors | `expire_at`, `switch_at` | `audited` — server-derived, render in the audit accordion only |
 | Lifecycle audit | `revived_from`, `revived_at`, `revived_by` | `audited` — written by the revive job, never user input |
 | Machine key | `binding_key` | `hidden` — `<table>.<field>` binding identity for `format:"sequence"` columns; `name` already displays it |
@@ -29,19 +29,27 @@ forms via `audited` or `hidden`, by construction.
 
 ## The revive contract
 
-- **`revive_every`** — closed `'N (day|week|month|quarter|year)[s]'`
-  varchar (`parseReviveInterval` in core), not a pg `interval`. Renders
-  `format:"revive_interval"` → `ReviveIntervalInput`.
+Two **persisted moments** (`expire_at`/`switch_at`, always computed —
+never write keys) and two **varchar axes** that say how each moment is
+expressed:
+
+- **`revive_every`** → `expire_at` ("Rinnovo il"): `'N (day|week|month|
+  quarter|year)[s]'` interval (`parseReviveSpec`) OR `'at <RFC3339>'` —
+  an explicit instant pinned verbatim. `format:"revive_interval"` →
+  `ReviveIntervalInput` (Ogni/On mode toggle → NumericInput+uom or
+  DateWheelPicker).
+- **`revive_grace`** → `switch_at` ("Attivato il"): `'N unit'` offset OR
+  `'until <RFC3339>'`. `format:"revive_offset"`.
 - **`default_from`** — the generation's anchor instant (input; the form
   seeds `{kind:"next_day_start_local"}` = tomorrow 00:00 local → UTC).
   The binding lookup serves the row as default only from this instant
   (`default_from ≤ at`), so future-dated generations are legal.
-- **`expire_at`** — server-derived: first calendar boundary after the
-  anchor in the row's `tz` (`reviveExpireAt`). `"1 month"` → the 1st of
-  next month; `"1 year"` → next Jan 1. Never user input.
-- **`switch_at`** — `expire_at + revive_grace` — the cutoff after which
-  the successor serves claims; the expired row still answers until then
-  (operational slack for in-flight emitters).
+- **`expire_at`** — interval: first calendar boundary after the anchor
+  in the row's `tz` (`reviveExpireAt`). `"1 month"` → the 1st of next
+  month; `"1 year"` → next Jan 1. `'at'`: the literal verbatim.
+- **`switch_at`** — `expire_at + revive_grace` or the `'until'` literal —
+  the cutoff after which the successor serves claims; the expired row
+  still answers until then (operational slack for in-flight emitters).
 - **`revive_slot`** — closed badge enum `{sez, sez2, sez3}`: which slot
   literal the job advances when cloning the generation.
 - **`sez` values are literals** — the charset forbids `{}`, so
@@ -50,12 +58,46 @@ forms via `audited` or `hidden`, by construction.
   `"2026-12"`→`"2027-01"`): the rendered value round-trips as the next
   parse input.
 
+### Editable while in tempo (update path)
+
+The axes are timing, not identity — editable while the moment is still
+future, inside `repository.sequenceReviveAxesUpdate` (a `SELECT ... FOR
+UPDATE` + guarded write in the same tx as the standard `update`):
+
+- **expire axis** editable while `expire_at > now AND NOT EXISTS successor`
+  — once the sweep cloned, the moment is history.
+- **switch axis** editable while `switch_at > now` — the grace window is
+  exactly what this edits (a successor may already exist).
+- **Serialization vs the sweep** — the clone's due-set SELECT is also
+  `FOR UPDATE`: whoever takes the lock first wins; the loser re-evaluates
+  post-commit (clone sees the moved `expire_at` and skips; the update
+  sees the successor and throws `sequence_revive_closed`).
+- **Recompute, anchored at NOW** — `'N unit'` → next calendar boundary;
+  `'at X'` → literal (must stay future: `sequence_revive_pin_past`);
+  `revive_every → NULL` → **revive off**: clears `expire_at`/`switch_at`/
+  `revive_slot` — the row becomes the permanent final generation.
+  `revive_grace → NULL` → `switch_at = expire_at`.
+- **Version** — the guarded write enforces `version` (axes-only bodies
+  bump it there; mixed bodies leave the single bump to `update()`).
+
+### Literal pins never propagate (clone sanitization)
+
+An explicit instant is history, not recurrence — cloning a row whose
+axes carry `'at'`/`'until'` sanitizes the successor to
+`revive_every=NULL`/`revive_grace=NULL` (the permanent final
+generation). Its `sez` still advances — via the synthetic
+`'1 ' + pattern.period_kind` spec through `derivePeriodLabel`
+(shape-preserving), which is why `'at'` requires `period_kind ≠ 'none'`
+(the pattern must carry a date token like `{yyyy}`).
+
 ## Validation — one contract, three surfaces
 
 `sequenceReviveShapeIssues` (core, `field-validation.ts`) is the single
 predicate — `revive_slot` must be a `{sez*}` token of the pattern, the
-slotted row value must be advanceable by `revive_every`, and the axis
-can't exist without the cadence. It runs as:
+slotted row value must be advanceable by the effective advance spec
+(`revive_every`, or `'1 ' + period_kind` for `'at'`), `'at'` requires
+`period_kind ≠ 'none'`, and the axis can't exist without the cadence.
+It runs as:
 
 1. **Form** — `meta.form.validators = ["sequence_revive_shape"]` → the
    synthesized record-sheet form flags issues live.
