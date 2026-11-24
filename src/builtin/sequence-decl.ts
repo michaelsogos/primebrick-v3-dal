@@ -82,7 +82,10 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
     { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
     { key: "tz", label_key: F("tz"), type: "text", order: 8, options_source: "iana.tzones" },
-    { key: "revive_every", label_key: F("revive_every"), type: "text", order: 10 },
+    // `immutable` — editable on the create sheet, disabled on update
+    // and excluded from update payloads (the cadence is the row's
+    // identity; the wire validator rejects them regardless).
+    { key: "revive_every", label_key: F("revive_every"), type: "text", order: 10, immutable: true },
     { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 11 },
     // Row-owned sezionale + revive internals — definition data, hidden
     // by default, toggleable via the column picker.
@@ -91,7 +94,7 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "sez3", label_key: F("sez3"), type: "text", order: 14, default_visible: false },
     { key: "binding_key", label_key: F("binding_key"), type: "text", order: 15, default_visible: false },
     { key: "revive_grace", label_key: F("revive_grace"), type: "text", order: 16, default_visible: false },
-    { key: "revive_slot", label_key: F("revive_slot"), type: "text", order: 17, default_visible: false },
+    { key: "revive_slot", label_key: F("revive_slot"), type: "text", order: 17, default_visible: false, immutable: true },
     { key: "switch_at", label_key: F("switch_at"), type: "datetime", order: 18, default_visible: false },
     { key: "default_from", label_key: F("default_from"), type: "datetime", order: 19, default_visible: false },
     { key: "revived_from", label_key: F("revived_from"), type: "text", order: 20, default_visible: false },
