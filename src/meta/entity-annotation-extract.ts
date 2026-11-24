@@ -157,6 +157,7 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
                 m.type.types.some((n) => n.kind === ts.SyntaxKind.NullKeyword)
               : t.isUnion() && t.types.some((x) => x.flags & ts.TypeFlags.Null);
             let isStringLiteralUnion = false;
+            let booleanUnion = false;
             if (t.isUnion()) {
               const rest = t.types.filter(
                 (x) => !(x.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)),
@@ -164,6 +165,13 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
               if (rest.length === 1) t = rest[0]!;
               else if (rest.length > 0 && rest.every((x) => x.isStringLiteral()))
                 isStringLiteralUnion = true;
+              // `boolean`/`boolean | undefined` is internally union(true,false[,undefined])
+              // — a primitive column type, not an exotic union.
+              else if (
+                rest.length > 0 &&
+                rest.every((x) => (x.flags & ts.TypeFlags.BooleanLiteral) !== 0)
+              )
+                booleanUnion = true;
             }
             // single string literal (`type T = "totp"`) — string storage too
             if (!isStringLiteralUnion && t.isStringLiteral()) isStringLiteralUnion = true;
@@ -194,12 +202,12 @@ export async function extractEntityAnnotations(entryFile: string): Promise<Entit
               t.getCallSignatures().length > 0 ||
               (enumLike && !isStringLiteralUnion) ||
               !!(t.flags & (ts.TypeFlags.ESSymbol | ts.TypeFlags.UniqueESSymbol)) ||
-              (t.isUnion() && !isStringLiteralUnion) ||
+              (t.isUnion() && !isStringLiteralUnion && !booleanUnion) ||
               (t.isIntersection() && !isObjectLike);
             return [prop, {
               prop,
               annotation: m.type ? m.type.getText(mSf) : "(none)",
-              typeName: checker.typeToString(t),
+              typeName: booleanUnion ? "boolean" : checker.typeToString(t),
               optional: !!m.questionToken,
               nullableUnion,
               isArray,

@@ -4704,12 +4704,13 @@ Authoring warnings for one column:
 - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
   The name SAYS uuid; either the column should be `uuid` (retype the prop
   to `UUID` or set `pgType:"uuid"`) or the name lies.
-- `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
-  would resolve without it (annotation stripped — erased at runtime, so
-  a restatement of the annotation default is NOT redundant: it is the
-  required runtime declaration). Truly redundant only when the type
-  comes from another runtime-visible channel — e.g. `pgType:"text"` on
-  a string prop, or a pgType already covered by a semantic/jsType pin.
+- `redundant-pgType` — explicit `pgType` equal to what a RUNTIME
+  channel already produces without it (semantic decorator pins,
+  `jsType` pins). The TS annotation never counts: it is erased at
+  transpile, so `pgType` on a plain prop IS the required runtime
+  declaration — the `entity-type-declared` lint mandates it. Nor can
+  the `"text"` fallback in inferPgTypeFromEntityColumn prove
+  redundancy: it is a guess, not evidence.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
