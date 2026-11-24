@@ -21,8 +21,8 @@ import {
   parseSequencePattern,
   validateSequencePartitions,
   sequencePartitionKey,
+  sequenceReviveShapeIssues,
   derivePeriodKey,
-  derivePeriodLabel,
   parseReviveInterval,
   reviveExpireAt,
   reviveAddInterval,
@@ -83,21 +83,40 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // `immutable` — editable on the create sheet, disabled on update
     // and excluded from update payloads (the cadence is the row's
     // identity; the wire validator rejects them regardless).
-    { key: "revive_every", label_key: F("revive_every"), type: "text", order: 10, immutable: true },
-    { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 11 },
-    // Row-owned sezionale + revive internals — definition data, hidden
-    // by default, toggleable via the column picker.
-    { key: "sez", label_key: F("sez"), type: "text", order: 12, default_visible: false },
-    { key: "sez2", label_key: F("sez2"), type: "text", order: 13, default_visible: false },
-    { key: "sez3", label_key: F("sez3"), type: "text", order: 14, default_visible: false },
-    { key: "binding_key", label_key: F("binding_key"), type: "text", order: 15, default_visible: false },
-    { key: "revive_grace", label_key: F("revive_grace"), type: "text", order: 16, default_visible: false },
-    { key: "revive_slot", label_key: F("revive_slot"), type: "text", order: 17, default_visible: false, immutable: true },
-    { key: "switch_at", label_key: F("switch_at"), type: "datetime", order: 18, default_visible: false },
-    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 19, default_visible: false },
-    { key: "revived_from", label_key: F("revived_from"), type: "text", order: 20, default_visible: false },
-    { key: "revived_at", label_key: F("revived_at"), type: "datetime", order: 21, default_visible: false },
-    { key: "revived_by", label_key: F("revived_by"), type: "text", order: 22, default_visible: false },
+    // `format:"revive_interval"` — the numeric+unit composite control
+    // emitting the closed `'N unit'` varchar canonical.
+    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10, immutable: true },
+    // When the row starts serving as the binding default — a create-only
+    // anchor (the generation's identity), gated on `revive_every` via
+    // `depends_on` (disabled while the cadence is unset). `expire_at`
+    // derives server-side from it; the field is never edited afterwards.
+    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 11, immutable: true, default: { kind: "next_day_start_local" }, depends_on: { field: "revive_every", disabled_when: { set: false } } },
+    // Which sez slot the period label advances at revive — closed-enum
+    // badge select, gated like `default_from` on `revive_every`.
+    { key: "revive_slot", label_key: F("revive_slot"), type: "badge", order: 12, immutable: true, depends_on: { field: "revive_every", disabled_when: { set: false } }, badge: { values: {
+      sez: { label_key: F("revive_slot_values.sez"), color: "sky-500" },
+      sez2: { label_key: F("revive_slot_values.sez2"), color: "violet-500" },
+      sez3: { label_key: F("revive_slot_values.sez3"), color: "teal-500" },
+    } } },
+    // Overlap window — editable operational slack (moves only `switch_at`).
+    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_interval", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } } },
+    // Row-owned sezionale defaults — write at create, frozen afterwards:
+    // the owned slots are the revive axis identity.
+    { key: "sez", label_key: F("sez"), type: "text", order: 14, default_visible: false, immutable: true },
+    { key: "sez2", label_key: F("sez2"), type: "text", order: 15, default_visible: false, immutable: true },
+    { key: "sez3", label_key: F("sez3"), type: "text", order: 16, default_visible: false, immutable: true },
+    // `binding_key` — machine series identity written ONLY at binding
+    // materialize; `name` on bound rows already displays `<table>.<field>`.
+    { key: "binding_key", label_key: F("binding_key"), type: "text", order: 17, hidden: true },
+    // Revive lifecycle facts — `audited` by decision: the audit band +
+    // accordion own them and the form can never render them by
+    // construction. `expire_at`/`switch_at` are computed anchors, never
+    // write keys; `revived_*` stamp the last revive event.
+    { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 18, audited: true },
+    { key: "switch_at", label_key: F("switch_at"), type: "datetime", order: 19, audited: true, default_visible: false },
+    { key: "revived_from", label_key: F("revived_from"), type: "text", order: 20, audited: true, default_visible: false },
+    { key: "revived_at", label_key: F("revived_at"), type: "datetime", order: 21, audited: true, default_visible: false },
+    { key: "revived_by", label_key: F("revived_by"), type: "text", order: 22, audited: true, default_visible: false },
     // i18n keys are operator-managed pointers — hidden by default,
     // toggleable via the column picker.
     { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
@@ -106,8 +125,8 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // flag implies on data columns is a no-op on enrichments). Same
     // anatomy as the standard audit stamps — `default_visible:false`,
     // toggleable via the column picker.
-    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 14, kind: "virtual", audited: true, default_visible: false },
-    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 15, kind: "virtual", audited: true, default_visible: false },
+    { key: "last_alloc_at", label_key: F("last_alloc_at"), type: "datetime", order: 23, kind: "virtual", audited: true, default_visible: false },
+    { key: "last_alloc_by", label_key: F("last_alloc_by"), type: "text", order: 24, kind: "virtual", audited: true, default_visible: false },
   ];
   return raw.map((c) => ({ ...c, sticky: STICKY_KEYS.has(c.key) }));
 }
@@ -131,6 +150,11 @@ function sequenceMeta(ns: string): EntityMeta {
       // create route (a sheet is never a nav leaf). The list CTA
       // auto-wires from this declaration.
       create: { surface: "sheet" },
+      // No route-level `page_props.form` exists for a builtin entity —
+      // the entity-level axis carries the cross-field contract the
+      // synthesized form attaches (wire validator runs the same core
+      // predicate server-side).
+      form: { validators: ["sequence_revive_shape"] },
       // Soft-delete reads as "disable" on sequences — same semantics as
       // job_trigger: exec-stop icon + destructive for the off-transition,
       // exec-start + success for the re-enable. Underlying mechanics stay
@@ -444,6 +468,7 @@ function vOptKey(v: unknown, field: string, max: number): string | null {
 const SEQUENCE_WRITE_KEYS = new Set([
   "name", "pattern", "step", "start", "tz", "description_key",
   "sez", "sez2", "sez3", "revive_every", "revive_grace", "revive_slot",
+  "default_from",
   "version",
 ]);
 
@@ -463,6 +488,12 @@ function vReviveSlot(v: unknown): string | null {
     bad("revive_slot", "must be sez, sez2 or sez3");
   }
   return s;
+}
+
+function vInstant(v: unknown, field: string): Date {
+  const d = new Date(v as string | number | Date);
+  if (Number.isNaN(d.getTime())) bad(field, "must be a date");
+  return d;
 }
 
 function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> {
@@ -506,17 +537,25 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
   // `assertReviveCoherence` (service-level, sees the stored pattern on
   // update too).
   for (const k of ["sez", "sez2", "sez3"] as const) {
-    if (opt(k)) out[k] = vSezValue(rec[k], k);
+    if (partial) {
+      // Row-owned sezionale defaults are the revive axis identity —
+      // frozen post-create like the cadence that advances them.
+      if (rec[k] !== undefined) bad(k, "immutable after create");
+    } else if (opt(k)) {
+      out[k] = vSezValue(rec[k], k);
+    }
   }
-  // `revive_every`/`revive_slot` are IMMUTABLE post-create — the period
-  // contract is the row's identity (Q7). `revive_grace` stays editable:
-  // operational slack that only moves `switch_at`.
+  // `revive_every`/`revive_slot`/`default_from` are IMMUTABLE post-create —
+  // the period contract is the row's identity (Q7). `revive_grace` stays
+  // editable: operational slack that only moves `switch_at`.
   if (partial) {
     if (rec.revive_every !== undefined) bad("revive_every", "immutable after create");
     if (rec.revive_slot !== undefined) bad("revive_slot", "immutable after create");
+    if (rec.default_from !== undefined) bad("default_from", "immutable after create");
   } else {
     if (opt("revive_every")) out.revive_every = vReviveInterval(rec.revive_every, "revive_every");
     if (opt("revive_slot")) out.revive_slot = vReviveSlot(rec.revive_slot);
+    if (opt("default_from")) out.default_from = vInstant(rec.default_from, "default_from");
   }
   if (opt("revive_grace")) out.revive_grace = vReviveInterval(rec.revive_grace, "revive_grace");
   if (!partial) {
@@ -534,19 +573,20 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
 }
 
 /** Derived revive anchors stamped at create — never write keys:
- *   `expire_at`   = first calendar boundary after now (row tz)
+ *   `expire_at`   = first calendar boundary after `default_from` (row tz)
  *   `switch_at`   = expire_at + revive_grace (grace absent → expire_at)
- *   `default_from`= create instant — the row serves immediately
+ *   `default_from`= the authored anchor instant (omitted → create instant,
+ *                   the row serves immediately)
  * Non-reviving rows get no anchors (all NULL). */
 function reviveAnchors(body: Record<string, unknown>): Record<string, unknown> {
   const every = body.revive_every as string | null | undefined;
   if (!every) return {};
   const tz = (body.tz as string | null | undefined) ?? "UTC";
-  const now = new Date();
-  const expire_at = reviveExpireAt(now, every, tz);
+  const anchor = (body.default_from as Date | undefined) ?? new Date();
+  const expire_at = reviveExpireAt(anchor, every, tz);
   const grace = body.revive_grace as string | null | undefined;
   const switch_at = grace ? reviveAddInterval(expire_at, grace, tz) : expire_at;
-  return { expire_at, switch_at, default_from: now };
+  return { expire_at, switch_at, default_from: anchor };
 }
 
 function vSezValue(v: unknown, field: string): string | null {
@@ -561,41 +601,23 @@ function vSezValue(v: unknown, field: string): string | null {
 /** Cross-field revive contract on the merged row — the wire validator
  *  owns shape; this owns coherence. Runs on create (full body) and on
  *  update (stored row merged with the accepted patch), so pattern/sez
- *  edits can never leave a reviving row inconsistent. */
+ *  edits can never leave a reviving row inconsistent. The contract lives
+ *  in core's `sequenceReviveShapeIssues` — the SAME predicate the form's
+ *  cross-field registry runs; issues ride the `err.issues` channel
+ *  `toValidationError` lifts into `extra.issues` (RFC 7807 error viewer). */
 function assertReviveCoherence(row: {
   pattern: string;
   sez?: string | null; sez2?: string | null; sez3?: string | null;
   revive_every?: string | null;
   revive_slot?: string | null;
 }): void {
-  const parsed = parseSequencePattern(row.pattern);
-  for (const slot of ["sez", "sez2", "sez3"] as const) {
-    const v = row[slot];
-    if (v === null || v === undefined) continue;
-    if (!parsed.sez_slots.includes(slot)) {
-      bad(slot, `supplied but the pattern has no {${slot}} token`);
-    }
-  }
-  if (!row.revive_every) {
-    if (row.revive_slot) bad("revive_slot", "requires revive_every");
-    return;
-  }
-  if (!row.revive_slot) {
-    bad("revive_slot", "required when revive_every is set");
-  }
-  const slot = row.revive_slot as "sez" | "sez2" | "sez3";
-  if (!parsed.sez_slots.includes(slot)) {
-    bad("revive_slot", `pattern has no {${slot}} token`);
-  }
-  const value = row[slot];
-  if (value === null || value === undefined) {
-    bad(slot, "row must own the revive slot's value to advance it");
-  }
-  try {
-    derivePeriodLabel(value as string, row.revive_every);
-  } catch (e) {
-    bad(slot, `value "${value}" cannot be advanced by '${row.revive_every}': ${(e as Error).message}`);
-  }
+  const issues = sequenceReviveShapeIssues(row);
+  if (issues.length === 0) return;
+  const err = new ValidationError(
+    `sequence: revive contract failed — ${issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`,
+  ) as ValidationError & { issues?: unknown[] };
+  err.issues = issues.map((i) => ({ path: i.path, code: i.code, message: i.message }));
+  throw err;
 }
 
 // ─── the decl factory ────────────────────────────────────────────────────

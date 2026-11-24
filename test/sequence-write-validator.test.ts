@@ -70,9 +70,15 @@ describe("sequence write validator — revive contract", () => {
   });
 
   it("system-owned columns are never write keys — construction gate", () => {
-    for (const k of ["binding_key", "expire_at", "switch_at", "default_from", "revived_from", "revived_at", "revived_by"]) {
+    for (const k of ["binding_key", "expire_at", "switch_at", "revived_from", "revived_at", "revived_by"]) {
       expect(() => decl.schemas.createBody({ entity: { ...VALID, [k]: "x" } }), k).toThrow(/unknown field/);
     }
+  });
+
+  it("default_from is a create-only anchor key — instant-validated", () => {
+    const out = decl.schemas.createBody({ entity: { ...VALID, default_from: "2026-11-26T00:00:00Z" } });
+    expect(out.entity.default_from).toBeInstanceOf(Date);
+    expect(() => decl.schemas.createBody({ entity: { ...VALID, default_from: "not-a-date" } })).toThrow(/default_from/);
   });
 
   it("revive_every requires a valid 'N unit' interval", () => {
@@ -81,31 +87,31 @@ describe("sequence write validator — revive contract", () => {
   });
 
   it("revive_slot must be a used sez slot the pattern declares", () => {
-    // sez2 not in pattern → rejected
+    // sez2 not in pattern → rejected (the core shape predicate's contract)
     expect(() => decl.schemas.createBody({
       entity: { ...PATTERN_SEZ, sez: "26", revive_every: "1 year", revive_slot: "sez2" },
-    })).toThrow(/no \{sez2\}/);
+    })).toThrow(/sequence_revive_slot_not_in_pattern/);
   });
 
   it("revive slot value must be row-owned and advanceable", () => {
     // slot declared but row doesn't own the value → nothing to advance
     expect(() => decl.schemas.createBody({
       entity: { ...PATTERN_SEZ, revive_every: "1 year", revive_slot: "sez" },
-    })).toThrow(/must own the revive slot/);
+    })).toThrow(/sequence_revive_slot_value_required/);
     // row owns a non-advanceable label
     expect(() => decl.schemas.createBody({
       entity: { ...PATTERN_SEZ, sez: "URGENT", revive_every: "1 year", revive_slot: "sez" },
-    })).toThrow(/cannot be advanced/);
+    })).toThrow(/sequence_revive_value_not_advancable/);
   });
 
   it("sez charset and pattern-slot coherence are enforced", () => {
     expect(() => decl.schemas.createBody({ entity: { ...PATTERN_SEZ, sez: "bad value!" } })).toThrow(/charset/);
     // sez supplied but pattern declares no {sez} → mis-keyed config rejected
-    expect(() => decl.schemas.createBody({ entity: { ...VALID, sez: "26" } })).toThrow(/no \{sez\} token/);
+    expect(() => decl.schemas.createBody({ entity: { ...VALID, sez: "26" } })).toThrow(/sequence_sez_not_in_pattern/);
   });
 
-  it("update: revive_every/revive_slot are immutable — rejected outright", () => {
-    for (const k of ["revive_every", "revive_slot"]) {
+  it("update: revive_every/revive_slot/default_from/sez* are immutable — rejected outright", () => {
+    for (const k of ["revive_every", "revive_slot", "default_from", "sez", "sez2", "sez3"]) {
       expect(() => decl.schemas.updateBody({ entity: { [k]: "1 year", version: 1n } }), k).toThrow(/immutable/);
     }
   });
