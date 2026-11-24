@@ -86,26 +86,26 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // identity; the wire validator rejects them regardless).
     // `format:"revive_interval"` — the numeric+unit composite control
     // emitting the closed `'N unit'` varchar canonical.
-    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10 },
+    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10, tooltip: `${F("revive_every")}.tooltip` },
     // When the row starts serving as the binding default — a create-only
     // anchor (the generation's identity), gated on `revive_every` via
     // `depends_on` (disabled while the cadence is unset). `expire_at`
     // derives server-side from it; the field is never edited afterwards.
-    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 11, immutable: true, default: { kind: "next_day_start_local" }, depends_on: { field: "revive_every", disabled_when: { set: false } } },
+    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 11, immutable: true, default: { kind: "next_day_start_local" }, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("default_from")}.tooltip` },
     // Which sez slot the period label advances at revive — closed-enum
     // badge select, gated like `default_from` on `revive_every`.
     { key: "revive_slot", label_key: F("revive_slot"), type: "badge", order: 12, immutable: true, depends_on: { field: "revive_every", disabled_when: { set: false } }, badge: { values: {
       sez: { label_key: F("revive_slot_values.sez"), color: "sky-500" },
       sez2: { label_key: F("revive_slot_values.sez2"), color: "violet-500" },
       sez3: { label_key: F("revive_slot_values.sez3"), color: "teal-500" },
-    } } },
+    } }, tooltip: `${F("revive_slot")}.tooltip` },
     // Overlap window — editable operational slack (moves only `switch_at`).
-    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_offset", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } } },
+    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_offset", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("revive_grace")}.tooltip` },
     // Row-owned sezionale defaults — write at create, frozen afterwards:
     // the owned slots are the revive axis identity.
-    { key: "sez", label_key: F("sez"), type: "text", order: 14, default_visible: false, immutable: true },
-    { key: "sez2", label_key: F("sez2"), type: "text", order: 15, default_visible: false, immutable: true },
-    { key: "sez3", label_key: F("sez3"), type: "text", order: 16, default_visible: false, immutable: true },
+    { key: "sez", label_key: F("sez"), type: "text", order: 14, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "sez2", label_key: F("sez2"), type: "text", order: 15, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "sez3", label_key: F("sez3"), type: "text", order: 16, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
     // `binding_key` — machine series identity written ONLY at binding
     // materialize; `name` on bound rows already displays `<table>.<field>`.
     { key: "binding_key", label_key: F("binding_key"), type: "text", order: 17, hidden: true },
