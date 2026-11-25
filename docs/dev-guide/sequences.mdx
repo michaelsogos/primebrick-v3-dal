@@ -80,6 +80,18 @@ UPDATE` + guarded write in the same tx as the standard `update`):
 - **Version** — the guarded write enforces `version` (axes-only bodies
   bump it there; mixed bodies leave the single bump to `update()`).
 
+**Version representation in the revive path.** `version` is `bigint`
+everywhere in the dal domain (pg `int8` reads back as bigint). The revive
+lock deliberately reads it `SELECT … version::text` — the comparison is a
+string equality against `String(spec.version)`, so the optimistic-lock
+check is representation-exact regardless of driver type mappings. Never
+compare `Number(row.version)` to a bigint spec version: a cross-type
+`!==` is always true and produces false optimistic-lock failures (this
+exact bug was found and fixed in the bigint type cascade — the cascade
+exists precisely because types must mirror the wire reality). Input
+versions arriving from callers pass through `vBigint`-style normalization
+at the boundary — write contracts declare `bigint` end-to-end.
+
 ### Literal pins never propagate (clone sanitization)
 
 An explicit instant is history, not recurrence — cloning a row whose
