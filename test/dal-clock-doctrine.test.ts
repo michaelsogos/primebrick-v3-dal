@@ -8,6 +8,7 @@ import {
 import { REPO_INTERNAL } from "../src/repository/repository.js";
 import { SimpleTestEntity } from "./entities/simple-test-entity.js";
 import { TypeTestEntity } from "./entities/type-test-entity.js";
+import { SyncProbeEntity } from "./entities/sync-probe-entity.js";
 import {
   getTestPool,
   closeTestPool,
@@ -111,5 +112,40 @@ describe("DB-clock doctrine", () => {
         { actor: "test" },
       ),
     ).rejects.toThrow(ValidationError);
+  });
+
+  // ── Pin-only regression: @SynchronizableField carries the storage type
+  // through the runtime cascade (no explicit pgType, no jsType) — the gate
+  // must resolve it, exactly like user_profiles/organizations/role_mappings.
+  it("DAL_NOW is accepted on a pin-only synchronizable column (insert)", async () => {
+    const before = Date.now() - 2000;
+    const row = await repo.add(
+      SyncProbeEntity,
+      { last_synced_at: DAL_NOW } as never,
+      { actor: "test" },
+    );
+    const after = Date.now() + 2000;
+    expect(row.last_synced_at).toBeInstanceOf(Date);
+    expect((row.last_synced_at as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((row.last_synced_at as Date).getTime()).toBeLessThanOrEqual(after);
+  });
+
+  it("DAL_NOW is accepted on a pin-only synchronizable column (update)", async () => {
+    // seed with a plain business Date far in the past — the sentinel
+    // re-stamp must move it to the statement instant
+    const created = await repo.add(
+      SyncProbeEntity,
+      { last_synced_at: new Date("2020-01-01T00:00:00Z") } as never,
+      { actor: "test" },
+    );
+    const before = Date.now() - 2000;
+    const updated = await repo.update(
+      SyncProbeEntity,
+      { id: created.id, uuid: created.uuid, last_synced_at: DAL_NOW } as never,
+      { actor: "test" },
+    );
+    const after = Date.now() + 2000;
+    expect((updated.last_synced_at as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((updated.last_synced_at as Date).getTime()).toBeLessThanOrEqual(after);
   });
 });

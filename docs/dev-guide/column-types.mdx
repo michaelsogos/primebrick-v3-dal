@@ -305,9 +305,12 @@ await svc.update(row.uuid, { used_at: DAL_NOW, version: row.version });
 `DAL_NOW` is `Symbol.for("primebrick.dal.now")` — identity survives the
 duplicated library copies inside remote module bundles. It is accepted on
 `add`/`update`/bulk/clone paths and rejected on non-timestamp columns.
-Read-side comparisons (`expires_at < now`, expiry checks) are plain query
-semantics and stay client-side — record management and record querying
-are different concerns.
+"Timestamp" is resolved through the **runtime cascade** (explicit `pgType`
+→ semantic pin → `jsType`), never the explicit `pgType` alone — a pin-only
+`@SynchronizableField` column IS a timestamp column by contract, and the
+gate must agree. Read-side comparisons (`expires_at < now`, expiry checks)
+are plain query semantics and stay client-side — record management and
+record querying are different concerns.
 
 ## Adding a new column type
 

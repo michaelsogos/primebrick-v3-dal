@@ -102,11 +102,16 @@ export type DalNow = symbol;
 export const DAL_NOW_SQL = "clock_timestamp()";
 
 /** True when `colMeta` describes a timestamp-ish column that may carry
- *  the marker. Accepts `instant` jsType or a timestamp/date pgType. */
-export function acceptsDalNow(col: { jsType?: unknown; pgType?: string } | undefined): boolean {
+ *  the marker. Accepts `instant` jsType or a timestamp/date column type.
+ *  The type is resolved through the documented runtime cascade — explicit
+ *  `pgType`, else `inferredPgType` (which carries semantic-pin resolutions
+ *  like `@SynchronizableField` → timestamptz): never the explicit `pgType`
+ *  alone, or pin-only columns are rejected despite being timestamps by
+ *  contract (see `effectivePgStorageType` above). */
+export function acceptsDalNow(col: { jsType?: unknown; pgType?: string; inferredPgType?: string } | undefined): boolean {
   if (!col) return false;
   if (col.jsType === "instant") return true;
-  const t = (col.pgType ?? "").toLowerCase();
+  const t = (col.pgType ?? col.inferredPgType ?? "").toLowerCase();
   return t.startsWith("timestamp") || t === "date" || t === "timestamptz";
 }
 

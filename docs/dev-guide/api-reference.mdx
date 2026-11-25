@@ -887,6 +887,34 @@ The reviver — phase A creates the successor of every expired
 |-----------|------|-------------|
 | spec | `{ actor: string; now: Date; only_uuid: string }` |  |
 
+#### `Repository.sequenceReviveAxesUpdate(spec): Promise<void>`
+
+Guarded revive-axis edit — the ATOMIC in-tempo contract. The row is
+ locked `FOR UPDATE` first — symmetric serialization with the sweep's
+ own `FOR UPDATE` due-set read: whoever takes the lock first wins, and
+ the loser re-evaluates post-commit (the clone's re-read sees the moved
+ `expire_at` and drops the row; our re-read sees the successor). With
+ the lock held for the whole tx, code-side checks are atomic — no
+ check-then-write window:
+
+  - expire axis (`every` present): editable only while the row is
+    still in tempo — `expire_at > now` AND no successor exists
+    (`revived_from`). Once cloned, the moment is history.
+  - switch axis (`grace` present): editable only while
+    `switch_at > now` — the grace window is exactly what this edits.
+
+ `every → NULL` is "revive off": clears `expire_at`/`switch_at`/
+ `revive_slot` — the row becomes the permanent final generation.
+ The optimistic-lock `version` is enforced HERE (the generic update
+ may be skipped on axes-only bodies) and bumped only when
+ `bumpVersion` — mixed bodies leave the single bump to `update()`.
+ Throws `OptimisticLockError` on stale version, `sequence_revive_closed`
+ when the guard refuses. Caller MUST run inside a transaction.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; version: number; every: string \| null; grace: string \| null; expire_at: Date \| null; switch_at: Date \| null; bumpVersion: boolean; actor: string }` |  |
+
 #### `Repository.sequenceAnalyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
 
 Read-only column-usage analysis for a sequence pattern — the
@@ -1166,15 +1194,16 @@ a subclass is useless the moment anything instantiates it).
 | binding_key | `string \| null` | Series identity for declared bindings — `<table>.<field>` (or
  `…@expr_<hash>`); written ONLY by the system at binding
  materialize, never a write key. Operator rows keep NULL. |
-| revive_every | `string \| null` | Revive cadence `'N (day|week|month|quarter|year)[s]'` — the row is
- cloned on a chained calendar; NULL = never revives. Stored as
- varchar to keep the closed wire format verbatim (PG `interval`
- output normalizes '3 months'→'3 mons'/'1 week'→'7 days', breaking
- round-trip). IMMUTABLE post-create — the period contract is the
- row's identity. |
-| revive_grace | `string \| null` | Overlap window `'N unit'` — how long the retired row survives
- `expire_at` so backdated `at` still resolves it. Editable — moves
- only `switch_at`. |
+| revive_every | `string \| null` | Revive spec `'N (day|week|month|quarter|year)[s]' | 'at <RFC3339>'`
+ — cadence-derived expiry, or an explicit pin on the `expire_at`
+ axis (the literal never propagates: the clone sanitizes it to NULL
+ and the successor lives as the permanent final generation). Stored
+ as varchar to keep the closed wire format verbatim (PG `interval`
+ output normalizes '3 months'→'3 mons', breaking round-trip). |
+| revive_grace | `string \| null` | Overlap spec `'N unit' | 'until <RFC3339>'` — how long the retired
+ row survives `expire_at` so backdated `at` still resolves it, or a
+ direct `switch_at` pin (literal sanitized to NULL on successors).
+ Editable — moves only `switch_at`. |
 | revive_slot | `string \| null` | Which sez slot the period label advances at revive — must be a
  slot the pattern uses whose value parses under `derivePeriodLabel`.
  IMMUTABLE post-create. |
@@ -1228,11 +1257,23 @@ The contract every entity service must satisfy — enforced on the router.
 
 #### `SequencesService.update(uuid, body, tx): Promise<SequenceEntity & Record<string, unknown>>`
 
-Update path coherence — the wire validator owns shape/immutability;
- this owns the revive contract against the MERGED row (stored +
- accepted patch), so pattern/sez edits can never leave a reviving
- row pointing at a slot it can't advance. `version` is excluded —
- it rides the optimistic-lock lane, not the contract.
+Update path — revive axes are editable WHILE IN TEMPO: the persisted
+ moments (`expire_at`/`switch_at`) recompute here, and the atomic
+ guard lives in `sequenceReviveAxesUpdate`'s WHERE (the sweep locks
+ the row `FOR UPDATE`, this UPDATE locks it back — whoever commits
+ second sees the other through the guard predicates).
+
+ Recompute rules — anchored at NOW (mid-generation edits; the
+ create-time `default_from` anchor is history):
+  - `revive_every='N unit'` → `expire_at` = next calendar boundary;
+  - `revive_every='at <ISO>'` → the literal pin (must stay future);
+  - `revive_every→NULL`    → revive off — clears expire/switch/slot
+    (permanent final generation);
+  - `switch_at` always recomputes when an axis moves: `expire+grace`,
+    an `'until'` literal verbatim, `expire_at` when grace is NULL.
+
+ `version` rides the optimistic-lock lane via `super.update` inside
+ the SAME tx — a lost race rolls the guarded write back with it.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1972,6 +2013,14 @@ comboboxes, lists, chips. |
  list create CTA opens `entity.record` in `mode:"create"` — the same
  record panel, no fetch, empty draft, POST on commit.
  Authored on the entity meta — never via component props. |
+| form | `{ validators: string[] }` | Entity-level form policy — the surface an entity declares for
+ surfaces that have no authored `page_props.form` (builtin/platform
+ entities have no route decl to author against: their record-sheet
+ forms ride the synthesized fallback). Consumed by
+ `synthesizeFormDecl`, which attaches `validators` verbatim — an
+ authored route `page_props.form` always wins (page-domain
+ placement beats entity policy). Field census stays synthesized:
+ `meta.columns` order is the single source, never duplicated. |
 | columns | `MetaColumn[]` | Entity field dictionary (root-level, transversal). |
 | table | `TableMeta` | Table options — omit when the entity has no table page
  (e.g. a self-service form meta). |
@@ -2039,7 +2088,7 @@ A single validation finding. `path` is the entity field key (or a
 | Field | Type | Description |
 |-------|------|-------------|
 | path | `string` |  |
-| code | `"required" \| "immutable" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab"` |  |
+| code | `"required" \| "immutable" \| "schema_mismatch" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "not_in_vocab"` |  |
 | message | `string` |  |
 
 ### `IAuditableEntity`
@@ -2576,6 +2625,18 @@ declarations carrying `payload_schema` — the schema IS the listing opt-in
 (a callable without a contract is not mappable). The service declares its
 own domain subject only — nothing in this axis knows scheduling exists.
 
+### `ColumnDefaultSpec`
+
+`ColumnDefaultSpec` — the computed-default vocabulary a `MetaColumn.default`
+may carry instead of a literal. Closed union — consumers recognize the
+spec by `kind` membership, never by object shape alone (a jsonb column
+may legitimately hold a literal object default).
+
+  - `"next_day_start_local"` — the form seeds tomorrow at 00:00 in the
+    USER's local zone, serialized to the column's wire type (`datetime`
+    → UTC ISO). The anchor-default for "starts from" fields (e.g.
+    `sequence.default_from`).
+
 ### `ColumnOptions`
 
 ### `ColumnPgPersistenceHints`
@@ -2917,13 +2978,6 @@ crosses the wire. Same physical-column rule as `color_field`.
 
 ### `MetaColumnDependsCondition`
 
-A sibling-value condition — the SAME vocabulary `null_label.when` and
-`visible_on` already use for row-gated rendering, lifted to form scope.
-`prop` compares against the pivot ROW's prop (the picked ref option's
-raw row — e.g. its `code`); absent `prop` compares the pivot's stored
-value directly. `equals`/`not` take a single literal, `values` a set
-(IN semantics).
-
 ### `MetaColumnFormat`
 
 Authored field-format vocabulary — the SEMANTIC input contract of a
@@ -2935,7 +2989,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence" \| "sequence_pattern" \| "i18n_key"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence" \| "sequence_pattern" \| "revive_interval" \| "revive_offset" \| "i18n_key"`
 
 ### `MetaColumnOptionsSource`
 
@@ -3358,6 +3412,12 @@ declaring the vendor specifiers/versions it was compiled against.
 
 ### `RenameHeuristicResult`
 
+### `ReviveSpec`
+
+A revive axis value: a `'N unit'` interval or a pinned instant.
+
+**Type:** `{ kind: "interval"; count: number; unit: SequenceReviveUnit } \| { kind: "at"; at: Date }`
+
 ### `RoundingMode`
 
 **Type:** `"UP" \| "DOWN" \| "CEILING" \| "FLOOR" \| "HALF_UP" \| "HALF_DOWN" \| "HALF_EVEN"`
@@ -3480,6 +3540,10 @@ Sezionale values supplied per assignment — positional per token.
 ### `SequencePeriodKind`
 
 **Type:** `"none" \| "year" \| "quarter" \| "month" \| "day"`
+
+### `SequenceReviveSlot`
+
+**Type:** `typeof SEQUENCE_REVIVE_SLOTS[number]`
 
 ### `SequenceReviveUnit`
 
@@ -4092,9 +4156,17 @@ Ordered strict → loose; documented for consumers of `diff-entities-vs-database
 
 **Type:** `readonly string[]`
 
+### `REVIVE_AT_RE`
+
+**Type:** `RegExp`
+
 ### `REVIVE_INTERVAL_RE`
 
 `'15 days'`, `'1 month'`, `'2 years'` — the closed wire format.
+
+**Type:** `RegExp`
+
+### `REVIVE_UNTIL_RE`
 
 **Type:** `RegExp`
 
@@ -4113,6 +4185,13 @@ label can never drift apart even by accident.
 - `exec-stop`  → destructive (stop/disable is a destructive op)
 
 **Type:** `Record<string, ActionColor>`
+
+### `SEQUENCE_REVIVE_SLOTS`
+
+The three positional sezionale slots — the only legal `revive_slot`
+ values, and the slots a pattern's `{sez}`/`{sez2}`/`{sez3}` tokens map.
+
+**Type:** `readonly ["sez", "sez2", "sez3"]`
 
 ### `SEQUENCE_REVIVE_UNITS`
 
@@ -4288,11 +4367,16 @@ both. Shared internals still dedupe through the bundler's shared chunks.
 ### `acceptsDalNow(col): boolean`
 
 True when `colMeta` describes a timestamp-ish column that may carry
- the marker. Accepts `instant` jsType or a timestamp/date pgType.
+ the marker. Accepts `instant` jsType or a timestamp/date column type.
+ The type is resolved through the documented runtime cascade — explicit
+ `pgType`, else `inferredPgType` (which carries semantic-pin resolutions
+ like `@SynchronizableField` → timestamptz): never the explicit `pgType`
+ alone, or pin-only columns are rejected despite being timestamps by
+ contract (see `effectivePgStorageType` above).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ jsType: unknown; pgType: string } \| undefined` |  |
+| col | `{ jsType: unknown; pgType: string; inferredPgType: string } \| undefined` |  |
 
 ### `actionColorClass(color): string`
 
@@ -5821,6 +5905,14 @@ Scale is preserved as written (`"1.230"` → scale 3).
 |-----------|------|-------------|
 | input | `string` |  |
 
+### `parseGraceSpec(text): ReviveSpec \| null`
+
+`revive_grace` spec — `'N unit'` offset or `'until <RFC3339>'` pin.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
 ### `parseMapKeysDeclaration(raw): Record<string, MapKeyDecl>`
 
 Parse an `x_map_keys.prop` declaration row (the template's `variables`
@@ -5858,6 +5950,14 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 
 Parse a `'N unit'` revive interval — null on anything outside the
  closed format (validators turn null into the construction error).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
+### `parseReviveSpec(text): ReviveSpec \| null`
+
+`revive_every` spec — `'N unit'` cadence or `'at <RFC3339>'` pin.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -6324,6 +6424,19 @@ the interval walks its zoned wall time forward, then converts back.
 | interval | `string` |  |
 | tz | `string` |  |
 
+### `reviveAdvanceSpec(every, period_kind): { count: number; unit: SequenceReviveUnit } \| null`
+
+The interval a successor's sez label advances by — the authored
+ interval itself, or `'1 <period_kind>'` under an `'at'` pin (the
+ pattern's own grain is the natural advance — `'26'`→`'27'` under a
+ yearly pattern). `null` when the spec is unparseable or `'at'` meets
+ a period-free pattern (`period_kind:'none'` — no grain to advance).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| every | `string` |  |
+| period_kind | `SequencePeriodKind` |  |
+
 ### `reviveExpireAt(at, every, tz): Date`
 
 The calendar-anchored expiry instant for a reviving row — the first
@@ -6507,6 +6620,25 @@ the claim RETURNING is the only truth).
 | count | `number` |  |
 | at | `Date` |  |
 | opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
+
+### `sequenceReviveShapeIssues(row): FieldIssue[]`
+
+The revive contract on a (possibly merged) sequence row — ONE predicate
+consumed by the form's cross-field registry, the wire validator, and
+the service's merged-row check, so the three surfaces can never drift:
+
+  - a supplied `sez*` value must name a slot the pattern declares;
+  - `revive_slot` requires `revive_every` and is required by it;
+  - `revive_slot` must be a slot the pattern uses;
+  - the slot's row-owned value must be present and advanceable by
+    `derivePeriodLabel` — a free-text sezionale can never revive.
+
+An unparseable `pattern` contributes NO issues — the `sequence_pattern`
+format check owns that finding; this predicate is the shape layer.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| row | `{ pattern: string; sez: string \| null; sez2: string \| null; sez3: string \| null; revive_every: string \| null; revive_slot: string \| null }` |  |
 
 ### `sequenceTokenCatalog(): SequenceTokenSpec[]`
 

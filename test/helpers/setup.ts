@@ -381,6 +381,15 @@ export async function setupTestSchema(): Promise<void> {
   ]) {
     await db.query(`ALTER TABLE ${table} ALTER COLUMN uuid SET DEFAULT uuidv7()`);
   }
+
+  // Pin-only synchronizable probe table (DAL_NOW gate regression)
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dal_test_sync_probe (
+      id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      uuid           uuid NOT NULL DEFAULT uuidv7(),
+      last_synced_at timestamptz
+    );
+  `);
 }
 
 /**
@@ -390,7 +399,7 @@ export async function setupTestSchema(): Promise<void> {
 export async function truncateTestTables(): Promise<void> {
   const db = getTestPool();
   await db.query(`
-    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source, dal_test_rel_links, dal_test_seq, sequences, sequence_counters RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE dal_test_simple, dal_test_simple_audit, dal_test_users, dal_test_types, test_bench_simple, test_bench_primitives, dal_test_ref_source, dal_test_rel_links, dal_test_seq, sequences, sequence_counters, dal_test_sync_probe RESTART IDENTITY CASCADE;
   `);
 }
 
