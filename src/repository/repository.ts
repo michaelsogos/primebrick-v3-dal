@@ -1136,7 +1136,7 @@ export class Repository {
         `SequenceEntity: row ${spec.uuid} vanished (deleted) between read and revive-axis update`,
       );
     }
-    if ((row.version as unknown as bigint) !== BigInt(spec.version)) {
+    if (BigInt(row.version) !== BigInt(spec.version)) {
       throw new OptimisticLockError(
         `SequenceEntity: optimistic concurrency violation — expected version ${spec.version}, row is at version ${row.version}`,
       );

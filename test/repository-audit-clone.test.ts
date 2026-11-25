@@ -134,7 +134,7 @@ describe("Repository — audit-on-all-writes", () => {
     expect(auditPort.entries[0].entityId).toBe((await repo.findByUUID(SimpleTestEntity, inserted.uuid))!.id);
     expect(auditPort.entries[0].entityUuid).toBe(inserted.uuid);
     expect(auditPort.entries[0].changedBy).toBe("creator");
-    expect(auditPort.entries[0].version).toBe(1);
+    expect(auditPort.entries[0].version).toBe(1n);
   });
 
   it("update: writes UPDATE audit entry with delta", async () => {

@@ -646,12 +646,12 @@ function vWriteEntity(body: unknown, partial: boolean): Record<string, unknown> 
     assertReviveCoherence(out as Parameters<typeof assertReviveCoherence>[0]);
   }
   if (partial) {
-    // `version` rides int8 on the wire — ext-json decodes it as `bigint`,
-    // never `number`. Accept the full vBigint domain and down-cast
-    // (audit versions fit in the safe-integer range by construction).
+    // `version` rides int8 on the wire — ext-json decodes it as `bigint`.
+    // Accept the full vBigint input domain (wire bigint, legacy number,
+    // SQL-text) and keep the domain type — no down-cast.
     const v = vBigint(rec.version, "version");
     if (v < 0n) bad("version", "required non-negative integer");
-    out.version = Number(v);
+    out.version = v;
   }
   return out;
 }
