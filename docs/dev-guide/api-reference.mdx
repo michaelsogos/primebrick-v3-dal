@@ -109,7 +109,7 @@ The SDK's IConfigEntity interface mirrors the field names for port-level use.
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 
@@ -355,7 +355,7 @@ This class is DB-agnostic — it does NOT import from @primebrick/sdk.
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 
@@ -466,7 +466,7 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| body | `Record<string, unknown> & { version: number }` |  |
+| body | `Record<string, unknown> & { version: bigint }` |  |
 | tx | `Repository` |  |
 
 #### `DomainService.delete(uuid, version): Promise<TEntity>`
@@ -474,21 +474,21 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.restore(uuid, version): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.purge(uuid, version): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.duplicate(uuids): Promise<DuplicateResult>`
 
@@ -913,7 +913,7 @@ Guarded revive-axis edit — the ATOMIC in-tempo contract. The row is
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| spec | `{ uuid: string; version: number; every: string \| null; grace: string \| null; expire_at: Date \| null; switch_at: Date \| null; bumpVersion: boolean; actor: string }` |  |
+| spec | `{ uuid: string; version: bigint; every: string \| null; grace: string \| null; expire_at: Date \| null; switch_at: Date \| null; bumpVersion: boolean; actor: string }` |  |
 
 #### `Repository.sequenceAnalyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
 
@@ -1125,7 +1125,7 @@ SEALED: same `new.target` construction guard as SequenceEntity.
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | uuid | `string` |  |
 | sequence_uuid | `string` | → `sequences.uuid` of the owning definition (same module schema). |
 | period_key | `string` | Period identity from `derivePeriodKey` — `''` for period-free patterns. |
@@ -1169,7 +1169,7 @@ a subclass is useless the moment anything instantiates it).
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 | uuid | `string` |  |
@@ -1278,7 +1278,7 @@ Update path — revive axes are editable WHILE IN TEMPO: the persisted
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| body | `Record<string, unknown> & { version: number }` |  |
+| body | `Record<string, unknown> & { version: bigint }` |  |
 | tx | `Repository` |  |
 
 #### `SequencesService.create(body, tx): Promise<SequenceEntity & Record<string, unknown>>`
@@ -1425,21 +1425,21 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `SequencesService.restore(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `SequencesService.purge(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `SequencesService.duplicate(uuids): Promise<DuplicateResult>`
 
@@ -1580,7 +1580,7 @@ Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/b
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 | id | `bigint` |  |
@@ -1729,7 +1729,7 @@ markers); ports that do not persist a row may return `0n`.
 | changed_by | `string` |  |
 | changed_by_display_name | `string \| null` |  |
 | changed_by_idp_code | `string \| null` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | delta | `Record<string, unknown>` |  |
 
 ### `BuiltinDeclCtx`
@@ -1766,7 +1766,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+| version | `bigint` | Required on auditable entities (repo-enforced optimistic lock);
  absent on non-auditable ones (no version column exists). |
 
 ### `BulkUpdateItem`
@@ -1774,7 +1774,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+| version | `bigint` | Required on auditable entities (repo-enforced optimistic lock);
  absent on non-auditable ones. |
 
 ### `CheckEntityFieldsOptions`
@@ -1900,7 +1900,7 @@ most recent change without scanning the audit log.
 |-------|------|-------------|
 | entity_type | `string` |  |
 | entity_uuid | `string` |  |
-| version | `number` | The new `version` after the save. |
+| version | `bigint` | The new `version` after the save. |
 | audit_log_id | `string \| number` | The audit row key of the change — bigint for legacy surrogate-id
  audit tables, uuid string for post-eradication `*_audit` rows
  (PK `(uuid, changed_at)`). |
@@ -2104,7 +2104,7 @@ both are required (the Dal write-path signatures already do this).
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 ### `IClonableEntity`
 
@@ -5151,6 +5151,12 @@ Parse an Ext-JSON string — strict.
 
 ALL integer-valued numbers are returned as native `bigint`; non-integer
 floats stay `number`; strings/booleans/null are unaffected.
+
+The single sanctioned exception: the `status` integer of an RFC7807
+problem-details object (shape-detected by type+title+detail strings)
+stays `number` — the error model is HTTP-native and its status is
+classified with typeof guards across the ecosystem. An integer `status`
+outside that shape is a domain integer and stays bigint, always.
 
 Throws `SyntaxError` on malformed input, trailing commas, and
 duplicate keys at any depth (native JSON.parse silently last-wins —

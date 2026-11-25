@@ -36,7 +36,7 @@ export interface AuditRow {
   changed_by: string;
   changed_by_display_name: string | null;
   changed_by_idp_code: string | null;
-  version: number;
+  version: bigint;
   delta: Record<string, unknown>;
 }
 
@@ -110,7 +110,7 @@ export async function findAuditPage(
       changed_by: row.changed_by as string,
       changed_by_display_name: (row.changed_by_display_name as string | null) ?? null,
       changed_by_idp_code: (row.changed_by_idp_code as string | null) ?? null,
-      version: row.version as number,
+      version: row.version as bigint,
       delta: (row.delta as Record<string, unknown>) ?? {},
     })),
     pagination: {

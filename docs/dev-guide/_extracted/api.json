@@ -2800,7 +2800,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				},
 				{
@@ -14294,7 +14294,7 @@
 			"sources": [
 				{
 					"fileName": "primebrick-v3-core/dist/ext-json.d.ts",
-					"line": 42,
+					"line": 56,
 					"character": 24
 				}
 			],
@@ -14325,7 +14325,31 @@
 							},
 							{
 								"kind": "text",
-								"text": "; strings/booleans/null are unaffected.\n\nThrows "
+								"text": "; strings/booleans/null are unaffected.\n\nThe single sanctioned exception: the "
+							},
+							{
+								"kind": "code",
+								"text": "`status`"
+							},
+							{
+								"kind": "text",
+								"text": " integer of an RFC7807\nproblem-details object (shape-detected by type+title+detail strings)\nstays "
+							},
+							{
+								"kind": "code",
+								"text": "`number`"
+							},
+							{
+								"kind": "text",
+								"text": " — the error model is HTTP-native and its status is\nclassified with typeof guards across the ecosystem. An integer "
+							},
+							{
+								"kind": "code",
+								"text": "`status`"
+							},
+							{
+								"kind": "text",
+								"text": "\noutside that shape is a domain integer and stays bigint, always.\n\nThrows "
 							},
 							{
 								"kind": "code",
@@ -14340,7 +14364,7 @@
 					"sources": [
 						{
 							"fileName": "primebrick-v3-core/dist/ext-json.d.ts",
-							"line": 42,
+							"line": 56,
 							"character": 24
 						}
 					],
@@ -14389,7 +14413,7 @@
 			"sources": [
 				{
 					"fileName": "primebrick-v3-core/dist/ext-json.d.ts",
-					"line": 51,
+					"line": 65,
 					"character": 24
 				}
 			],
@@ -14427,7 +14451,7 @@
 					"sources": [
 						{
 							"fileName": "primebrick-v3-core/dist/ext-json.d.ts",
-							"line": 51,
+							"line": 65,
 							"character": 24
 						}
 					],
@@ -31018,7 +31042,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				},
 				{
@@ -40873,7 +40897,7 @@
 															],
 															"type": {
 																"type": "intrinsic",
-																"name": "number"
+																"name": "bigint"
 															}
 														}
 													],
@@ -44678,7 +44702,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -44791,7 +44815,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -44904,7 +44928,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -61534,7 +61558,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					},
 					"inheritedFrom": {
 						"type": "reference",
@@ -62160,7 +62184,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					},
 					"inheritedFrom": {
 						"type": "reference",
@@ -63382,7 +63406,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					},
 					"inheritedFrom": {
 						"type": "reference",
@@ -64014,7 +64038,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					},
 					"inheritedFrom": {
 						"type": "reference",
@@ -65676,7 +65700,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					},
 					"inheritedFrom": {
 						"type": "reference",
@@ -66877,7 +66901,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				},
 				{
@@ -69231,7 +69255,7 @@
 															],
 															"type": {
 																"type": "intrinsic",
-																"name": "number"
+																"name": "bigint"
 															}
 														}
 													],
@@ -69346,7 +69370,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -69432,7 +69456,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -69518,7 +69542,7 @@
 									"flags": {},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -71567,7 +71591,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				}
 			],
@@ -71641,7 +71665,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				}
 			],
@@ -74863,7 +74887,7 @@
 															],
 															"type": {
 																"type": "intrinsic",
-																"name": "number"
+																"name": "bigint"
 															}
 														}
 													],
@@ -74970,7 +74994,7 @@
 									},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -75048,7 +75072,7 @@
 									},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -75126,7 +75150,7 @@
 									},
 									"type": {
 										"type": "intrinsic",
-										"name": "number"
+										"name": "bigint"
 									}
 								}
 							],
@@ -116639,7 +116663,7 @@
 													],
 													"type": {
 														"type": "intrinsic",
-														"name": "number"
+														"name": "bigint"
 													}
 												},
 												{
@@ -129050,7 +129074,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				}
 			],
@@ -133644,7 +133668,7 @@
 					],
 					"type": {
 						"type": "intrinsic",
-						"name": "number"
+						"name": "bigint"
 					}
 				},
 				{

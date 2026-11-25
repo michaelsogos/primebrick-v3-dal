@@ -972,7 +972,7 @@ export class DeferredTransaction {
             entity: entityApiName(op.entity),
             action,
             uuid,
-            version: after["version"] as number | undefined,
+            version: after["version"] as bigint | undefined,
             emitted_by: op.options?.actor ?? op.options?.eventActor ?? "system",
             emitted_at: emittedAt,
           },

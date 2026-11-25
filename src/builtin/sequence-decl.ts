@@ -302,7 +302,7 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
    *  the SAME tx — a lost race rolls the guarded write back with it. */
   override async update(
     uuid: string,
-    body: Record<string, unknown> & { version: number },
+    body: Record<string, unknown> & { version: bigint },
     tx?: import("../repository/repository.js").Repository,
   ): Promise<SequenceEntity & Record<string, unknown>> {
     const everyEdit = "revive_every" in body;

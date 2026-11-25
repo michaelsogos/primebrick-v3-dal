@@ -171,18 +171,18 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
   }
   update(
     uuid: string,
-    body: Record<string, unknown> & { version: number },
+    body: Record<string, unknown> & { version: bigint },
     tx?: Repository,
   ): Promise<TEntity> {
     return this.svc.update(uuid, body, tx);
   }
-  delete(uuid: string, version: number): Promise<TEntity> {
+  delete(uuid: string, version: bigint): Promise<TEntity> {
     return this.svc.delete(uuid, version);
   }
-  restore(uuid: string, version: number): Promise<TEntity> {
+  restore(uuid: string, version: bigint): Promise<TEntity> {
     return this.svc.restore(uuid, version);
   }
-  purge(uuid: string, version: number): Promise<TEntity> {
+  purge(uuid: string, version: bigint): Promise<TEntity> {
     return this.svc.purge(uuid, version);
   }
   duplicate(uuids: string[]): Promise<DuplicateResult> {

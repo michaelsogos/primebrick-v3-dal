@@ -227,7 +227,7 @@ function extractVersion(
   payload: Record<string, unknown>,
   versionCol: { sqlName: string; propertyKey: string } | null,
   entityClassName: string,
-): { expectedVersion: number; remainingPayload: Record<string, unknown> } | null {
+): { expectedVersion: bigint; remainingPayload: Record<string, unknown> } | null {
   if (!versionCol) return null; // non-auditable entity — no guard
   const versionValue = payload[versionCol.propertyKey];
   if (versionValue === undefined || versionValue === null) {
@@ -237,7 +237,7 @@ function extractVersion(
   }
   const remainingPayload = { ...payload };
   delete remainingPayload[versionCol.propertyKey];
-  return { expectedVersion: Number(versionValue), remainingPayload };
+  return { expectedVersion: versionValue as bigint, remainingPayload };
 }
 
 /**
@@ -254,7 +254,7 @@ async function disambiguateZeroRows(
   table: string,
   conditions: MatchCondition[],
   entityClassName: string,
-  expectedVersion: number,
+  expectedVersion: bigint,
   versionColSqlName: string,
 ): Promise<never> {
   const condSql = conditions.map((c, i) => `${quoteIdent(c.sqlName)} = $${i + 1}`).join(" AND ");
@@ -430,7 +430,7 @@ export class Repository {
     evt: {
       action: EntityWriteAction;
       uuid: string;
-      version?: number;
+      version?: bigint;
       before: Record<string, unknown> | null;
       after: Record<string, unknown> | null;
       delta: Record<string, { old: unknown; new: unknown }> | null;
@@ -1101,7 +1101,7 @@ export class Repository {
    *  when the guard refuses. Caller MUST run inside a transaction. */
   async sequenceReviveAxesUpdate(spec: {
     uuid: string;
-    version: number;
+    version: bigint;
     /** `undefined` → axis untouched; `null` → revive off. */
     every?: string | null;
     /** `undefined` → axis untouched; `null` → immediate switch at expire. */
@@ -1136,7 +1136,7 @@ export class Repository {
         `SequenceEntity: row ${spec.uuid} vanished (deleted) between read and revive-axis update`,
       );
     }
-    if (Number(row.version) !== spec.version) {
+    if ((row.version as unknown as bigint) !== BigInt(spec.version)) {
       throw new OptimisticLockError(
         `SequenceEntity: optimistic concurrency violation — expected version ${spec.version}, row is at version ${row.version}`,
       );
@@ -2097,7 +2097,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         entityUuid,
         action: AuditAction.INSERT,
         changedAt: DAL_NOW,
-        version: 1,
+        version: 1n,
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
@@ -2108,7 +2108,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       this.emitEntityEvent(entity, meta, options, {
         action: "create",
         uuid: (insertedRecord["uuid"] as string) ?? "",
-        version: (insertedRecord["version"] as number) ?? 1,
+        version: (insertedRecord["version"] as bigint) ?? 1n,
         before: null,
         after: insertedRecord,
         delta: calculateDelta({}, safe),
@@ -3230,7 +3230,7 @@ SELECT * FROM upd`;
       const entityId = auditEntityId(updated, oldRecord);
       const entityUuid = (updated["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-      const newVersion = versionCol ? (updated[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (updated[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
@@ -3263,7 +3263,7 @@ SELECT * FROM upd`;
       this.emitEntityEvent(entity, meta, options, {
         action: "update",
         uuid: (updated["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (updated[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (updated[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
@@ -3385,7 +3385,7 @@ SELECT * FROM w`;
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const entityId = auditEntityId(deleted, oldRecord);
       const entityUuid = (deleted["uuid"] as string | undefined) ?? "";
-      const newVersion = versionCol ? (deleted[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (deleted[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -3418,7 +3418,7 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "delete",
         uuid: (deleted["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (deleted[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (deleted[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
@@ -3540,7 +3540,7 @@ SELECT * FROM w`;
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const entityId = auditEntityId(restored, oldRecord);
       const entityUuid = (restored["uuid"] as string | undefined) ?? "";
-      const newVersion = versionCol ? (restored[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (restored[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -3573,7 +3573,7 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "restore",
         uuid: (restored["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (restored[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (restored[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
@@ -3661,7 +3661,7 @@ SELECT * FROM w`;
       const entityId = auditEntityId(oldRecord);
       const entityUuid = (oldRecord["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-      const oldVersion = versionCol ? (oldRecord[versionCol.sqlName] as number) : 1;
+      const oldVersion = versionCol ? (oldRecord[versionCol.sqlName] as bigint) : 1n;
       const delta: Record<string, { old: unknown; new: unknown }> = {};
       for (const key of Object.keys(oldRecord)) {
         const val = oldRecord[key];
@@ -3691,7 +3691,7 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "purge",
         uuid: (purgedRow["uuid"] as string | undefined) ?? (oldRecord?.["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (purgedRow[versionCol.sqlName] as number | undefined) ?? (oldRecord?.[versionCol.sqlName] as number | undefined) : undefined,
+        version: versionCol ? (purgedRow[versionCol.sqlName] as bigint | undefined) ?? (oldRecord?.[versionCol.sqlName] as bigint | undefined) : undefined,
         before: oldRecord ?? null,
         after: purgedRow,
         delta: evtDelta,
@@ -3854,7 +3854,7 @@ SELECT * FROM w`;
         entityUuid: newUuid,
         action: AuditAction.CLONE,
         changedAt: DAL_NOW,
-        version: 1,
+        version: 1n,
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
@@ -3863,7 +3863,7 @@ SELECT * FROM w`;
     this.emitEntityEvent(entity, meta, options, {
       action: "duplicate",
       uuid: newUuid,
-      version: 1,
+      version: 1n,
       before: null,
       after: remapReturningRow(insertedRow, ret.rowKeyToSqlName),
       delta: calculateDelta({}, remapReturningRow(insertedRow, ret.rowKeyToSqlName)),

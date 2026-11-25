@@ -275,7 +275,7 @@ export type AuditParams = {
   entityUuid: string;
   action: AuditAction;
   changedAt: Date | DalNow;
-  version: number;
+  version: bigint;
   changedBy: string;
   delta: Record<string, { old: unknown; new: unknown }>;
 };
