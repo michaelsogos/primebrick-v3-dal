@@ -421,6 +421,16 @@ describe("Repository — sequenceAnalyze read-only pre-check", () => {
     await expect(repo.sequenceAnalyze({ seq: { uuid: u } })).rejects.toThrow(ValidationError);
   });
 
+  it("derives the scan target from binding_key first — successor names and expr suffixes stay analyzable", async () => {
+    const u = await seedSequence("customers.code#2027", "TST-{seq:5}");
+    await getTestPool().query(`UPDATE sequences SET binding_key = 'dal_test_seq.code@expr_deadbeef' WHERE uuid = $1`, [u]);
+    await seedCodes("TST-00008");
+    const a = await repo.sequenceAnalyze({ seq: { uuid: u } });
+    expect(a.table).toBe("dal_test_seq");
+    expect(a.column).toBe("code");
+    expect(a.max_value).toBe(8n);
+  });
+
   it("nonexistent or non-text target → ValidationError", async () => {
     await expect(
       repo.sequenceAnalyze({ seq: { uuid: SEQ_UUID }, table: "dal_test_seq", column: "nope" }),

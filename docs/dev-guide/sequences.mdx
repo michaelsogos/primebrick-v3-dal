@@ -27,6 +27,24 @@ The create sheet census is the writable contract and nothing else:
 column from the synthesized form. A server-computed column stays out of
 forms via `audited` or `hidden`, by construction.
 
+### List anatomy
+
+The served column order is part of the operator contract:
+
+1. `name` — the only sticky column (`hideable:false`), because it is the
+   display identity of the generation.
+2. `sez`, `sez2`, `sez3` — visible by default, never sticky. They are
+   row-owned literals and explain the partition/generation before the
+   numeric machine state.
+3. `step`, `start`, the virtual counter/rendered projections, `pattern`,
+   and `tz` — the remaining primary anatomy.
+4. `revive_every` — visible by default as the cadence summary.
+5. Everything after the cadence (`description_key`, `default_from`,
+   `revive_slot`, `revive_grace`, `expire_at`, `switch_at`, `revived_*`,
+   allocation audit) is toggleable but absent from the default list.
+   `binding_key` remains `hidden` altogether: it is machine identity, not
+   operator copy.
+
 ## The revive contract
 
 Two **persisted moments** (`expire_at`/`switch_at`, always computed —
@@ -118,9 +136,57 @@ It runs as:
 3. **Service** — the merged-row check on update (immutable columns can't
    change, but the rule stays one).
 
+## Binding series and usage analysis
+
+`binding_key` is the stable machine identity of a bound series. It is
+written only by the system when a `@SequenceField` binding materializes
+(`<table>.<field>` for the declared default, `<table>.<field>@expr_<hash>`
+for an expression directive), survives revives, and is never a write key.
+`name` is display data: successors append the `#<period>` suffix, so it
+must never be used as the series identity.
+
+`Repository.sequenceAnalyze` resolves its scan target in this order:
+
+1. explicit `table` + `column` in the request;
+2. the row's `binding_key`, stripped of the `@expr_<hash>` suffix;
+3. the legacy `<table>.<field>` name shape, for rows written before
+   `binding_key` existed.
+
+An operator sequence with no binding has no physical column to scan. The
+RPC correctly rejects that request as a validation error; callers must
+treat it as "analysis unavailable", not as an application failure.
+
+The scan is read-only and pattern-exact: sibling prefixes do not count,
+`{sez}` captures group the per-partition report, `suggested_start` is
+`max + step` (or the sequence start when no value exists), and the
+counter context is never materialized or advanced. `ambiguous` lists other
+registry rows whose pattern also matches existing values.
+
 ## The observer
 
-The job-handler `sequence_revive` job sweeps `WHERE expire_at <= now()`;
-each expired generation is cloned — successor gets the advanced sez
-literal, fresh anchors, `revived_from/at/by` stamped — and the old row
-serves until `switch_at`.
+Job-handler mounts the system trigger `jobs.due.system.<svc>.sequence-revive`;
+the DAL-owned `makeSequenceReviveJob()` factory is identical for every
+module because the builtin `sequences` table lives in the module schema.
+The job runs `dal.sequenceRevive({ actor:"system" })` inside one
+transaction and has two phases:
+
+- **Phase A — successor creation.** Rows with `revive_every` set,
+  `expire_at <= now`, and no successor are locked `FOR UPDATE` one period
+  at a time. Each clone advances `revive_slot` through
+  `derivePeriodLabel`, strips the old `#…` display suffix and appends the
+  new label, copies `binding_key`/pattern/step/start/tz/cadence, stamps
+  `revived_from`/`revived_at`/`revived_by`, and sets `default_from` to
+  the predecessor's expire boundary. The loop repeats until the chain is
+  current: a late job creates each real intermediate generation instead
+  of compressing history. `'at'`/`'until'` literals never propagate —
+  the pinned successor becomes the permanent final generation.
+- **Phase B — retirement.** Rows whose `switch_at` has passed are
+  soft-deleted. Until that moment the expired predecessor still answers
+  allocation lookups, which is the operational grace window for emitters
+  that already hold its uuid.
+
+The same primitive backs the operator-triggered `sequence-revive` RPC
+(`only_uuid`) and the scheduled observer; there is no separate manual
+code path. Revive calendar boundaries are computed in the row's `tz`
+(defaulting to `UTC` when absent), while all persisted instants are UTC
+`timestamptz` values.

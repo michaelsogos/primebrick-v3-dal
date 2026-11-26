@@ -69,43 +69,47 @@ function sequenceColumns(ns: string): MetaColumn[] {
   const F = (c: string) => `${ns}.entities.sequence.fields.${c}`;
   const raw: Array<Omit<MetaColumn, "sticky">> = [
     { key: "name", label_key: F("name"), type: "text", order: 0, hideable: false },
-    { key: "step", label_key: F("step"), type: "number", order: 1 },
-    { key: "start", label_key: F("start"), type: "number", order: 2 },
+    // Row-owned sezionale defaults — write at create, frozen afterwards:
+    // the owned slots are the revive axis identity. They are primary list
+    // data (visible by default, non-sticky) immediately after the sticky
+    // display column.
+    { key: "sez", label_key: F("sez"), type: "text", order: 1, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "sez2", label_key: F("sez2"), type: "text", order: 2, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "sez3", label_key: F("sez3"), type: "text", order: 3, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "step", label_key: F("step"), type: "number", order: 4 },
+    { key: "start", label_key: F("start"), type: "number", order: 5 },
     // Counter projection — machine state from `sequence_counters`
     // (default partition @ current period), attached post-query by
     // `attachCounterProjection`. `kind:"virtual"` forces sort/filter/
     // search off — the values are not SQL-addressable.
-    { key: "value_actual", label_key: F("value_actual"), type: "number", order: 3, kind: "virtual" },
-    { key: "value_next", label_key: F("value_next"), type: "number", order: 4, kind: "virtual" },
-    { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 5 },
-    { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 6, kind: "virtual" },
-    { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 7, kind: "virtual" },
-    { key: "tz", label_key: F("tz"), type: "text", order: 8, options_source: "iana.tzones" },
+    { key: "value_actual", label_key: F("value_actual"), type: "number", order: 6, kind: "virtual" },
+    { key: "value_next", label_key: F("value_next"), type: "number", order: 7, kind: "virtual" },
+    { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 8 },
+    { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 9, kind: "virtual" },
+    { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 10, kind: "virtual" },
+    { key: "tz", label_key: F("tz"), type: "text", order: 11, options_source: "iana.tzones" },
     // `immutable` — editable on the create sheet, disabled on update
     // and excluded from update payloads (the cadence is the row's
     // identity; the wire validator rejects them regardless).
     // `format:"revive_interval"` — the numeric+unit composite control
     // emitting the closed `'N unit'` varchar canonical.
-    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 10, tooltip: `${F("revive_every")}.tooltip` },
+    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 12, tooltip: `${F("revive_every")}.tooltip` },
+    // Everything past the cadence is secondary list data: present in the
+    // column picker, absent from the default view.
     // When the row starts serving as the binding default — a create-only
     // anchor (the generation's identity), gated on `revive_every` via
     // `depends_on` (disabled while the cadence is unset). `expire_at`
     // derives server-side from it; the field is never edited afterwards.
-    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 11, immutable: true, default: { kind: "next_day_start_local" }, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("default_from")}.tooltip` },
+    { key: "default_from", label_key: F("default_from"), type: "datetime", order: 14, immutable: true, default_visible: false, default: { kind: "next_day_start_local" }, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("default_from")}.tooltip` },
     // Which sez slot the period label advances at revive — closed-enum
     // badge select, gated like `default_from` on `revive_every`.
-    { key: "revive_slot", label_key: F("revive_slot"), type: "badge", order: 12, immutable: true, depends_on: { field: "revive_every", disabled_when: { set: false } }, badge: { values: {
+    { key: "revive_slot", label_key: F("revive_slot"), type: "badge", order: 15, immutable: true, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } }, badge: { values: {
       sez: { label_key: F("revive_slot_values.sez"), color: "sky-500" },
       sez2: { label_key: F("revive_slot_values.sez2"), color: "violet-500" },
       sez3: { label_key: F("revive_slot_values.sez3"), color: "teal-500" },
     } }, tooltip: `${F("revive_slot")}.tooltip` },
     // Overlap window — editable operational slack (moves only `switch_at`).
-    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_offset", order: 13, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("revive_grace")}.tooltip` },
-    // Row-owned sezionale defaults — write at create, frozen afterwards:
-    // the owned slots are the revive axis identity.
-    { key: "sez", label_key: F("sez"), type: "text", order: 14, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
-    { key: "sez2", label_key: F("sez2"), type: "text", order: 15, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
-    { key: "sez3", label_key: F("sez3"), type: "text", order: 16, default_visible: false, immutable: true, tooltip: `${F("sez")}.tooltip` },
+    { key: "revive_grace", label_key: F("revive_grace"), type: "text", format: "revive_offset", order: 16, default_visible: false, depends_on: { field: "revive_every", disabled_when: { set: false } }, tooltip: `${F("revive_grace")}.tooltip` },
     // `binding_key` — machine series identity written ONLY at binding
     // materialize; `name` on bound rows already displays `<table>.<field>`.
     { key: "binding_key", label_key: F("binding_key"), type: "text", order: 17, hidden: true },
@@ -113,14 +117,14 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // accordion own them and the form can never render them by
     // construction. `expire_at`/`switch_at` are computed anchors, never
     // write keys; `revived_*` stamp the last revive event.
-    { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 18, audited: true },
+    { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 18, audited: true, default_visible: false },
     { key: "switch_at", label_key: F("switch_at"), type: "datetime", order: 19, audited: true, default_visible: false },
     { key: "revived_from", label_key: F("revived_from"), type: "text", order: 20, audited: true, default_visible: false },
     { key: "revived_at", label_key: F("revived_at"), type: "datetime", order: 21, audited: true, default_visible: false },
     { key: "revived_by", label_key: F("revived_by"), type: "text", order: 22, audited: true, default_visible: false },
     // i18n keys are operator-managed pointers — hidden by default,
     // toggleable via the column picker.
-    { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 9, default_visible: false },
+    { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 13, default_visible: false },
     // `audited` authored ONLY on the last_alloc_* virtuals: it places
     // them in the ELT audit band (the physical-writable exclusion the
     // flag implies on data columns is a no-op on enrichments). Same
@@ -933,7 +937,7 @@ export function builtinSequenceRpc(ctx: BuiltinDeclCtx): Record<string, unknown>
         entity: "sequence",
         op: "sequence_revive",
         cta: {
-          icon: "sequence-numeric-right",
+          icon: "rotate-cw-square",
           confirm_key: `${ns}.actions.sequence_revive_confirm`,
         },
       },

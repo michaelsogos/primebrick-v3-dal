@@ -1260,13 +1260,19 @@ export class Repository {
     const s = await this.loadSequence(q, spec.seq);
     const pattern = s.pattern;
 
-    // ── target column: explicit, else derived from the `<table>.<field>`
-    //    bound NAME carried by the row (display data, not an identity)
+    // ── target column: explicit, else derived from the row's series
+    //    identity (`binding_key`, with the legacy bound-name fallback)
     const IDENT = /^[a-z_][a-z0-9_]*$/;
     let table = spec.table;
     let column = spec.column;
     if (table === undefined && column === undefined) {
-      const parts = s.name.split(".");
+      // `binding_key` is the authoritative series identity — successors
+      // keep it while `name` gains the `#<period>` display suffix. Legacy
+      // rows predate the column, so the historical name shape remains the
+      // fallback. Expr bindings carry `<table>.<field>@expr_<hash>`; the
+      // scan target is the field part before the suffix.
+      const series = (s.binding_key ?? s.name).split("@", 1)[0];
+      const parts = series.split(".");
       if (parts.length === 2) { table = parts[0]; column = parts[1]; }
     }
     if (table === undefined || column === undefined) {
