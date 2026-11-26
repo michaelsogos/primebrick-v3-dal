@@ -1808,6 +1808,15 @@ Collaboration fragment injected by `assembleMeta` at serve time.
 | enabled | `boolean` |  |
 | expose_editing_value | `boolean` |  |
 
+### `CoreLogEntry`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| level | `CoreLogLevel` |  |
+| msg | `string` |  |
+| meta | `Record<string, unknown>` |  |
+| at | `string` | UTC ISO-8601 timestamp of emission. |
+
 ### `Dal`
 
 | Field | Type | Description |
@@ -2680,6 +2689,37 @@ Mirrors the SDK `ConfigType` and the BE `type` column.
 - `money`:  numeric amount with currency metadata in `type_config`
 
 **Type:** `"string" \| "text" \| "boolean" \| "bigint" \| "number" \| "money" \| "badge" \| "single_select" \| "multi_select" \| "url" \| "secret" \| "json" \| "date" \| "datetime" \| "time" \| "email" \| "phone"`
+
+### `CoreLogLevel`
+
+Minimal environment-neutral logger — the shared logging floor for every
+primebrick library.
+
+Why this exists: libraries below the SDK (dal-pg, anything in core itself)
+cannot import the SDK logger — the dependency direction forbids it. Before
+this module they fell back to raw `console.*`, which produced unformatted
+bare lines in service output. Every library MUST route diagnostics through
+`logger` here instead of `console.*`.
+
+Design:
+- **Environment-neutral** — no Node APIs, no DOM, no OTel. `console` exists
+  in every runtime; the default transport writes formatted lines there.
+- **Never bare** — even with zero wiring, output carries timestamp + level,
+  so an unconfigured library can never print a naked message again.
+- **Transport hook** — the runtime owner (the SDK in `createMicroservice`,
+  or the BE at its own boot) installs ONE transport via
+  setCoreLogTransport; entries then flow into the host pipeline
+  (trace correlation, batching, OTel) and become indistinguishable from
+  host logs. Libraries never know nor care.
+- **Zero state beyond the transport** — no level filtering here: when a
+  transport is wired the host pipeline already gates levels; the default
+  path emits everything (libraries log sparingly by contract).
+
+**Type:** `"debug" \| "info" \| "warn" \| "error"`
+
+### `CoreLogTransport`
+
+**Type:** `(entry: CoreLogEntry) => void`
 
 ### `DalErrorCode`
 
@@ -4022,6 +4062,17 @@ treated from the merged record the caller passes.
 
 **Type:** `RegExp`
 
+### `logger`
+
+**Type:** `{ debug: (msg: string, meta: Record<string, unknown>) => void; info: (msg: string, meta: Record<string, unknown>) => void; warn: (msg: string, meta: Record<string, unknown>) => void; error: (msg: string, meta: Record<string, unknown>) => void }`
+
+| Field | Value |
+|-------|-------|
+| debug | "" |
+| info | "" |
+| warn | "" |
+| error | "" |
+
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
@@ -5294,6 +5345,10 @@ meta validation throws and points to `@PartitionChildOf` for that shape.
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 | propertyKey | `string \| symbol` |  |
+
+### `getCoreLogTransport(): CoreLogTransport \| null`
+
+Current transport — exposed for tests that need to snapshot/restore.
 
 ### `getDal(config): Dal`
 
@@ -6678,6 +6733,16 @@ meta (e.g. sparkline `endpoint: "/actions/job-run-stats"`) resolve to
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | listBasePath | `string` |  |
+
+### `setCoreLogTransport(t): void`
+
+Install the host transport. Idempotent-by-replacement: the last install
+wins (test harnesses may re-wire; production installs exactly once at
+boot). Pass `null` to restore the default console transport.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| t | `CoreLogTransport \| null` |  |
 
 ### `sha256Hex(body): string`
 

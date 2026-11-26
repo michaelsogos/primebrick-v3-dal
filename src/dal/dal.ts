@@ -37,6 +37,7 @@
  */
 
 import pg, { type Pool, type PoolClient } from "pg";
+import { logger } from "@primebrick/core";
 
 import { Repository, REPO_INTERNAL } from "../repository/repository.js";
 import {
@@ -268,7 +269,7 @@ export class Dal {
         new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
       ]);
     } catch (err) {
-      console.error("[dal-pg] pool.end() failed during close:", err);
+      logger.error("[dal-pg] pool.end() failed during close", { error: err instanceof Error ? err.message : String(err) });
     } finally {
       this.closed = true;
       this._isClosing = false;
@@ -678,7 +679,7 @@ export class Dal {
         for (const draft of buffered) {
           void this.eventPort
             ?.emit(draft)
-            .catch((err) => console.error("[DAL Entity Event Error]", err));
+            .catch((err) => logger.error("[DAL Entity Event Error]", { error: err instanceof Error ? err.message : String(err) }));
         }
         return result;
       } catch (err) {

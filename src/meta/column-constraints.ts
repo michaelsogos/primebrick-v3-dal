@@ -49,7 +49,7 @@
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { extJsonStringify, isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { extJsonStringify, isTextlikePgType, numericKindOf, UNIT_CATEGORIES, logger, type MetaColumnUomKind } from "@primebrick/core";
 import { dec } from "@primebrick/core/decimal";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
@@ -740,7 +740,7 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // check above throws), so every authored value here is a real delta.
       if (v !== undefined) owned.push(`${k}:${extJsonStringify(v)}`);
     }
-    console.warn(
+    logger.warn(
       `withColumnConstraints[${entityRef}]: standard audit column "${c.key}" is declared — ` +
         (owned.length === 0
           ? `it restates the derived column exactly (audited, order ${derivedOrder}, default_visible:false); drop the declaration`
@@ -1005,7 +1005,7 @@ function enforceIdentityColumnContract(
   // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
   const stickyCount = columns.filter((c) => c.sticky === true).length;
   if (stickyCount >= 4) {
-    console.warn(
+    logger.warn(
       `withColumnConstraints[${entityClassName}]: ${stickyCount} sticky columns — ≥4 sticky columns are allowed but discouraged ` +
         `(sticky chrome is for identity columns, not data columns)`,
     );
