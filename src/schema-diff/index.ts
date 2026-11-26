@@ -4,7 +4,7 @@
  */
 export type { SchemaColumnMeta, SchemaSnapshot, SchemaTableMeta } from "./schema-types.js";
 export { tableKey } from "./schema-types.js";
-export { comparablePgType, typesCompatibleForRename } from "./schema-type-normalize.js";
+export { comparablePgType, normalizeDefaultExpr, typesCompatibleForRename } from "./schema-type-normalize.js";
 export {
   findLikelyRenames,
   classifyRenamePair,

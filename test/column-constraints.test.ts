@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import "reflect-metadata";
 
-import { Entity, Key, Unique, Column, Calculated, Ref, withColumnConstraints, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
+import { Entity, Key, Unique, Column, Calculated, Ref, SequenceField, sequenceBoundUuid, withColumnConstraints, getEntityPersistenceMeta, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
+import { setCoreLogTransport, type CoreLogEntry } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
 class CcRuleEntity {
@@ -47,6 +48,56 @@ describe("withColumnConstraints", () => {
     const meta = baseMeta();
     meta.columns[0] = { ...meta.columns[0]!, max_length: 999 } as never;
     expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/restates derived prop/);
+  });
+
+  it("served `default` — constant `defaultSql` is derived to the column's wire type", () => {
+    @Entity("cc_def", "job")
+    class CcDefaultEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "1" }) step!: bigint;
+      @Column({ nullable: false, defaultSql: "'user'" }) lane!: string;
+      @Column({ nullable: false, defaultSql: "false" }) enabled!: boolean;
+      @Column({ nullable: false, defaultSql: "now()" }) stamp!: Date;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "'7'" }) quoted_int!: bigint;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_def",
+      translation_key: "cc_def",
+      uid: "uuid",
+      display_field: "step",
+      columns: [
+        { key: "step", label_key: "x.step", type: "number", order: 10 },
+        { key: "lane", label_key: "x.lane", type: "text", order: 20 },
+        { key: "enabled", label_key: "x.enabled", type: "boolean", order: 30 },
+        { key: "stamp", label_key: "x.stamp", type: "datetime", order: 40 },
+        { key: "quoted_int", label_key: "x.quoted_int", type: "number", order: 50 },
+      ],
+    };
+    const byKey = Object.fromEntries(withColumnConstraints(meta, CcDefaultEntity).columns.map((c) => [c.key, c]));
+    expect(byKey.step?.default).toBe(1n);            // int8 literal → bigint
+    expect(byKey.lane?.default).toBe("user");        // quoted literal → string
+    expect(byKey.enabled?.default).toBe(false);      // boolean literal → boolean
+    expect(byKey.quoted_int?.default).toBe(7n);      // '7' on int8 → typed, not raw string
+    expect(byKey.stamp?.default).toBeUndefined();    // volatile expr → never a form prefill
+  });
+
+  it("served `default` — an AUTHORED `default` is the legal override and is never stomped", () => {
+    @Entity("cc_def2", "job")
+    class CcDefaultOverrideEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @Column({ nullable: false, jsType: "bigint", defaultSql: "1" }) step!: bigint;
+    }
+    const meta: EntityMeta = {
+      entity: "cc_def2",
+      translation_key: "cc_def2",
+      uid: "uuid",
+      display_field: "step",
+      columns: [{ key: "step", label_key: "x.step", type: "number", order: 10, default: 5n }],
+    };
+    const byKey = Object.fromEntries(withColumnConstraints(meta, CcDefaultOverrideEntity).columns.map((c) => [c.key, c]));
+    expect(byKey.step?.default).toBe(5n);
   });
 
   it("display_field convention — required + min_length 5 + max_length 255 on a nullable text column", () => {
@@ -235,7 +286,7 @@ describe("withColumnConstraints", () => {
   it("throws on census options_source + allow_create:true (closed vocabulary)", () => {
     const meta = baseMeta();
     meta.columns[1] = { ...meta.columns[1]!, options_source: "census.emits", allow_create: true };
-    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/allow_create:true on a census options_source/);
+    expect(() => withColumnConstraints(meta, CcRuleEntity)).toThrow(/allow_create:true on a closed options_source/);
   });
 
   it("accepts census options_source with allow_create absent/false", () => {
@@ -1131,7 +1182,12 @@ describe("withColumnConstraints — identity-column contract", () => {
   });
 
   it("warns at ≥4 sticky columns (allowed, discouraged)", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Core-log entries are captured through the transport hook — pre-wiring
+    // emissions buffer in core/logger and never hit the console. The capture
+    // array is reset after wiring to discard any replayed cross-test backlog.
+    const entries: CoreLogEntry[] = [];
+    setCoreLogTransport((e) => entries.push(e));
+    entries.length = 0;
     try {
       const meta = auditableMeta();
       // uuid(derived sticky) + name(derived pin) + 2 authored sticky = 4
@@ -1140,19 +1196,145 @@ describe("withColumnConstraints — identity-column contract", () => {
         { key: "updated_at", label_key: "x.ua", type: "datetime", order: 21, sticky: true },
       );
       withColumnConstraints(meta, CcJobEntity);
-      expect(spy).toHaveBeenCalledWith(expect.stringContaining("4 sticky columns"));
+      expect(entries.some((e) => e.level === "warn" && e.msg.includes("4 sticky columns"))).toBe(true);
     } finally {
-      spy.mockRestore();
+      setCoreLogTransport(null);
     }
   });
 
   it("does not warn below 4 sticky columns", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries: CoreLogEntry[] = [];
+    setCoreLogTransport((e) => entries.push(e));
+    entries.length = 0;
     try {
       withColumnConstraints(auditableMeta(), CcJobEntity);
-      expect(spy).not.toHaveBeenCalled();
+      expect(entries.some((e) => e.level === "warn" && e.msg.includes("sticky columns"))).toBe(false);
     } finally {
-      spy.mockRestore();
+      setCoreLogTransport(null);
     }
+  });
+});
+
+// ── @SequenceField — sequence-bound columns (seq contract) ─────────────
+
+@Entity("cc_seq_docs")
+class CcSeqDocEntity {
+  @Key() id!: bigint;
+  @Unique() uuid!: UUID;
+  @SequenceField({ pattern: "DOC-{seq:6}", step: 1n, start: 1n })
+  @Column({ length: 30, nullable: false })
+  code!: string;
+  @SequenceField({ pattern: "DOC-{seq:6}", step: 1n, start: 1n })
+  @Column({ length: 30, nullable: true })
+  alt_code?: string;
+  @Column({ length: 100, nullable: true }) name?: string;
+}
+
+const seqDocMeta = (): EntityMeta => ({
+  entity: "cc_seq_doc",
+  translation_key: "cc_seq_doc",
+  uid: "uuid",
+  display_field: "code",
+  columns: [
+    { key: "code", label_key: "x.code", type: "text", order: 10 },
+    { key: "name", label_key: "x.name", type: "text", order: 20 },
+  ],
+});
+
+describe("@SequenceField", () => {
+  it("emits seqBound on persistence meta with the derived <table>.<field> name + deterministic uuid", () => {
+    const p = getEntityPersistenceMeta(CcSeqDocEntity);
+    expect(p.columns.code.seqBound).toMatchObject({
+      pattern: "DOC-{seq:6}",
+      step: 1n,
+      start: 1n,
+      name: "cc_seq_docs.code",
+      uuid: sequenceBoundUuid("cc_seq_docs.code"),
+    });
+    expect(p.columns.alt_code.seqBound?.name).toBe("cc_seq_docs.alt_code");
+    expect(p.columns.alt_code.seqBound?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.alt_code"));
+    expect(p.columns.name.seqBound).toBeUndefined();
+  });
+
+  it("serves format:'sequence' + derived seq.uuid/seq.name on bound columns", () => {
+    const out = withColumnConstraints(seqDocMeta(), CcSeqDocEntity);
+    const code = out.columns.find((c) => c.key === "code")!;
+    expect(code.format).toBe("sequence");
+    expect(code.seq?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.code"));
+    expect(code.seq?.name).toBe("cc_seq_docs.code");
+    // auto-derived (un-authored) bound column gets the contract too
+    const alt = out.columns.find((c) => c.key === "alt_code")!;
+    expect(alt.format).toBe("sequence");
+    expect(alt.seq?.uuid).toBe(sequenceBoundUuid("cc_seq_docs.alt_code"));
+  });
+
+  it("merges authored seq surface keys under the derived identity", () => {
+    const meta = seqDocMeta();
+    meta.columns[0] = { ...meta.columns[0], seq: { modes: ["select"], default_mode: "select", allow_create: false } };
+    const out = withColumnConstraints(meta, CcSeqDocEntity);
+    const code = out.columns.find((c) => c.key === "code")!;
+    expect(code.seq).toEqual({
+      uuid: sequenceBoundUuid("cc_seq_docs.code"),
+      name: "cc_seq_docs.code",
+      modes: ["select"],
+      default_mode: "select",
+      allow_create: false,
+    });
+  });
+
+  it("rejects authored format on a seq-bound column", () => {
+    const meta = seqDocMeta();
+    meta.columns[0] = { ...meta.columns[0], format: "code" };
+    expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/authors format on a @SequenceField column/);
+  });
+
+  it("rejects authored seq.uuid/seq.name (derived facts)", () => {
+    const meta = seqDocMeta();
+    meta.columns[0] = { ...meta.columns[0], seq: { uuid: "11111111-2222-4333-8444-555555555555" } };
+    expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/authors seq\.uuid/);
+    const meta2 = seqDocMeta();
+    meta2.columns[0] = { ...meta2.columns[0], seq: { name: "bogus.name" } };
+    expect(() => withColumnConstraints(meta2, CcSeqDocEntity)).toThrow(/authors seq\.uuid\/seq\.name/);
+  });
+
+  it("rejects the sequence contract on an un-bound column", () => {
+    const meta = seqDocMeta();
+    meta.columns[1] = { ...meta.columns[1], format: "sequence" };
+    expect(() => withColumnConstraints(meta, CcSeqDocEntity)).toThrow(/without @SequenceField/);
+    const meta2 = seqDocMeta();
+    meta2.columns[1] = { ...meta2.columns[1], seq: { modes: ["generate"] } };
+    expect(() => withColumnConstraints(meta2, CcSeqDocEntity)).toThrow(/without @SequenceField/);
+  });
+
+  it("rejects a non-text bound column at meta construction", () => {
+    @Entity("cc_seq_ints")
+    class BadSeqEntity {
+      @Key() id!: bigint;
+      @Unique() uuid!: UUID;
+      @SequenceField({ pattern: "N-{seq:4}", step: 1n, start: 1n })
+      @Column({ pgType: "int8", nullable: false })
+      num!: bigint;
+    }
+    expect(() => getEntityPersistenceMeta(BadSeqEntity)).toThrow(/requires text\/varchar storage/);
+  });
+
+  it("rejects seq-bound key columns", () => {
+    @Entity("cc_seq_keys")
+    class BadKeySeq {
+      @Key()
+      @SequenceField({ pattern: "K-{seq:4}", step: 1n, start: 1n })
+      @Column({ length: 20, nullable: false })
+      id!: string;
+      @Unique() uuid!: UUID;
+    }
+    expect(() => getEntityPersistenceMeta(BadKeySeq)).toThrow(/@SequenceField on a key column/);
+  });
+
+  it("rejects invalid decls at decoration time", () => {
+    class T {}
+    expect(() => SequenceField({ pattern: "A-{seq:4}", step: 0n, start: 1n })(T.prototype, "x")).toThrow(/non-zero bigint/);
+    expect(() => SequenceField({ pattern: "A-{{bad}}", step: 1n, start: 1n })(T.prototype, "x")).toThrow(/pattern is invalid/);
+    expect(() => SequenceField({ pattern: "A-{seq:4}", step: 1n, start: "x" as never })(T.prototype, "x")).toThrow(/start must be a bigint/);
+    expect(() => SequenceField({ pattern: "A-{seq:4}", step: 1n, start: 1n, tz: "Not/AZone" })(T.prototype, "x")).toThrow(/IANA zone/);
   });
 });

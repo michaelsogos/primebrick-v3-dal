@@ -265,7 +265,7 @@ const updated = await dal.update(
   { name: "Acme Corp", version: customer.version },
   { actor: userUuid, matchBy: "uuid" },
 );
-// SQL: UPDATE customers SET name = $1, updated_at = now(), updated_by = $2,
+// SQL: UPDATE customers SET name = $1, updated_at = clock_timestamp(), updated_by = $2,
 //      version = version + 1 WHERE uuid = $3 AND version = 4
 // updated.version === 4
 ```

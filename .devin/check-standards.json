@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "ext-json": {
+      "allowPaths": [
+        "audit/delta-calculator.ts",
+        "cli/primebrick-db.ts",
+        "meta/column-pg-io.ts",
+        "migrations/manifest.ts",
+        "query/query-builder.ts"
+      ]
+    }
+  }
+}

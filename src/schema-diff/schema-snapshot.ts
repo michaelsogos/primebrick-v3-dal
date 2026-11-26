@@ -10,7 +10,7 @@ import {
   type RenameAmbiguity,
 } from "./schema-rename-heuristics.js";
 import type { SchemaIndexMeta, SchemaSnapshot } from "./schema-types.js";
-import { comparablePgType } from "./schema-type-normalize.js";
+import { comparablePgType, normalizeDefaultExpr } from "./schema-type-normalize.js";
 
 export type { LikelyRename, RenameAmbiguity, RenameHeuristicResult } from "./schema-rename-heuristics.js";
 export { RENAME_HEURISTIC_AGENT_INSTRUCTION } from "./schema-rename-heuristics.js";
@@ -52,6 +52,15 @@ export type SchemaMetaDiffV2 = {
         entityNullable?: boolean | null;
         databaseNullable?: boolean | null;
       }[];
+      /** Column DEFAULT divergence — populated only when the database
+       *  snapshot was captured with `capturesDefaults` (older stored
+       *  snapshots didn't introspect `pg_attrdef`; "unknown" must not
+       *  flag every declared default as missing). */
+      defaultMismatches: {
+        column: string;
+        entityDefault?: string | null;
+        databaseDefault?: string | null;
+      }[];
       /** Index names declared only on the entity side (@Index/@Unique groups) */
       onlyInEntityIndexes: string[];
       /** Non-PK index names present only in the database */
@@ -63,6 +72,9 @@ export type SchemaMetaDiffV2 = {
         databaseUsing?: string | null;
         entityColumns: string[];
         databaseColumns: string[];
+        /** The live index backs a UNIQUE/PK constraint — drop via
+         *  `ALTER TABLE … DROP CONSTRAINT`, not `DROP INDEX`. */
+        databaseIsConstraint?: boolean;
       }[];
       /** FK constraint names declared only on the entity side */
       onlyInEntityForeignKeys: string[];
@@ -121,6 +133,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
 
     const typeMismatches: SchemaMetaDiffV2["tables"][string]["typeMismatches"] = [];
     const nullabilityMismatches: SchemaMetaDiffV2["tables"][string]["nullabilityMismatches"] = [];
+    const defaultMismatches: SchemaMetaDiffV2["tables"][string]["defaultMismatches"] = [];
 
     for (const col of [...eCols].filter((c) => dCols.has(c))) {
       const ec = et.columns[col]!;
@@ -141,6 +154,17 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
       }
       if (ec.isNullable != null && dc.isNullable != null && ec.isNullable !== dc.isNullable) {
         nullabilityMismatches.push({ column: col, entityNullable: ec.isNullable, databaseNullable: dc.isNullable });
+      }
+      if (dbSnap.capturesDefaults === true) {
+        const eDef = normalizeDefaultExpr(ec.defaultSql);
+        const dDef = normalizeDefaultExpr(dc.defaultSql);
+        // identity/serial artifacts (`nextval('…_seq'::regclass)`) are the
+        // physical implementation of `isPostgresIdentity`, not authored
+        // defaults — the entity side never declares them.
+        if (dDef !== undefined && dDef.startsWith("nextval(")) continue;
+        if (eDef !== dDef) {
+          defaultMismatches.push({ column: col, entityDefault: eDef ?? null, databaseDefault: dDef ?? null });
+        }
       }
     }
 
@@ -164,6 +188,13 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     const entityKeySig = (ei: SchemaIndexMeta) =>
       ei.expressions?.length ? normKeys([...ei.expressions, ...ei.columns].join(",")) : null;
     const dbKeySig = (di: SchemaIndexMeta): string => {
+      // An entity snapshot carries `expressions` natively — db:check
+      // compares against it, not a live-catalog row, so `definition` is
+      // absent there. Mirror the entity-side signature instead of
+      // extracting from `definition`.
+      if (di.expressions?.length) {
+        return normKeys([...di.expressions, ...di.columns].join(","));
+      }
       const def = di.definition ?? "";
       const open = def.indexOf("(", def.search(/\busing\s+\w+/i));
       if (open < 0) return "";
@@ -182,11 +213,35 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
         ei.columns.every((c, i) => c === di.columns[i])
       );
     };
+    /** Ordering flags per column — resolves `sort`/`nulls` against PG
+     *  defaults (asc→nulls last, desc→nulls first) so `null`/`asc` decls
+     *  compare equal to a live `indoption=0` column. */
+    const keyFlags = (ix: SchemaIndexMeta): string =>
+      ix.columns
+        .map((_, i) => {
+          const desc = ix.sort?.[i] === "desc";
+          const nullsFirst = ix.nulls?.[i] ? ix.nulls[i] === "first" : desc;
+          return `${desc ? "d" : "a"}${nullsFirst ? "f" : "l"}`;
+        })
+        .join(",");
+    /** Ordering comparison — skipped for expression indexes: `columns` is
+     *  not parallel to `sort`/`nulls` there (the signature covers order). */
+    const sameKeyOrder = (ei: SchemaIndexMeta, di: SchemaIndexMeta): boolean =>
+      entityKeySig(ei) !== null ? true : keyFlags(ei) === keyFlags(di);
+    /** `with` storage params are compared only when the entity declares
+     *  them — live reloptions outside the decl scope are tuning knobs. */
+    const sameWith = (ei: SchemaIndexMeta, di: SchemaIndexMeta): boolean => {
+      if (ei.with === undefined) return true;
+      const dw = di.with ?? {};
+      return Object.entries(ei.with).every(([k, v]) => String(v) === String(dw[k]));
+    };
     const equivIndex = (ei: SchemaIndexMeta, di: SchemaIndexMeta) =>
       !!ei.isUnique === !!di.isUnique &&
       (ei.using ?? "btree") === (di.using ?? "btree") &&
       sameIndexKeys(ei, di) &&
-      normWhere(ei.where) === normWhere(di.where);
+      sameKeyOrder(ei, di) &&
+      normWhere(ei.where) === normWhere(di.where) &&
+      sameWith(ei, di);
     const dIdxList = [...dIdx.values()];
     const onlyInEntityIndexes = [...eIdx.entries()]
       .filter(([k, ei]) => !dIdx.has(k) && !dIdxList.some((di) => equivIndex(ei, di)))
@@ -198,13 +253,14 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
     for (const [nm, ei] of eIdx) {
       const di = dIdx.get(nm);
       if (!di) continue;
-      if (ei.using !== di.using || !sameIndexKeys(ei, di) || (ei.where ?? "") !== (di.where ?? "")) {
+      if (ei.using !== di.using || !sameIndexKeys(ei, di) || normWhere(ei.where) !== normWhere(di.where) || !sameKeyOrder(ei, di) || !sameWith(ei, di)) {
         indexMismatches.push({
           name: nm,
           entityUsing: ei.using ?? null,
           databaseUsing: di.using ?? null,
           entityColumns: ei.columns,
           databaseColumns: di.columns,
+          ...(di.isConstraint ? { databaseIsConstraint: true } : {}),
         });
       }
     }
@@ -240,6 +296,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
       renameHeuristic.ambiguities.length ||
       typeMismatches.length ||
       nullabilityMismatches.length ||
+      defaultMismatches.length ||
       onlyInEntityIndexes.length ||
       indexMismatches.length ||
       onlyInEntityForeignKeys.length ||
@@ -257,6 +314,7 @@ export function compareSnapshots(entitySnap: SchemaSnapshot, dbSnap: SchemaSnaps
           : {}),
         typeMismatches,
         nullabilityMismatches,
+        defaultMismatches,
         onlyInEntityIndexes,
         onlyInDatabaseIndexes,
         indexMismatches,

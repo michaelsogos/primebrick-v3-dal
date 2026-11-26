@@ -72,7 +72,7 @@ export interface EntityEventEnvelope {
   /** Affected row uuid. */
   uuid: string;
   /** Caller-observed version after the write — auditable entities only. */
-  version?: number;
+  version?: bigint;
 }
 
 export interface EntityEvent {

@@ -80,6 +80,7 @@ describe("type matrix — annotation → resolved PostgreSQL type", () => {
     f4: "float4",
     big: "int8",
     flag: "boolean",
+    flag_opt: "boolean",
 
     ts: "timestamptz",
     ts_ntz: "timestamp",
@@ -441,12 +442,14 @@ describe("columnTypeWarnings", () => {
     expect(w).toEqual([]);
   });
 
-  it("flags a pgType that restates the inferred default", () => {
+  it("explicit pgType on a plain prop is the required runtime declaration — annotation never makes it redundant", () => {
+    // The annotation is erased at transpile; `entity-type-declared` lint
+    // mandates a runtime declaration. `pgType:"text"` on `string` restates
+    // the annotation's inference but is NOT cruft — runtime cannot see it.
     const w = columnTypeWarnings("E", {
       ...hints({ sqlName: "name", propertyKey: "name", explicitPgType: "text", annotation: ann("string") }),
     }, "text");
-    expect(w).toHaveLength(1);
-    expect(w[0]!.kind).toBe("redundant-pgType");
+    expect(w).toEqual([]);
   });
 
   it("non-default explicit pgType is not redundant", () => {
@@ -454,6 +457,27 @@ describe("columnTypeWarnings", () => {
       ...hints({ sqlName: "count", propertyKey: "count", explicitPgType: "int4", annotation: ann("number") }),
     }, "int4");
     expect(w).toEqual([]);
+  });
+
+  it("pgType with no annotation is the required runtime declaration — never redundant", () => {
+    // Dist-shipped entities (builtins reach consumers compiled): the
+    // annotation is erased, no pin covers the column — pgType is the ONLY
+    // type carrier. The "text" inference fallback must not flag it.
+    const w = columnTypeWarnings("E", {
+      ...hints({ sqlName: "binding_key", propertyKey: "binding_key", explicitPgType: "varchar", length: 130 }),
+    }, "varchar(130)");
+    expect(w).toEqual([]);
+  });
+
+  it("pgType restating a semantic pin stays redundant", () => {
+    const w = columnTypeWarnings("E", {
+      ...hints({
+        sqlName: "created_at", propertyKey: "created_at",
+        explicitPgType: "timestamptz", auditableType: "CREATED_AT",
+      }),
+    }, "timestamptz");
+    expect(w).toHaveLength(1);
+    expect(w[0]!.kind).toBe("redundant-pgType");
   });
 });
 

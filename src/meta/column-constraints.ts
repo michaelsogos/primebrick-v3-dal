@@ -49,7 +49,8 @@
  *   discouraged: sticky chrome is for identity columns, not data columns.
  */
 import type { MetaColumn, RelationFacet } from "@primebrick/core";
-import { isTextlikePgType, numericKindOf, UNIT_CATEGORIES, type MetaColumnUomKind } from "@primebrick/core";
+import { extJsonStringify, isTextlikePgType, numericKindOf, UNIT_CATEGORIES, logger, type MetaColumnUomKind } from "@primebrick/core";
+import { dec } from "@primebrick/core/decimal";
 import { AuditableFieldType, CloneFieldType, DeletableFieldType, getEntityPersistenceMeta, getRelationFacet, type EntityClass, type EntityPersistenceMeta } from "./entity-decorators.js";
 
 /** Derived prop names owned by the entity class — authored values throw. */
@@ -60,7 +61,42 @@ const QUERY_FLAGS = ["sortable", "filterable", "searchable"] as const;
 
 /** Closed `options_source` vocabulary — mirrors `MetaColumnOptionsSource`
  *  (runtime guard for wire-shaped metas that never saw the TS type). */
-const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles"]);
+const COLUMN_OPTIONS_SOURCES = new Set(["census.emits", "census.callables", "audit.actors", "system.roles", "iana.tzones"]);
+
+/** Constant `defaultSql` literals — the SAME whitelist the repository's
+ *  `constantDefaultSql` uses for write-path resolution: quoted strings,
+ *  numeric literals, booleans, NULL. Volatile expressions (`now()`,
+ *  `uuidv7()`, function calls) never match → they are never served as a
+ *  form prefill (nothing to show — the DB evaluates them at write). */
+const CONSTANT_DEFAULT_RE = /^'(?:[^']|'')*'$|^-?\d+(\.\d+)?$|^(true|false|null)$/i;
+
+/**
+ * Parses a constant `defaultSql` to the column's wire value per
+ * `inferredPgType` — the served `MetaColumn.default` consumed as the
+ * create-surface prefill. Returns `undefined` for volatile expressions
+ * and for `DEFAULT NULL` (a NULL default is the absence of one).
+ *   int8/bigint → `bigint`; numeric/money → `Decimal`; other numerics →
+ *   `number`; `'literal'` → string; `true|false` → boolean.
+ */
+function constantDefaultValue(defaultSql: string | undefined, pgType: string | undefined): unknown {
+  if (defaultSql === undefined) return undefined;
+  const s = defaultSql.trim();
+  if (!CONSTANT_DEFAULT_RE.test(s)) return undefined;
+  if (/^null$/i.test(s)) return undefined;
+  if (s.startsWith("'")) {
+    const lit = s.slice(1, -1).replace(/''/g, "'");
+    // typed literal: `'1'` on a numeric column stores the number —
+    // serve the wire type, not the raw string
+    if (pgType === "int8" || pgType === "bigint") return /^-?\d+$/.test(lit) ? BigInt(lit) : lit;
+    if (pgType === "numeric" || pgType === "money" || pgType === "decimal")
+      return /^-?\d+(\.\d+)?$/.test(lit) ? dec(lit) : lit;
+    return lit;
+  }
+  if (/^(true|false)$/i.test(s)) return s.toLowerCase() === "true";
+  if (pgType === "int8" || pgType === "bigint") return BigInt(s);
+  if (pgType === "numeric" || pgType === "money" || pgType === "decimal") return dec(s);
+  return Number(s);
+}
 
 /** Intl-sanctioned unit identifiers — the same vocabulary the cell
  *  formatter feeds `style:"unit"` (`Intl.supportedValuesOf("unit")`,
@@ -89,9 +125,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
     const phys = persistence.columns[col.key];
     if (!phys) return col;
     const refEnt = servedRefEntity(phys, meta.entity);
+    const derivedDefault = constantDefaultValue(phys.defaultSql, phys.inferredPgType);
     return {
       ...col,
       nullable: phys.nullable ?? false,
+      // Constant `defaultSql` → served `default` (the create-surface
+      // prefill). An AUTHORED `default` is the legal override channel —
+      // the derived value never stomps it.
+      ...(col.default === undefined && derivedDefault !== undefined ? { default: derivedDefault } : {}),
       ...(phys.length !== undefined ? { max_length: phys.length } : {}),
       pg_type: phys.inferredPgType,
       // Identity-generated @Key → server-managed on write: exempt from
@@ -120,6 +161,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         ? isAuditActorColumn(phys)
           ? { type: "ref" as const, ref: { entity_field: `${col.key}_ref_entity`, key_field: `${col.key}_ref_key` } }
           : { type: "ref" as const, ref: { entity: refEnt } }
+        : {}),
+      // Seq-bound: `format` + `seq.uuid`/`seq.name` are class facts — the
+      // authored surface half (modes/default_mode/allow_create) merges
+      // under the derived bound identity.
+      ...(phys.seqBound !== undefined
+        ? { format: "sequence" as const, seq: { ...(col.seq ?? {}), uuid: phys.seqBound.uuid, name: phys.seqBound.name } }
         : {}),
     };
   };
@@ -162,10 +209,14 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `one of ${[...COLUMN_OPTIONS_SOURCES].join(", ")}`,
         );
       }
-      if (typeof col.options_source === "string" && col.options_source.startsWith("census.") && col.allow_create === true) {
+      if (
+        typeof col.options_source === "string" &&
+        (col.options_source.startsWith("census.") || col.options_source === "iana.tzones") &&
+        col.allow_create === true
+      ) {
         throw new Error(
-          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares allow_create:true on a census options_source — ` +
-            `census vocabularies are closed by definition; drop allow_create`,
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" declares allow_create:true on a closed options_source — ` +
+            `census/iana vocabularies are closed by definition; drop allow_create`,
         );
       }
       if (col.managed !== undefined) {
@@ -514,6 +565,30 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
             `the entity class is the source; remove the authored value(s)`,
         );
       }
+      // ── @SequenceField — the binding is a class fact like ref/type:
+      //    `format:"sequence"` and `seq.code` are DERIVED (the entity owns
+      //    them). The surface-config half (`seq.modes`/`default_mode`/
+      //    `allow_create`) stays authorable — placement config, not
+      //    binding.                                                        */
+      if (phys.seqBound !== undefined) {
+        if (col.format !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors format on a @SequenceField column — ` +
+              `the binding derives format:"sequence"; drop the authored value`,
+          );
+        }
+        if (col.seq?.uuid !== undefined || col.seq?.name !== undefined) {
+          throw new Error(
+            `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors seq.uuid/seq.name — ` +
+              `the binding derives them ("${phys.seqBound.name}"); only seq.modes/default_mode/allow_create are authorable`,
+          );
+        }
+      } else if (col.format === "sequence" || col.seq !== undefined) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors a sequence contract ` +
+            `without @SequenceField on the entity class — the class owns the binding`,
+        );
+      }
       if (isAuditActorColumn(phys) && col.options_source !== undefined && col.options_source !== "audit.actors") {
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" is an audit actor column — ` +
@@ -616,25 +691,60 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
   //    Auto-derivation already emits every standard audit stamp audited +
   //    canonical band order (2000+rank). A declaration is justified only when
   //    it carries semantics the derivation cannot express (hidden, relabel
-  //    like job_run's finished_at, a widget). Since `order` is REQUIRED in
-  //    the column type, declaring for visibility alone forces an authored
-  //    order — and any order <2000 ejects the column from the audit band, so
-  //    the record-sheet accordion misorders it. Warn at composition so the
-  //    author consciously owns the exception instead of inheriting
-  //    pre-refactoring cruft.
+  //    like job_run's finished_at, a widget, in-band visibility). Since
+  //    `order` is REQUIRED in the column type, declaring for visibility
+  //    alone forces an authored order — and any order <2000 ejects the
+  //    column from the audit band, so the record-sheet accordion misorders
+  //    it. Warn at composition listing the authored deltas vs the derived
+  //    column, so the log itself shows whether the declaration is owned
+  //    semantics or inherited cruft — the author consciously owns the
+  //    exception.
+  const entityRef = `${meta.entity ?? persistence.entityClassName} (${persistence.entityClassName})`;
+  // Keys an author may legitimately carry on an audit-column override —
+  // everything else the derivation already emits identically.
+  const AUDIT_AUTHORABLE: ReadonlyArray<keyof MetaColumn> = [
+    "format", "pattern", "sticky", "hideable", "widget", "options_source",
+    "allow_create", "icon", "audited", "searchable", "sortable", "filterable",
+    "datetime_iana_toggle", "null_label", "immutable", "color", "tooltip",
+    "tooltip_title", "tooltip_priority", "show_form_tooltip", "show_list_tooltip",
+    "depends_on", "json_schema", "min_length", "max_length", "min", "max",
+  ];
   for (const c of meta.columns) {
     const rank = STANDARD_AUDIT_RANK[c.key];
     if (rank === undefined || c.hidden === true) continue;
-    const relabeled = c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`;
-    const outOfBand = c.order !== undefined && c.order < AUDIT_ORDER_BASE;
-    console.warn(
-      `withColumnConstraints[${persistence.entityClassName}]: standard audit column "${c.key}" is declared ` +
-        `(order:${c.order === undefined ? "auto→canonical band" : c.order}` +
-        `${outOfBand ? " — OUTSIDE the audit band 2000+, the record-sheet audit accordion will sort it away from its pair" : ""}` +
-        `${relabeled ? `, relabeled via label_key "${c.label_key}"` : ""}` +
-        `${c.default_visible === true ? ", default_visible:true" : ""}) — ` +
-        `auto-derivation already emits it audited at order ${AUDIT_ORDER_BASE + rank}; ` +
-        `keep the declaration only if it adds semantics the derivation cannot express (hidden, relabel, widget), otherwise drop it`,
+    const derivedOrder = AUDIT_ORDER_BASE + rank;
+    const owned: string[] = [];
+    // `type` restating the pg-derived column type is not an owned delta.
+    const auditPhys = persistence.columns[c.key];
+    if (
+      c.type !== undefined &&
+      auditPhys !== undefined &&
+      c.type !== columnTypeForPg(auditPhys.inferredPgType)
+    ) {
+      owned.push(`type:"${c.type}" (derived "${columnTypeForPg(auditPhys.inferredPgType)}")`);
+    }
+    if (c.order !== undefined && c.order !== derivedOrder) {
+      owned.push(
+        c.order < AUDIT_ORDER_BASE
+          ? `order:${c.order} (derived ${derivedOrder} — OUTSIDE the audit band, the record-sheet audit accordion sorts it away from its pair)`
+          : `order:${c.order} (derived ${derivedOrder})`,
+      );
+    }
+    if (c.default_visible === true) owned.push("default_visible:true (derived false)");
+    if (c.label_key !== undefined && c.label_key !== `system.common.fields.${c.key}`) {
+      owned.push(`label_key:"${c.label_key}"`);
+    }
+    for (const k of AUDIT_AUTHORABLE) {
+      const v = c[k];
+      // Restated query flags never reach this point (the anti-restatement
+      // check above throws), so every authored value here is a real delta.
+      if (v !== undefined) owned.push(`${k}:${extJsonStringify(v)}`);
+    }
+    logger.warn(
+      `withColumnConstraints[${entityRef}]: standard audit column "${c.key}" is declared — ` +
+        (owned.length === 0
+          ? `it restates the derived column exactly (audited, order ${derivedOrder}, default_visible:false); drop the declaration`
+          : `the declaration owns ${owned.join(", ")} — auto-derivation cannot express those, so keep it if deliberate and drop it if inherited cruft`),
     );
   }
 
@@ -895,7 +1005,7 @@ function enforceIdentityColumnContract(
   // ── ≥4 sticky — allowed, discouraged (construction warning) ────────
   const stickyCount = columns.filter((c) => c.sticky === true).length;
   if (stickyCount >= 4) {
-    console.warn(
+    logger.warn(
       `withColumnConstraints[${entityClassName}]: ${stickyCount} sticky columns — ≥4 sticky columns are allowed but discouraged ` +
         `(sticky chrome is for identity columns, not data columns)`,
     );

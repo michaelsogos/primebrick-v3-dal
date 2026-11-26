@@ -302,6 +302,41 @@ describe("@Relation pair-unique index → snapshot comparison", () => {
     expect(diff.tables["crm.rel_links"]!.indexMismatches).toEqual([]);
   });
 
+  it("matches an entity-snapshot db side — `db:check` uses `expressions`, not `definition`", () => {
+    // `db:check --snapshot snapshot-entities.json` hands an ENTITY snapshot
+    // as the "database" side: its indexes carry `expressions` but no
+    // `definition`. The comparator must mirror the entity-side signature
+    // or every expression index reports phantom drift.
+    const entitySideAsDb: SchemaSnapshot = {
+      version: 1,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      source: "database",
+      tables: {
+        "crm.rel_links": {
+          kind: "table",
+          schema: "crm",
+          name: "rel_links",
+          indexes: [
+            {
+              name: "rel_links_pair_uq",
+              expressions: [
+                "LEAST(parent_customer_uuid, child_customer_uuid)",
+                "GREATEST(parent_customer_uuid, child_customer_uuid)",
+              ],
+              columns: ["type_uuid"],
+              using: "btree",
+              isUnique: true,
+            },
+          ],
+          columns: {},
+        },
+      },
+    };
+    const diff = compareSnapshots(entitySnap(), entitySideAsDb);
+    expect(diff.tables["crm.rel_links"]!.indexMismatches).toEqual([]);
+    expect(diff.tables["crm.rel_links"]!.onlyInEntityIndexes).toEqual([]);
+  });
+
   it("reports a mismatch when the db index keys diverge", () => {
     const dbSnap: SchemaSnapshot = {
       version: 1,

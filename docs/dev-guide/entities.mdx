@@ -32,23 +32,44 @@ decorators to opt into soft delete, audit trail, and optimistic locking.
 
 ## Decorator reference
 
-### `@Entity(tableName?, schema?)`
+### `@Entity(tableName?)` — closed schema model
 
 Maps a class to a database table. If `tableName` is omitted, the table name
-defaults to the class name. If `schema` is set, it overrides the Dal gateway's
-default `search_path` schema for this entity only.
+defaults to the class name. **Module entities never name a schema**: the
+schema is the service's primary (`OWNED_SCHEMAS[0]`), resolved at runtime.
+Schema identity is immutable product data, declared once in code
+(`OWNED_SCHEMAS` in the service's `db/dal.ts`) — it can never come from
+env, a request, or a decorator argument in module code.
 
 ```typescript
-@Entity("customers")                  // table "customers" in the Dal's primary schema (schemas[0])
-@Entity("customers", "billing")       // table "billing.customers" (schema override)
+@Entity("customers")                  // table "customers" in the service's primary schema
 @Entity()                             // table name === class name
 export class CustomerEntity { ... }
 ```
 
-The schema pin (explicit or the `schemas[0]` default) must belong to the
-`DalConfig.schemas` domain — an entity pinned elsewhere throws
+Two closed alternatives cover the only legitimate non-primary placements:
+
+```typescript
+@PublicEntity("service_registry")     // shared platform contract — schema `public`
+export class ServiceRegistryEntity { ... }
+
+@TranslationEntity("system")          // i18n perimeter — must extend TranslationEntityBase
+export class SystemTranslationEntity extends TranslationEntityBase { ... }
+```
+
+| Decorator | Resolves to | Who may use it |
+|-----------|-------------|----------------|
+| `@Entity(name)` | the service's **primary** schema | every module entity — the default |
+| `@PublicEntity(name)` | `public` | platform/shared contract entities — **self-limiting**: a service whose domain lacks `public` throws `SchemaDomainViolationError` at boot, so only the platform backend can use it |
+| `@TranslationEntity(schema)` | the translation perimeter (`public`/`system`/`custom`/`<service>`) | dal-internal machinery only — hardcodes table `translations` and throws unless the class extends `TranslationEntityBase`; the pin capability cannot be repurposed |
+
+The resolved schema (primary default or a marker's fixed target) must belong
+to the service's declared schema domain — an entity resolving elsewhere throws
 `SchemaDomainViolationError` at `getDal()` (boot) and on every entity
-operation, before SQL is generated.
+operation, before SQL is generated. The raw `schema` pin on `@Entity` is a
+dal-internal mechanism (dynamic translation classes, legacy builtins) — not a
+module-code API; a lint rule flags any module-code usage outside the dal
+allowlist.
 
 The table name is also exposed via `Reflect.defineMetadata("primebrick:tableName", ...)`
 so external tooling (e.g. the SDK's `CacheKeyBuilder`) can read it without
@@ -64,15 +85,84 @@ Marks exactly one column as the primary key. Used by `update`/`delete`/
 @Key() id!: bigint;
 ```
 
-### `@Unique()`
+### `@Unique()` + `@UniqueIndex(spec)` — unique indexes
 
-Marks a column as having a unique index. Used by `clone()` to identify columns
-that must be excluded from the copy (a new value is generated for them). The
-canonical example is `uuid`:
+Two decorators with split responsibilities — one source of truth per concern:
+
+| Decorator | Level | Carries |
+|---|---|---|
+| `@UniqueIndex({ name, where?, aliveOnly?, nullsNotDistinct? })` | class (repeatable) | **all index options** — name, partial predicate, tombstone semantics, NULLS NOT DISTINCT |
+| `@Unique(name?, order?)` | column | **membership + position** only — never options |
+
+**Bare form** — `@Unique()` marks a single-column unique index auto-named
+`<table>_<column>_uq`. Used by `clone()` to identify columns that must be
+excluded from the copy (a new value is generated for them). The canonical
+example is `uuid`:
 
 ```typescript
 @Unique() uuid!: UUID;
 ```
+
+**Named form** — every named membership must reference a class-level
+`@UniqueIndex` declaration with the same name. A column may join N indexes:
+`@Unique` accumulates, it never overwrites.
+
+```typescript
+@Entity("service_registry")
+@UniqueIndex({ name: "service_registry_code_uq_scaler",   where: "is_behind_scaler = true" })
+@UniqueIndex({ name: "service_registry_code_base_url_uq", where: "is_behind_scaler = false" })
+export class ServiceRegistryEntity extends Deletable(Auditable(EntityBase)) {
+  @Unique("service_registry_code_uq_scaler", 0)
+  @Unique("service_registry_code_base_url_uq", 0)
+  @Column({ length: 100, nullable: false })
+  code!: string;
+
+  @Unique("service_registry_code_base_url_uq", 1)
+  @Column({ nullable: false })
+  base_url!: string;
+}
+```
+
+**`aliveOnly` — the Deletable default (D1=B).** On any entity with
+`deletableType === DELETED_AT`, unique indexes are emitted as
+`... WHERE deleted_at IS NULL` **by default**: a tombstoned row never blocks
+re-creation of the value — the systemic bug where soft-delete permanently
+burns a unique key. Explicit `aliveOnly: false` opts out when tombstones
+*must* conflict (e.g. identity composites where a soft-deleted twin means
+"restore, never duplicate" — `ai_cerebellum`, `ai_models`). The opt-out
+**requires the named class-level path** — a deliberate choice is always a
+named, reviewable choice. `aliveOnly: true` on a non-Deletable entity throws
+(no `deleted_at` column to predicate on).
+
+**`where` — partial predicates.** Raw SQL, emitted as
+`(<where>) AND (deleted_at IS NULL)` when aliveOnly also resolves — that
+order matches `pg_get_indexdef` normalization. Rules enforced at meta-build:
+
+- only the entity's own columns may appear (identifiers outside
+  `WHERE_KEYWORDS` + declared columns → `TypeError`);
+- `deleted_at` is forbidden inside `where` — use `aliveOnly` (tombstone
+  semantics live in the option, never smuggled into the predicate);
+- where-alone when aliveOnly suffices is unreachable by construction.
+
+**`nullsNotDistinct`** — PG15+ `NULLS NOT DISTINCT`: NULL members conflict
+instead of stacking (e.g. composite identities with a nullable member like
+`ai_models.dtype`).
+
+**Construction enforcement** — `getEntityPersistenceMeta` throws, so bad
+decls can never reach DDL:
+
+- `@Unique("name")` with no matching `@UniqueIndex({name})` → options cannot
+  be smuggled per-column;
+- `@UniqueIndex({name})` with zero member columns → dead declaration;
+- any of the where/aliveOnly violations above.
+
+**Emission + drift.** Unique groups surface as `SchemaIndexMeta` entries and
+are emitted as `CREATE UNIQUE INDEX` (never table constraints — `WHERE` and
+`NULLS NOT DISTINCT` are not expressible in `UNIQUE(...)` constraint syntax).
+Compare treats constraint-backed live indexes correctly: a same-named live
+constraint is dropped via `ALTER TABLE ... DROP CONSTRAINT`, and predicate
+comparison is whitespace/parens/case-insensitive (`normWhere`), so a live
+`((a) AND (b))` norm-matches an emitted `(a) AND (b)`.
 
 ### `@IsNotColumn()`
 
@@ -114,7 +204,8 @@ throws `TypeError`.
 | `precision` | `number` | For `numeric`/`decimal` |
 | `scale` | `number` | For `numeric`/`decimal` |
 | `nullable` | `boolean` | `NOT NULL` by default — declare `nullable: true` for nullable columns |
-| `defaultSql` | `string` | Raw SQL DEFAULT expression (e.g. `now()`, `gen_random_uuid()`) |
+| `defaultSql` | `string` | Raw SQL DEFAULT expression (e.g. `now()`, `gen_random_uuid()`). Constant literals are also served to the FE as `MetaColumn.default` (create-form prefill); volatile/function expressions never are — the DB evaluates them at write. Mutually exclusive with `default` |
+| `default` | `ColumnDefault` | Curated closed enum for the common defaults (`UUID_V4_DEFAULT_GENERATED` = `gen_random_uuid()`, `UUID_V7_DEFAULT_GENERATED` = `uuidv7()`) — normalized into `defaultSql` |
 | `jsType` | `"instant" \| "decimal" \| "vector"` | Runtime hydration marker — required on `Decimal`/`Vector` props |
 | `castInJoin` | `string` | Cast type to apply when this field is used in a JOIN ON clause |
 
@@ -174,6 +265,23 @@ write. There is no separate `@OptimisticLock()` flag.
 | `UPDATED_AT` | `"UPDATED_AT"` | `updated_at` |
 | `UPDATED_BY` | `"UPDATED_BY"` | `updated_by` |
 | `VERSION` | `"VERSION"` | `version` |
+
+**Semantic defaults the schema pipeline injects** (overridable via an
+explicit `defaultSql`/`default` on the same decorator):
+
+| Column | Injected `defaultSql` | Why |
+|--------|-----------------------|-----|
+| `created_at`, `updated_at` | `clock_timestamp()` | audit timestamps are DB-filled at the write instant |
+| `created_by`, `updated_by` | `'system'` | safety net — a write that somehow lacks actor attribution blames `system` |
+| `version` | `1` | optimistic-lock counter starts at 1 |
+| `uuid` on `@Key`/`@Unique` | `uuidv7()` / `gen_random_uuid()` | identity generation |
+
+Volatile expressions (`clock_timestamp()`, `uuidv7()`) are physical-only —
+never served as form prefill. Constant literals (`'system'`, `1`, `false`,
+`'literal'`) ARE derived into the served `MetaColumn.default` (see
+[entity metadata](/dev-guide/entity-metadata)) — the create form shows
+them as the initial value, a `*.meta.ts` authored `default` or a
+`placement.default_value` may legally override them for a surface.
 
 ### `@DeletableField(type)` — opt into soft delete
 
@@ -273,7 +381,7 @@ export class AuditLogEntity {
 Declares a secondary (non-unique) index. Bare `@Index()` → single-column
 btree auto-named `<table>_<column>_idx`. Columns sharing the same `name`
 form a composite index ordered by `order`. Unique indexes stay on
-`@Unique()`.
+`@Unique()`/`@UniqueIndex`.
 
 ```typescript
 export type IndexOptions = {
@@ -282,18 +390,40 @@ export type IndexOptions = {
   using?: IndexMethod; // access method — default btree
   opclass?: string;    // e.g. "vector_cosine_ops" (hnsw), "gin_trgm_ops" (gin)
   where?: string;      // partial-index predicate, e.g. "deleted_at IS NULL"
+  sort?: "asc" | "desc";          // per-member direction — default "asc"
+  nulls?: "first" | "last";       // per-member NULL placement — default PG
+                                  //   (asc→last, desc→first)
+  with?: Record<string, unknown>; // index-level storage params
+                                  //   (e.g. { m: 16, ef_construction: 64 })
 };
 ```
 
 ```typescript
 @Column({ nullable: false })
-@Index({ using: "hnsw", opclass: "vector_cosine_ops" })
+@Index({ using: "hnsw", opclass: "vector_cosine_ops",
+         with: { m: 16, ef_construction: 64 } })
 embedding!: number[];
 
 @Column()
 @Index({ where: "deleted_at IS NULL" })
 email!: string;
 ```
+
+**Class-level spec form** — for indexes on mixin-owned columns (`created_at`,
+`deleted_at`) that have no property to decorate in the concrete class:
+
+```typescript
+@Index({ name: "job_runs_created_idx", columns: [
+  { column: "created_at", sort: "desc" },
+] })
+export class JobRunEntity extends Deletable(Auditable(EntityBase)) { ... }
+```
+
+`columns` is a positional member list — `{ column | expression, sort?, nulls?,
+opclass? }`; group-level `using`/`where`/`with` still come from `IndexOptions`.
+Emitted DDL renders per-member `col [opclass] [ASC|DESC] [NULLS FIRST|LAST]`
+— the canonical form — so a live `DESC NULLS LAST` index compares equal to
+its declaration instead of drifting.
 
 ### `@ForeignKey(target, opts?)` — REFERENCES constraint
 
@@ -371,7 +501,7 @@ meta carries NO `display_field`, NO `display_name`, and NO pinned column
 facet is injected into served meta through `DomainService.relationFacet`.
 
 ```typescript
-@Entity("customer_links", "crm")
+@Entity("customer_links")
 @Relation({
   parent_field: "parent_customer_uuid", // @Ref column — edge source
   child_field:  "child_customer_uuid",  // @Ref column — edge target
@@ -406,7 +536,7 @@ child-side ("the parent IS a ‹label›"); a NULL inverse label means the type 
 self-inverse by construction (e.g. partner).
 
 ```typescript
-@Entity("customer_link_types", "crm")
+@Entity("customer_link_types")
 @Dict({ directional: { forward_label_field: "label_key", inverse_label_field: "inverse_label_key" } })
 export class CustomerLinkTypeEntity extends DictEntityBase {
   @Column({ length: 100, nullable: false }) label_key!: string;

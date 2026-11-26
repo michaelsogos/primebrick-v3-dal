@@ -12,6 +12,7 @@ import {
   DeletableFieldType,
   type UUID,
 } from "../../src/index.js";
+import type { Decimal } from "@primebrick/core/decimal";
 
 /**
  * Type-rich test entity — covers all PostgreSQL ↔ TypeScript type mappings.
@@ -55,13 +56,13 @@ export class TypeTestEntity {
 
   // ── Numeric types ────────────────────────────────────────────────
   @Column({ pgType: "numeric", precision: 15, scale: 2 })
-  numeric_col!: number;
+  numeric_col!: Decimal;
 
   @Column({ pgType: "numeric", precision: 38, scale: 0 })
-  big_numeric_col!: string;
+  big_numeric_col!: Decimal;
 
   @Column({ pgType: "decimal", precision: 10, scale: 4 })
-  decimal_col!: number;
+  decimal_col!: Decimal;
 
   // ── Date/time types ──────────────────────────────────────────────
   @Column({ pgType: "timestamptz" })
@@ -88,7 +89,7 @@ export class TypeTestEntity {
   updated_by!: string;
 
   @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
+  version!: bigint;
 
   @DeletableField(DeletableFieldType.DELETED_AT)
   deleted_at?: Date;

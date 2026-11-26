@@ -88,7 +88,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
     );
 
     expect(updated.name).toBe("Updated");
-    expect(updated.version).toBe(inserted.version + 1);
+    expect(updated.version).toBe(inserted.version + 1n);
   });
 
   it("happy: sequential updates with correct version chain", async () => {
@@ -103,14 +103,14 @@ describe("Repository — optimistic concurrency control (update)", () => {
       { uuid: inserted.uuid, name: "v2", version: inserted.version },
       { actor: "test-user", matchBy: "uuid" }
     );
-    expect(u1.version).toBe(2);
+    expect(u1.version).toBe(2n);
 
     const u2 = await repo.update(
       SimpleTestEntity,
       { uuid: inserted.uuid, name: "v3", version: u1.version },
       { actor: "test-user", matchBy: "uuid" }
     );
-    expect(u2.version).toBe(3);
+    expect(u2.version).toBe(3n);
   });
 
   // ─── ERR01: Version mismatch (concurrent edit) ────────────────────
@@ -243,8 +243,8 @@ describe("Repository — optimistic concurrency control (update)", () => {
       { actor: "test-user", matchBy: "uuid" }
     );
 
-    // Version should be inserted.version + 1 (auto-incremented), NOT inserted.version
-    expect(updated.version).toBe(inserted.version + 1);
+    // Version should be inserted.version + 1n (auto-incremented), NOT inserted.version
+    expect(updated.version).toBe(inserted.version + 1n);
   });
 
   // ─── delete: version guard ────────────────────────────────────────
@@ -306,7 +306,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
     );
 
     expect(deleted.deleted_at).toBeInstanceOf(Date);
-    expect(deleted.version).toBe(inserted.version + 1);
+    expect(deleted.version).toBe(inserted.version + 1n);
   });
 
   // ─── hardDelete: version guard ────────────────────────────────────
@@ -396,7 +396,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
     );
 
     expect(restored.deleted_at).toBeNull();
-    expect(restored.version).toBe(deleted.version + 1);
+    expect(restored.version).toBe(deleted.version + 1n);
   });
 
   // ─── upsert() — REMOVED API (tests preserved as comments) ────────────
@@ -418,7 +418,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
 
     expect(result).toBeDefined();
     expect(result.name).toBe("New Row");
-    expect(result.version).toBe(1);
+    expect(result.version).toBe(1n);
   });
 
   it("upsert ON CONFLICT path: ERR02 when version omitted on existing row", async () => {
@@ -478,7 +478,7 @@ describe("Repository — optimistic concurrency control (update)", () => {
     );
 
     expect(result.name).toBe("Updated");
-    expect(result.version).toBe(inserted.version + 1);
+    expect(result.version).toBe(inserted.version + 1n);
   });
   */
 });

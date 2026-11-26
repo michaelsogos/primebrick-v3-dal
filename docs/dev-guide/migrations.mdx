@@ -39,6 +39,15 @@ Two artifacts travel with the patches:
   generated from git hooks.
 - **Advisory lock** — `pg_advisory_lock` keyed per schema serializes
   concurrent runners (multi-instance boot); `lockWaitMs` bounds the wait.
+- **First-boot guard (anti-bifurcation)** — before any DDL the engine checks
+  whether `<schema>.primebrick_database_patches` exists AND is populated. An
+  absent or empty registry means "no service ever materialized this schema":
+  the engine **refuses to run** unless `firstBoot: true` is passed
+  (`primebrick-db apply --first-boot`, or the `dbPatches`/`MigrationEngine`
+  option at boot). This closes the silent-bifurcation disaster — a service
+  booting with a wrong schema name would otherwise migrate a pristine schema
+  into a second phantom installation while the real data sits orphaned. A
+  genuine first install opts in explicitly; everything else fails closed.
 - **Seeds write the audit trail** — every seed `INSERT` must be followed
   by the matching `<table>_audit` rows. SQL seeds bypass the DAL, so
   `@AuditTrail` never fires for them; without the explicit block the
@@ -74,18 +83,54 @@ transitions the next run picks up:
 | `resolveManually` | `failed`/`pending`/`pending_review → resolved_manual` |
 | `registryStatus` | read all rows — the FE `db_patch` list |
 
+## Schema diff — what `compare` sees
+
+`compareSnapshots` diffs entity declarations against the catalog across:
+
+- **tables / columns** — presence, rename heuristics;
+- **type** (`typeMismatches`) and **nullability** (`nullabilityMismatches`);
+- **indexes** (`onlyInEntityIndexes`, `onlyInDatabaseIndexes`,
+  `indexMismatches` — columns, uniqueness, method, predicate, member
+  ordering, storage params). Predicate comparison is `normWhere`-normalized
+  (whitespace, parens and case stripped), so a live `((a) AND (b))` equals
+  an emitted `(a) AND (b)`. Member ordering (`ASC|DESC`, `NULLS FIRST|LAST`)
+  is compared against `pg_index.indoption` for plain-column members —
+  indexes declared via expression signatures skip the ordering compare
+  (the signature already encodes member order). `WITH` storage params
+  (`pg_class.reloptions`) diff only when the declaration authors `with`.
+  An entity index is satisfied by ANY live index with identical columns,
+  uniqueness, method and normalized predicate — a different catalog name
+  never triggers a duplicate CREATE. Live indexes the decls don't know
+  are reported as `onlyInDatabaseIndexes` WARNs and are **never dropped**
+  automatically. Same-named live indexes backed by a `UNIQUE` constraint
+  (`pg_constraint`) are dropped via `ALTER TABLE … DROP CONSTRAINT`, not
+  `DROP INDEX`;
+- **foreign keys** (`onlyInEntityForeignKeys`, `onlyInDatabaseForeignKeys`,
+  `foreignKeyMismatches`);
+- **column DEFAULTs** (`defaultMismatches`) — `pg_attrdef` introspection
+  via `pg_get_expr`, canonicalized by `normalizeDefaultExpr` (casts,
+  outer parens, whitespace stripped *outside* quoted literals —
+  `1::bigint` ≡ entity `1`, `'x'::character varying` ≡ `'x'`). Identity
+  artifacts (`nextval('…_seq'::regclass)`) are NOT authored defaults and
+  never diff; `GENERATED ALWAYS AS` expressions aren't DEFAULTs either.
+  Emission: `ALTER COLUMN … SET DEFAULT <authored>` / `DROP DEFAULT` —
+  catalog-only, no rewrite. Snapshots written before the capture carry
+  no `capturesDefaults` marker — treated as *unknown*, never *absent*,
+  so stale snapshots can't false-flag every declared default.
+
 ## `primebrick-db` CLI
 
 `bin/primebrick-db` (`src/cli/primebrick-db.ts`) wraps the engine and the
 schema-diff side for local/CI use:
 
 ```bash
-primebrick-db compare --registry <module.ts> --url <pg-url> [--out db-meta]
+primebrick-db compare --registry <module.ts> --url <pg-url> --schema <list> [--out db-meta]
     # entity snapshot vs catalog → snapshots JSON + unsigned .sql patch +
     # refreshed (UNSIGNED) MANIFEST.json entries
-primebrick-db apply   --schema <s> --url <pg-url> --patches <dir>
-    # run the engine once — same code path as service boot
-primebrick-db check   --registry <module.ts> --url <pg-url>
+primebrick-db apply   --schema <s> --url <pg-url> --patches <dir> [--first-boot]
+    # run the engine once — same code path as service boot; --first-boot
+    # bypasses the absent/empty-registry guard for a genuine first install
+primebrick-db check   --registry <module.ts> (--url <pg-url> | --snapshot <file>) --schema <list>
     # drift gate — exit 1 when entity intent is not fully applied
 primebrick-db status  --schema <s> --url <pg-url>
     # print the <schema>.primebrick_database_patches registry
@@ -95,6 +140,13 @@ primebrick-db sign    --db-meta <dir> --key <b64|@file> --key-id <id>
 primebrick-db keygen  --key-id <id> --trust <release|dev> [--out db-meta]
     # Ed25519 keypair; pubkey → keys.json, private key printed ONCE
 ```
+
+`--schema` on `check`/`compare` is the **comma-separated schema domain**
+(first = primary) — REQUIRED, with no env fallback: schema identity lives
+in the service's `OWNED_SCHEMAS` const and the per-service wrapper scripts
+(`db:check`, `db:meta:compare`) pass it through. Without the domain the CLI
+could not resolve un-pinned builtin entities (they mount on the primary),
+so it fails closed instead of silently assuming `public`.
 
 Consumers wire it through their own scripts (`pnpm db:migrate`,
 `db:check`, …) so the CLI itself never hardcodes connection settings.

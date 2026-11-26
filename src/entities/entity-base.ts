@@ -57,7 +57,7 @@ export function Auditable<TBase extends EntityCtor>(Base: TBase) {
     updated_by!: string;
 
     @AuditableField(AuditableFieldType.VERSION)
-    version!: number;
+    version!: bigint;
   }
   return AuditableEntity;
 }

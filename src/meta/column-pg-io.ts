@@ -84,6 +84,38 @@ function isVectorColumn(h: ColumnPgPersistenceHints): boolean {
 }
 
 /**
+ * `DAL_NOW` — write-path marker that renders `clock_timestamp()` as a SQL
+ * literal (not a bound parameter) in generated INSERT/UPDATE statements.
+ * Pass it as a column value on `insert`/`update`/bulk paths for columns
+ * that mean "DB-clock at write instant" (`used_at`, `sent_at`,
+ * `status_changed_at`, …). `Symbol.for` keeps identity stable across
+ * duplicated library copies (remote module bundles ship their own dal).
+ *
+ * Audit clocks (`created_at`, `updated_at`, `deleted_at`, audit
+ * `changed_at`) never need it — the write path stamps them itself.
+ * Rejected on non-timestamp columns.
+ */
+export const DAL_NOW = Symbol.for("primebrick.dal.now");
+export type DalNow = symbol;
+
+/** SQL text the sentinel renders as. Single clock function — the doctrine. */
+export const DAL_NOW_SQL = "clock_timestamp()";
+
+/** True when `colMeta` describes a timestamp-ish column that may carry
+ *  the marker. Accepts `instant` jsType or a timestamp/date column type.
+ *  The type is resolved through the documented runtime cascade — explicit
+ *  `pgType`, else `inferredPgType` (which carries semantic-pin resolutions
+ *  like `@SynchronizableField` → timestamptz): never the explicit `pgType`
+ *  alone, or pin-only columns are rejected despite being timestamps by
+ *  contract (see `effectivePgStorageType` above). */
+export function acceptsDalNow(col: { jsType?: unknown; pgType?: string; inferredPgType?: string } | undefined): boolean {
+  if (!col) return false;
+  if (col.jsType === "instant") return true;
+  const t = (col.pgType ?? col.inferredPgType ?? "").toLowerCase();
+  return t.startsWith("timestamp") || t === "date" || t === "timestamptz";
+}
+
+/**
  * Value to pass to `node-pg` query parameters.
  * `Date` → passthrough (timestamptz) or `YYYY-MM-DD` (SQL `date`);
  * `Decimal` → plain numeric string; `Vector`/`number[]` → `'[…]'` literal;
@@ -111,7 +143,6 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
   }
   if (stor === "jsonb" || stor === "json") {
     if (typeof value === "object") {
-      // standards-exempt: ext-json — jsonb storage format is plain JSON by contract; bigint→number is the deliberate coercion (no @primebrick/sdk dep)
       return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
     }
     if (typeof value === "bigint") return Number(value);
@@ -127,6 +158,18 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
  */
 export function pgValueToJsValue(value: unknown, h: ColumnPgPersistenceHints): unknown {
   if (value === null || value === undefined) return value;
+  // bigint hydration is wired by construction: when the entity declares the
+  // property bigint — the runtime-visible signals being the explicit
+  // `jsType: "bigint"` codec or the `@AuditableField(VERSION)` semantic pin
+  // (int4 STORAGE by deliberate pin, bigint TS representation by doctrine)
+  // — the driver int4/number is normalised to BigInt here, so the type
+  // annotation never lies at runtime. Lossless (int4 ⊂ bigint) and
+  // idempotent (driver-native bigint from real int8 columns passes through).
+  if (h.jsType === "bigint" || h.auditableType === "VERSION") {
+    if (typeof value === "bigint") return value;
+    if (typeof value === "number" || typeof value === "string") return BigInt(value);
+    return value;
+  }
   if (typeof h.jsType === "function") {
     const cls = h.jsType;
     if (value instanceof cls) return value;
@@ -180,4 +223,63 @@ export function hydrateEntityDateFieldsFromJson<T extends object>(
       (instance as Record<string, unknown>)[col.propertyKey] = converted;
     }
   }
+}
+
+/**
+ * Canonical entity-row hydration — the single funnel that makes the
+ * "RETURNING/read rows are hydrated into entity shape" contract true by
+ * construction on EVERY path. Resolution is tolerant by design: a row key
+ * is resolved to its column through the optional RETURNING alias map first,
+ * then as a sqlName, then as a propertyKey; `@Calculated` projections
+ * hydrate through their declared result pgType. Unknown keys pass through
+ * unchanged (joins/expr projections carry no entity-column contract).
+ *
+ * Resolution maps are cached per entity meta — the per-row cost is one
+ * type-dispatch per populated key, nothing more.
+ */
+
+const propKeyToSqlNameCache = new WeakMap<EntityPersistenceMeta, Map<string, string>>();
+
+function propKeyToSqlName(meta: EntityPersistenceMeta): Map<string, string> {
+  let m = propKeyToSqlNameCache.get(meta);
+  if (!m) {
+    m = new Map<string, string>();
+    for (const c of Object.values(meta.columns)) m.set(c.propertyKey, c.sqlName);
+    propKeyToSqlNameCache.set(meta, m);
+  }
+  return m;
+}
+
+export function hydrateEntityRow(
+  meta: EntityPersistenceMeta,
+  row: Record<string, unknown>,
+  rowKeyToSqlName?: Map<string, string> | null,
+): Record<string, unknown> {
+  const propMap = propKeyToSqlName(meta);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (v === null || v === undefined) {
+      out[k] = v;
+      continue;
+    }
+    const sqlName = rowKeyToSqlName?.get(k) ?? (meta.columns[k] ? k : propMap.get(k));
+    const col = sqlName ? meta.columns[sqlName] : undefined;
+    if (col) {
+      out[k] = pgValueToJsValue(v, columnHintsFromMetaColumn(col));
+      continue;
+    }
+    const calc = (meta as { calculated?: Record<string, { pgType?: string }> }).calculated?.[sqlName ?? k];
+    out[k] = calc?.pgType
+      ? pgValueToJsValue(v, { sqlName: sqlName ?? k, inferredPgType: calc.pgType, pgType: calc.pgType })
+      : v;
+  }
+  return out;
+}
+
+/** Batch form — rows share the entity meta, hydrate each in place semantics. */
+export function hydrateEntityRows(
+  meta: EntityPersistenceMeta,
+  rows: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return rows.map((r) => hydrateEntityRow(meta, r));
 }

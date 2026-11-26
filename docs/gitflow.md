@@ -20,6 +20,16 @@ The only path is the canonical tool (same pattern as check-standards):
 which merges `--no-ff` into the base, pushes the base, deletes the
 branch locally AND on origin, then audits the final state.
 
+
+**On the `git flow` binary** (AVH edition 1.12.3, installed in `~/bin`
+— upstream nvie 0.4.2 fast-forwards feature finishes; AVH defaults to
+`--no-ff` for multi-commit features but still fast-forwards single-commit
+ones, so every repo carries `gitflow.feature.finish.no-ff=true` plus the
+standard config: master→main, develop, prefixes, no version-tag).
+`git flow` is then fine for `feature start`/`publish`/`track` —
+but closing stays ONLY via the governed tool: native `finish` neither
+pushes the base nor deletes the remote branch nor audits.
+
 ## ⚠️ CRITICAL: One open work branch — never orphans
 
 At most ONE branch across `feature/*`, `release/*`, `hotfix/*` may be
@@ -36,12 +46,32 @@ Before starting or closing work — and at every session start — run:
   `gitflow finish` (merge to main, tag, back-merge to develop, delete
   local + remote).
 - Origin must carry only `main`, `develop` and the one open branch.
+
+**Bases are merge-only — nobody commits on `main` or `develop`,
+ever** (no fixes, no docs, no regen output, no exceptions). All work
+lands through a work branch. Consequently an open work branch MUST
+contain every commit of its base: `audit` fails with `STALE BASE`
+when the base moved while a work branch is open — that is proof of a
+violation (a direct base commit or an illicit close), not drift to
+tolerate. STOP and report; resync only by merging the base into the
+work branch once the violation is explained.
+
+The rule is enforced **physically**, not by doc-reading discipline: the
+shared governed `pre-commit` hook (`primebrick-v3-sdk/tools/githooks/`,
+wired via `core.hooksPath` by `gitflow install-hooks`) REJECTS commits
+on `main`/`develop` — a merge commit stays legal, so governed closes
+are unaffected. `audit` fails when the wiring is missing.
 ## Branch Creation Rules
 
 - **NEVER work directly on `develop` or `main`** - always create feature branches first
 - **Feature branches**: `git checkout -b feature/<slug>` from updated `develop`
 - **Release branches**: `git checkout -b release/<version>` from `develop` (for version bumps)
 - **Hotfix branches**: `git checkout -b hotfix/<version>` from `main` (for production fixes)
+- **`arch/*` branches**: cross-repo architectural workstreams. Same lifecycle
+  as `feature/*` — cut from `develop`, close ONLY into `develop` with
+  `--no-ff` + push + delete local/remote. They count toward the one-open-
+  work-branch rule per repo; `gitflow.ts finish` handles them (base: develop).
+
 
 ## When to ask user permission
 
@@ -103,6 +133,13 @@ The script runs automatically as a `prebuild` hook and:
 - **Tag derived from branch name**: `release/0.13.2` → tag `0.13.2`
 - **Hotfix increments PATCH**: `0.13.1` → `hotfix/0.13.2` → tag `0.13.2`
 - **Release increments MINOR**: `0.13.2` → `release/0.14.0` → tag `0.14.0`
+- **Release MAY declare a deliberate PATCH increment**: when the branch is
+  `release/<same major>.<same minor>.<patch+1>` (tag `0.13.2` → `release/0.13.3`),
+  version-sync accepts it exactly like the deliberate MAJOR-bump exception.
+  A patch-line release carrying feature work is a declared forcing, owned
+  by the user — the version ledger stays honest because the tag matches
+  the committed package.json.
+
 
 ## Common Mistakes to Avoid
 
@@ -116,9 +153,10 @@ The script runs automatically as a `prebuild` hook and:
 
 ## Commit rules
 
-- NEVER commit automatically - wait for explicit user instruction
-- DO NOT ask user to approve commit messages
-- Write appropriate commit messages directly when instructed
+- COMMIT AT EVERY MODIFICATION TURN — standing authorization, no per-commit
+  approval; the cadence contract lives in `docs/ai/commit-verification.md`
+- Every commit is PUSHED immediately — see "COMMIT ⇒ PUSH" above
+- DO NOT ask user to approve commit messages — write them directly
 - DO NOT open editor for commit approval
 
 ## New task workflow

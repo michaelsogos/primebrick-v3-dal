@@ -50,7 +50,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
       const row = stored.find((r) => r.uuid === rows[i].uuid)!;
       expect(row.id).toBeGreaterThan(0n);
       expect(row.name).toBe(`Bulk ${i}`);
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(1n);
       expect(row.created_by).toBe("bulk-user");
     }
   });
@@ -139,7 +139,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     for (const row of stored) {
       expect(row.created_by).toBe("bulk-user");
       expect(row.updated_by).toBe("bulk-user");
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(1n);
     }
   });
 
@@ -166,7 +166,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     const stored = await repo.findAll(SimpleTestEntity);
     expect(stored).toHaveLength(5);
     for (const row of stored) {
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(1n);
     }
   });
 
@@ -200,7 +200,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     const updatedRows = stored.filter((r) => r.name.startsWith("Updated"));
     expect(updatedRows).toHaveLength(3);
     for (const row of updatedRows) {
-      expect(row.version).toBe(2);
+      expect(row.version).toBe(2n);
       expect(row.updated_by).toBe("upsert-bulk-user");
       expect(row.created_by).toBe("bulk-user");
     }
@@ -209,7 +209,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     const newRows = stored.filter((r) => r.name.startsWith("New"));
     expect(newRows).toHaveLength(2);
     for (const row of newRows) {
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(1n);
     }
   });
 
@@ -309,7 +309,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     for (let i = 0; i < 5; i++) {
       const row = stored.find((r) => r.uuid === uuids[i])!;
       expect(row.name).toBe(`Updated ${i}`);
-      expect(row.version).toBe(2);
+      expect(row.version).toBe(2n);
     }
   });
 
@@ -354,7 +354,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     expect(stored).toHaveLength(100);
     for (const row of stored) {
       expect(row.name).toMatch(/^Large Updated \d+$/);
-      expect(row.version).toBe(2);
+      expect(row.version).toBe(2n);
     }
   });
 
@@ -392,7 +392,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     const stored = await repo.findAll(SimpleTestEntity);
     for (const row of stored) {
       expect(row.name).toMatch(/^Keep \d+$/);
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(1n);
     }
   });
 
@@ -505,7 +505,7 @@ describe("Repository — bulk operations (SimpleTestEntity)", () => {
     expect(stored).toHaveLength(3);
     for (const row of stored) {
       expect(row.deleted_at).toBeNull();
-      expect(row.version).toBe(3);
+      expect(row.version).toBe(3n);
     }
   });
 

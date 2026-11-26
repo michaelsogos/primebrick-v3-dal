@@ -1,4 +1,3 @@
-// standards-exempt-file: ext-json — MANIFEST.json/keys.json are canonical plain-JSON signed artifacts; ext-json markers would break signature stability (dal-pg has no @primebrick/sdk dependency)
 /**
  * Patch provenance: db-meta/MANIFEST.json + db-meta/keys.json.
  *

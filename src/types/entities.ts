@@ -20,7 +20,7 @@ export interface IAuditableEntity {
   created_by: string;
   updated_at: Date;
   updated_by: string;
-  version: number;
+  version: bigint;
 }
 
 /** Entity supports cloning — `cloned_from` points at the source record;

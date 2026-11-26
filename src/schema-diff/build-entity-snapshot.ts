@@ -1,4 +1,4 @@
-import { getEntityPersistenceMeta, type EntityClass, type EntityPersistenceMeta } from "../meta/entity-meta.js";
+import { DeletableFieldType, getEntityPersistenceMeta, type EntityClass, type EntityPersistenceMeta } from "../meta/entity-meta.js";
 import { type SchemaColumnMeta, type SchemaIndexMeta, type SchemaSnapshot, tableKey } from "./schema-types.js";
 import { lookupEntityAnnotation, type EntityAnnotationMap } from "../meta/entity-annotation-extract.js";
 import {
@@ -19,23 +19,60 @@ export type BuildEntitySnapshotOptions = {
   annotations?: EntityAnnotationMap;
 };
 
-/** `@Unique()` columns grouped into index metas (single-col uniques = group of one). */
+/**
+ * `@Unique`/`@UniqueIndex` declarations grouped into index metas.
+ *
+ * - bare `@Unique()` → auto-named single-column group `<table>_<col>_uq`;
+ * - `@Unique(name, order)` → membership in the class-level `@UniqueIndex({name})`
+ *   decl (validated at meta resolution — a decl always exists here).
+ *
+ * `aliveOnly` resolution: `spec.aliveOnly ?? entity-is-Deletable` — the
+ * default is ON for Deletable tables (a full unique would let a tombstone
+ * block re-creation of the value forever). The emitted predicate order is
+ * `(<where>) AND (deleted_at IS NULL)` so it normalizes identically to the
+ * live `pg_get_indexdef` rendering.
+ */
 function uniqueGroups(meta: EntityPersistenceMeta): SchemaIndexMeta[] {
-  const groups = new Map<string, { col: string; order: number; nnd?: boolean }[]>();
+  const deletable = Object.values(meta.columns).some(
+    (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+  );
+  const decls = new Map((meta.uniqueIndexes ?? []).map((s) => [s.name, s]));
+  const groups = new Map<
+    string,
+    { cols: { col: string; order: number }[]; spec?: NonNullable<typeof meta.uniqueIndexes>[number] }
+  >();
   for (const c of Object.values(meta.columns)) {
     if (!c.isUnique) continue;
-    const name = c.uniqueIndexName ?? `${meta.tableName}_${c.sqlName}_uq`;
-    const g = groups.get(name) ?? [];
-    g.push({ col: c.sqlName, order: c.uniqueIndexOrder ?? 0, nnd: c.uniqueNullsNotDistinct });
-    groups.set(name, g);
+    if (c.uniques?.length) {
+      for (const u of c.uniques) {
+        const g = groups.get(u.name) ?? { cols: [], spec: decls.get(u.name) };
+        g.cols.push({ col: c.sqlName, order: u.order });
+        groups.set(u.name, g);
+      }
+    } else {
+      // bare @Unique() — auto-named single-column group
+      groups.set(`${meta.tableName}_${c.sqlName}_uq`, { cols: [{ col: c.sqlName, order: 0 }] });
+    }
   }
-  return [...groups.entries()].map(([name, cols]) => ({
-    name,
-    columns: cols.sort((a, b) => a.order - b.order).map((c) => c.col),
-    using: "btree",
-    isUnique: true,
-    ...(cols.some((c) => c.nnd) ? { nullsNotDistinct: true } : {}),
-  }));
+  return [...groups.entries()].map(([name, g]) => {
+    const spec = g.spec;
+    const aliveOnly = spec?.aliveOnly ?? deletable;
+    const where = spec?.where
+      ? aliveOnly
+        ? `(${spec.where}) AND (deleted_at IS NULL)`
+        : spec.where
+      : aliveOnly
+        ? "deleted_at IS NULL"
+        : undefined;
+    return {
+      name,
+      columns: g.cols.sort((a, b) => a.order - b.order).map((c) => c.col),
+      using: "btree",
+      isUnique: true,
+      ...(spec?.nullsNotDistinct ? { nullsNotDistinct: true } : {}),
+      ...(where ? { where } : {}),
+    };
+  });
 }
 
 /**

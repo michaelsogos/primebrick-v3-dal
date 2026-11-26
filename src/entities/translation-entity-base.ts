@@ -3,11 +3,14 @@ import "reflect-metadata";
 import {
   Entity,
   Column,
+  Index,
   Key,
   Unique,
+  UniqueIndex,
   AuditTrail,
 } from "../meta/entity-decorators.js";
 import { Auditable, Deletable, EntityBase } from "./entity-base.js";
+import { ValidationError } from "../errors/errors.js";
 
 /**
  * TranslationEntityBase — standard i18n translations table entity.
@@ -42,6 +45,7 @@ import { Auditable, Deletable, EntityBase } from "./entity-base.js";
  */
 @Entity("translations")
 @AuditTrail()
+@UniqueIndex({ name: "translations_key_language_uidx" })
 export abstract class TranslationEntityBase
   extends Deletable(Auditable(EntityBase)) {
   @Key()
@@ -58,10 +62,37 @@ export abstract class TranslationEntityBase
 
   /** BCP 47 language tag (e.g. 'it-IT', 'en-GB'). */
   @Unique("translations_key_language_uidx", 1)
+  // language-filtered lookups among live rows — `translations_language_idx`
+  // is the most-used index in the fleet (partial, matching live).
+  @Index({ where: "deleted_at IS NULL" })
   @Column({ length: 10, nullable: false })
   language!: string;
 
   /** Translated string value. */
   @Column({ nullable: false })
   value!: string;
+}
+
+/**
+ * `@TranslationEntity(schema)` — declares a concrete `translations` table
+ * entity pinned to a module schema. This is the dal's ONLY schema-pinning
+ * decorator: it hardcodes the table name and rejects classes that do not
+ * extend {@link TranslationEntityBase}, so it cannot be repurposed to pin
+ * arbitrary entities. Works as a class decorator for static declarations
+ * (`@TranslationEntity("public")`) and as a callable decorator factory for
+ * runtime-synthesized subclasses (`TranslationEntity(code)(cls)`).
+ *
+ * Module entities use `@Entity` (primary-schema resolution) or
+ * `@PublicEntity` (`public`) — never this.
+ */
+export function TranslationEntity(schema: string): (ctor: Function) => void {
+  return function <T extends Function>(ctor: T): T {
+    if (!(ctor.prototype instanceof TranslationEntityBase)) {
+      throw new ValidationError(
+        `@TranslationEntity can only decorate subclasses of TranslationEntityBase`,
+      );
+    }
+    Entity("translations", schema)(ctor);
+    return ctor;
+  };
 }

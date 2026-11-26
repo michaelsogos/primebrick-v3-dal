@@ -277,6 +277,41 @@ A prop can be **optional-but-NOT-NULL** (`@Column({ nullable: false })
 created_at?: Date`) — the DB fills a `defaultSql`, the writer omits it, reads
 always return it.
 
+## Clock doctrine — who stamps what
+
+Timestamp *stamps* (the instant a thing happened) come from the **DB
+clock**, never the app clock. The only function used is
+`clock_timestamp()` — the real instant of execution, honest per row.
+Batch coherence belongs to a session/operation id, never to the timestamp
+itself.
+
+| Column kind | How the stamp lands |
+|---|---|
+| Column with `defaultSql` (`created_at`, `updated_at`, `last_seen_at`, `sent_at`, …) | `defaultSql: "clock_timestamp()"` on the entity; the writer **omits** the field — the DB fills it |
+| Stamp written on an `update` path (`used_at`, `completed_at`, `status_changed_at`, `key_rotated_at`, `last_health_check_at`, …) | pass `DAL_NOW` as the column value — the write path renders `clock_timestamp()` literally in the generated SQL |
+| DAL-owned audit stamps (`created_at`, `updated_at`, `deleted_at`, audit `changed_at`, clone `cloned_at`) | the write path stamps them itself — nothing to pass, ever |
+| Business/computed values (`previous_valid_until`, `expire_at` arithmetic, invitation `expires_at`) | plain JS `Date` — a real value, not a stamp |
+
+The rule is per-field and admits no mix: a column is either
+DB-stamped (default/sentinel) or JS-valued (business) — never both.
+
+```typescript
+import { DAL_NOW } from "@primebrick/dal-pg";
+
+await svc.update(row.uuid, { used_at: DAL_NOW, version: row.version });
+// SQL: UPDATE … SET used_at = clock_timestamp(), …
+```
+
+`DAL_NOW` is `Symbol.for("primebrick.dal.now")` — identity survives the
+duplicated library copies inside remote module bundles. It is accepted on
+`add`/`update`/bulk/clone paths and rejected on non-timestamp columns.
+"Timestamp" is resolved through the **runtime cascade** (explicit `pgType`
+→ semantic pin → `jsType`), never the explicit `pgType` alone — a pin-only
+`@SynchronizableField` column IS a timestamp column by contract, and the
+gate must agree. Read-side comparisons (`expires_at < now`, expiry checks)
+are plain query semantics and stay client-side — record management and
+record querying are different concerns.
+
 ## Adding a new column type
 
 The mapping table lives in `src/meta/entity-ts-to-pg.ts`, the closed
