@@ -3,6 +3,7 @@ import "reflect-metadata";
 
 import { Entity, Key, Unique, Column, Calculated, Ref, SequenceField, sequenceBoundUuid, withColumnConstraints, getEntityPersistenceMeta, EntityBase, Auditable, Deletable, Clonable, SynchronizableField, SynchronizableFieldType, type UUID, type Decimal } from "../src/index.js";
 import type { EntityMeta } from "@primebrick/core";
+import { setCoreLogTransport, type CoreLogEntry } from "@primebrick/core";
 
 @Entity("cc_rules", "job")
 class CcRuleEntity {
@@ -1181,7 +1182,12 @@ describe("withColumnConstraints — identity-column contract", () => {
   });
 
   it("warns at ≥4 sticky columns (allowed, discouraged)", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Core-log entries are captured through the transport hook — pre-wiring
+    // emissions buffer in core/logger and never hit the console. The capture
+    // array is reset after wiring to discard any replayed cross-test backlog.
+    const entries: CoreLogEntry[] = [];
+    setCoreLogTransport((e) => entries.push(e));
+    entries.length = 0;
     try {
       const meta = auditableMeta();
       // uuid(derived sticky) + name(derived pin) + 2 authored sticky = 4
@@ -1190,19 +1196,21 @@ describe("withColumnConstraints — identity-column contract", () => {
         { key: "updated_at", label_key: "x.ua", type: "datetime", order: 21, sticky: true },
       );
       withColumnConstraints(meta, CcJobEntity);
-      expect(spy).toHaveBeenCalledWith(expect.stringContaining("4 sticky columns"));
+      expect(entries.some((e) => e.level === "warn" && e.msg.includes("4 sticky columns"))).toBe(true);
     } finally {
-      spy.mockRestore();
+      setCoreLogTransport(null);
     }
   });
 
   it("does not warn below 4 sticky columns", () => {
-    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const entries: CoreLogEntry[] = [];
+    setCoreLogTransport((e) => entries.push(e));
+    entries.length = 0;
     try {
       withColumnConstraints(auditableMeta(), CcJobEntity);
-      expect(spy).not.toHaveBeenCalled();
+      expect(entries.some((e) => e.level === "warn" && e.msg.includes("sticky columns"))).toBe(false);
     } finally {
-      spy.mockRestore();
+      setCoreLogTransport(null);
     }
   });
 });
