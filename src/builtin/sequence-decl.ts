@@ -309,9 +309,15 @@ export class SequencesService extends DomainService<SequenceEntity & Record<stri
     body: Record<string, unknown> & { version: bigint },
     tx?: import("../repository/repository.js").Repository,
   ): Promise<SequenceEntity & Record<string, unknown>> {
-    const everyEdit = "revive_every" in body;
-    const graceEdit = "revive_grace" in body;
     const stored = await this.get(uuid, { throwIfNotFound: true });
+    // An axis that arrives UNCHANGED is not an edit — the form write
+    // contract ships the full editable surface on every save, so presence
+    // alone cannot arm the in-tempo guard: editing the NAME of a
+    // non-reviving (or already-expired) sequence must stay possible.
+    const everyEdit =
+      "revive_every" in body && (body.revive_every ?? null) !== (stored.revive_every ?? null);
+    const graceEdit =
+      "revive_grace" in body && (body.revive_grace ?? null) !== (stored.revive_grace ?? null);
     const pick = <T>(k: string): T | null | undefined =>
       k in body ? (body[k] as T | null) : (stored[k] as T | null | undefined);
     const mergedEvery = everyEdit
