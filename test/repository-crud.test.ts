@@ -48,7 +48,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(inserted.description).toBe("A test");
     expect(inserted.created_by).toBe("test-user");
     expect(inserted.updated_by).toBe("test-user");
-    expect(inserted.version).toBe(1);
+    expect(inserted.version).toBe(1n);
     expect(inserted.deleted_at).toBeNull();
     expect(inserted.created_at).toBeInstanceOf(Date);
     expect(inserted.updated_at).toBeInstanceOf(Date);
@@ -63,7 +63,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     expect(inserted.created_by).toBe("auto-user");
     expect(inserted.updated_by).toBe("auto-user");
-    expect(inserted.version).toBe(1);
+    expect(inserted.version).toBe(1n);
   });
 
   it("add: throws ValidationError when no columns to insert", async () => {
@@ -256,7 +256,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     expect(updated.name).toBe("Updated");
     expect(updated.description).toBe("New desc");
     expect(updated.updated_by).toBe("updater-user");
-    expect(updated.version).toBe(inserted.version + 1);
+    expect(updated.version).toBe(inserted.version + 1n);
   });
 
   it("update: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
@@ -297,7 +297,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     expect(deleted.deleted_at).toBeInstanceOf(Date);
     expect(deleted.deleted_by).toBe("deleter-user");
-    expect(deleted.version).toBe(inserted.version + 1);
+    expect(deleted.version).toBe(inserted.version + 1n);
   });
 
   it("delete: throws RecordVanishedError when uuid not found (auditable entity with version guard)", async () => {
@@ -381,7 +381,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     expect(result).toBeDefined();
     expect(result.name).toBe("Upserted");
-    expect(result.version).toBe(1);
+    expect(result.version).toBe(1n);
   });
 
   it("upsert: updates on conflict (uuid already exists, version guard applies)", async () => {
@@ -398,7 +398,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
     );
 
     expect(result.name).toBe("Upserted Name");
-    expect(result.version).toBe(inserted.version + 1);
+    expect(result.version).toBe(inserted.version + 1n);
     expect(result.updated_by).toBe("upsert-user");
     // created_at and created_by should be preserved
     expect(result.created_by).toBe("test-user");
@@ -419,7 +419,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
 
     expect(result).toBeDefined();
     expect(result.name).toBe("Upserted");
-    expect(result.version).toBe(1);
+    expect(result.version).toBe(1n);
   });
 
   it("add onConflict 'raise': PG raises ERR04 on duplicate uuid (live row)", async () => {
@@ -568,7 +568,7 @@ describe("Repository — basic CRUD (SimpleTestEntity)", () => {
       { actor: "u2", matchBy: "uuid" as any }
     );
     expect(updated.name).toBe("A2");
-    expect(updated.version).toBe(2);
+    expect(updated.version).toBe(2n);
   });
 
   it("update: stale version wins over unique conflict (ERR01, conflict not reported)", async () => {

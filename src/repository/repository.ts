@@ -24,6 +24,8 @@ import {
   DAL_NOW,
   DAL_NOW_SQL,
   acceptsDalNow,
+  hydrateEntityRow,
+  hydrateEntityRows,
 } from "../meta/column-pg-io.js";
 
 import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from "../query/dsl.js";
@@ -393,6 +395,23 @@ export function pickReturningRow<TResult>(raw: Record<string, unknown>, visibleK
   return out as TResult;
 }
 
+/**
+ * The write-path hydration funnel — every single-row write (insert, update,
+ * delete, restore, hard-delete, clone) returns through here, so RETURNING
+ * rows are hydrated into entity shape BY CONSTRUCTION: the TS annotation
+ * (`version!: bigint` over int4 storage, vector/decimal codecs, …) never
+ * lies at runtime. Hydration resolves aliases through the RETURNING map
+ * and is idempotent — driver-native types pass through unchanged.
+ * @internal
+ */
+export function finalizeReturningRow<TResult>(
+  meta: EntityPersistenceMeta,
+  ret: { visibleKeys: string[]; rowKeyToSqlName: Map<string, string> },
+  raw: Record<string, unknown>,
+): TResult {
+  return pickReturningRow<TResult>(hydrateEntityRow(meta, raw, ret.rowKeyToSqlName), ret.visibleKeys);
+}
+
 /** Rebuild a sqlName-keyed record from a RETURNING row (for audit deltas). */
 function remapReturningRow(raw: Record<string, unknown>, rowKeyToSqlName: Map<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -585,7 +604,7 @@ export class Repository {
     });
 
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (!throwIfNotFound) return rows[0] ?? null;
     if (rows.length === 0) throw new NotFoundError(`No ${meta.tableName} found with id ${id}`);
@@ -615,7 +634,7 @@ export class Repository {
     });
 
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (!throwIfNotFound) return rows[0] ?? null;
     if (rows.length === 0) throw new NotFoundError(`No ${meta.tableName} found with uuid ${uuid}`);
@@ -644,7 +663,7 @@ export class Repository {
       limit: 1,
     });
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (rows.length === 0) {
       if (throwIfNotFound) throw new NotFoundError(`No ${meta.tableName} found matching filters`);
@@ -698,7 +717,12 @@ export class Repository {
         groupBy: options.groupBy,
         having: options.having,
       });
-      return createStream<TResult>(this.db, q.text, q.values);
+      const rawStream = createStream<Record<string, unknown>>(this.db, q.text, q.values);
+      // stream rows hydrate through the same canonical funnel as every other
+      // path — entity shape is wired by construction, cursor-paced.
+      return (async function* (): AsyncIterable<TResult> {
+        for await (const row of rawStream) yield hydrateEntityRow(meta, row) as TResult;
+      })();
     }
 
     const q = buildSelectQuery({
@@ -713,7 +737,7 @@ export class Repository {
       having: options?.having,
     });
     const r = await this.db.query(q.text, q.values);
-    return (r.rows ?? []) as TResult[];
+    return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
   }
 
   /**
@@ -737,6 +761,7 @@ export class Repository {
     queryVector: number[] | string,
     options?: VectorSearchOptions<TEntity>,
   ): Promise<Array<TResult & { similarity?: number; distance?: number }>> {
+    const meta = getEntityPersistenceMeta(entity);
     const topK = options?.topK ?? 10;
     if (topK <= 0) throw new ValidationError("vectorSearch: topK must be a positive integer");
     const op = options?.distance ?? "<=>";
@@ -766,7 +791,7 @@ export class Repository {
         scoreAdjust: options?.scoreAdjust,
       });
       const r = await this.db.query(q.text, q.values);
-      return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+      return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { similarity?: number; distance?: number }>;
     }
 
     const q = buildSelectQuery({
@@ -785,7 +810,7 @@ export class Repository {
       limit: topK,
     });
     const r = await this.db.query(q.text, q.values);
-    return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+    return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { similarity?: number; distance?: number }>;
   }
 
   async findByPage<TEntity extends object, TResult = TEntity>(
@@ -795,6 +820,7 @@ export class Repository {
     fields?: FieldProjector[] | null,
     options?: FindOptions
   ): Promise<PaginatedEntity<TResult>> {
+    const meta = getEntityPersistenceMeta(entity);
     if (page <= 0) throw new ValidationError("Cannot query with page number lower than 1");
     if (recordsPerPage <= 0) throw new ValidationError("Cannot query with records per page lower than 1");
 
@@ -817,7 +843,7 @@ export class Repository {
     });
     const r = await this.db.query(q.text, q.values);
 
-    const rows = (r.rows ?? []) as Array<TResult & { _total_records?: bigint | null }>;
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { _total_records?: bigint | null }>;
     const total_records = rows[0]?._total_records ?? 0n;
 
     const entities = rows.map((x) => {
@@ -2088,7 +2114,8 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     }
 
     const result = await this.db.query(sql, values);
-    const inserted = result.rows?.[0] as Record<string, unknown> | undefined;
+    const insertedRawRow = result.rows?.[0] as Record<string, unknown> | undefined;
+    const inserted = insertedRawRow ? hydrateEntityRow(meta, insertedRawRow, ret.rowKeyToSqlName) : undefined;
 
     // raise-mode CTE returned zero rows: a unique conflict happened on a group
     // whose attempted values were not all identifiable (e.g. a DB-generated
@@ -2135,7 +2162,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     }
 
     // May be undefined when onConflict === "ignore" and the row was skipped.
-    return inserted === undefined ? (undefined as TResult) : pickReturningRow<TResult>(inserted, ret.visibleKeys);
+    return inserted === undefined ? (undefined as TResult) : finalizeReturningRow<TResult>(meta, ret, inserted);
   }
 
   /**
@@ -3241,7 +3268,7 @@ SELECT * FROM upd`;
       );
     }
 
-    const updatedRaw = result.rows[0] as Record<string, unknown>;
+    const updatedRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const updated = remapReturningRow(updatedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
@@ -3290,7 +3317,7 @@ SELECT * FROM upd`;
       });
     }
 
-    return pickReturningRow<TResult>(updatedRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, updatedRaw);
   }
 
   async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
@@ -3398,7 +3425,7 @@ SELECT * FROM w`;
       );
     }
 
-    const deletedRaw = result.rows[0] as Record<string, unknown>;
+    const deletedRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const deleted = remapReturningRow(deletedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
@@ -3446,7 +3473,7 @@ SELECT * FROM w`;
       });
     }
 
-    return pickReturningRow<TResult>(deletedRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, deletedRaw);
   }
 
   /** Restore — auditable+deletable entity (actor required). */
@@ -3554,7 +3581,7 @@ SELECT * FROM w`;
       );
     }
 
-    const restoredRaw = result.rows[0] as Record<string, unknown>;
+    const restoredRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const restored = remapReturningRow(restoredRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
@@ -3602,7 +3629,7 @@ SELECT * FROM w`;
       });
     }
 
-    return pickReturningRow<TResult>(restoredRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, restoredRaw);
   }
 
   /** Hard-delete — auditable entity (actor required for audit log). */
@@ -3721,7 +3748,7 @@ SELECT * FROM w`;
     }
 
     // RETURNING yields the row as it was before the physical delete.
-    return pickReturningRow<TResult>(result.rows[0] as Record<string, unknown>, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, result.rows[0] as Record<string, unknown>);
   }
 
   // ─── Clone ─────────────────────────────────────────────────────────────────
@@ -3866,7 +3893,7 @@ SELECT * FROM w`;
 
     // Audit the clone as `CLONE` (fire-and-forget) — full-row delta like
     // INSERT, plus `cloned_from` already carries the source uuid.
-    const insertedRow = insertResult.rows[0] as Record<string, unknown>;
+    const insertedRow = hydrateEntityRow(meta, insertResult.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     if (options.audit && actor !== undefined) {
       const delta = calculateDelta({}, insertedRow);
       options.audit.writeAudit({
@@ -3891,7 +3918,7 @@ SELECT * FROM w`;
       delta: calculateDelta({}, remapReturningRow(insertedRow, ret.rowKeyToSqlName)),
     });
 
-    return pickReturningRow<TEntity>(insertedRow, ret.visibleKeys);
+    return finalizeReturningRow<TEntity>(meta, ret, insertedRow);
   }
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────

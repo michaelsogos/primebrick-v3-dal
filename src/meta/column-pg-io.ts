@@ -158,6 +158,18 @@ export function jsValueToPgParam(value: unknown, h: ColumnPgPersistenceHints): u
  */
 export function pgValueToJsValue(value: unknown, h: ColumnPgPersistenceHints): unknown {
   if (value === null || value === undefined) return value;
+  // bigint hydration is wired by construction: when the entity declares the
+  // property bigint — the runtime-visible signals being the explicit
+  // `jsType: "bigint"` codec or the `@AuditableField(VERSION)` semantic pin
+  // (int4 STORAGE by deliberate pin, bigint TS representation by doctrine)
+  // — the driver int4/number is normalised to BigInt here, so the type
+  // annotation never lies at runtime. Lossless (int4 ⊂ bigint) and
+  // idempotent (driver-native bigint from real int8 columns passes through).
+  if (h.jsType === "bigint" || h.auditableType === "VERSION") {
+    if (typeof value === "bigint") return value;
+    if (typeof value === "number" || typeof value === "string") return BigInt(value);
+    return value;
+  }
   if (typeof h.jsType === "function") {
     const cls = h.jsType;
     if (value instanceof cls) return value;
@@ -211,4 +223,63 @@ export function hydrateEntityDateFieldsFromJson<T extends object>(
       (instance as Record<string, unknown>)[col.propertyKey] = converted;
     }
   }
+}
+
+/**
+ * Canonical entity-row hydration — the single funnel that makes the
+ * "RETURNING/read rows are hydrated into entity shape" contract true by
+ * construction on EVERY path. Resolution is tolerant by design: a row key
+ * is resolved to its column through the optional RETURNING alias map first,
+ * then as a sqlName, then as a propertyKey; `@Calculated` projections
+ * hydrate through their declared result pgType. Unknown keys pass through
+ * unchanged (joins/expr projections carry no entity-column contract).
+ *
+ * Resolution maps are cached per entity meta — the per-row cost is one
+ * type-dispatch per populated key, nothing more.
+ */
+
+const propKeyToSqlNameCache = new WeakMap<EntityPersistenceMeta, Map<string, string>>();
+
+function propKeyToSqlName(meta: EntityPersistenceMeta): Map<string, string> {
+  let m = propKeyToSqlNameCache.get(meta);
+  if (!m) {
+    m = new Map<string, string>();
+    for (const c of Object.values(meta.columns)) m.set(c.propertyKey, c.sqlName);
+    propKeyToSqlNameCache.set(meta, m);
+  }
+  return m;
+}
+
+export function hydrateEntityRow(
+  meta: EntityPersistenceMeta,
+  row: Record<string, unknown>,
+  rowKeyToSqlName?: Map<string, string> | null,
+): Record<string, unknown> {
+  const propMap = propKeyToSqlName(meta);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (v === null || v === undefined) {
+      out[k] = v;
+      continue;
+    }
+    const sqlName = rowKeyToSqlName?.get(k) ?? (meta.columns[k] ? k : propMap.get(k));
+    const col = sqlName ? meta.columns[sqlName] : undefined;
+    if (col) {
+      out[k] = pgValueToJsValue(v, columnHintsFromMetaColumn(col));
+      continue;
+    }
+    const calc = (meta as { calculated?: Record<string, { pgType?: string }> }).calculated?.[sqlName ?? k];
+    out[k] = calc?.pgType
+      ? pgValueToJsValue(v, { sqlName: sqlName ?? k, inferredPgType: calc.pgType, pgType: calc.pgType })
+      : v;
+  }
+  return out;
+}
+
+/** Batch form — rows share the entity meta, hydrate each in place semantics. */
+export function hydrateEntityRows(
+  meta: EntityPersistenceMeta,
+  rows: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return rows.map((r) => hydrateEntityRow(meta, r));
 }

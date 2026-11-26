@@ -157,7 +157,7 @@ export class TypeMatrixEntity {
   created_at!: Date;
 
   @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
+  version!: bigint;
 
   @DeletableField(DeletableFieldType.DELETED_AT)
   deleted_at?: Date;

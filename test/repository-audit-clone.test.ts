@@ -78,7 +78,7 @@ describe("Repository — clone operation", () => {
     // Clone
     const cloned = await repo.clone(SimpleTestEntity, source.uuid, { actor: "cloner" });
 
-    expect(cloned.version).toBe(1);
+    expect(cloned.version).toBe(1n);
     expect(cloned.created_by).toBe("cloner");
     expect(cloned.updated_by).toBe("cloner");
   });
@@ -155,7 +155,7 @@ describe("Repository — audit-on-all-writes", () => {
     expect(auditPort.entries[0].action).toBe(AuditAction.UPDATE);
     expect(auditPort.entries[0].entityId).toBe((await repo.findByUUID(SimpleTestEntity, inserted.uuid))!.id);
     expect(auditPort.entries[0].changedBy).toBe("updater");
-    expect(auditPort.entries[0].version).toBe(2);
+    expect(auditPort.entries[0].version).toBe(2n);
     // Delta should include the name change
     expect(auditPort.entries[0].delta.name).toBeDefined();
     expect(auditPort.entries[0].delta.name.old).toBe("Before");

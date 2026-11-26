@@ -266,7 +266,7 @@ describe("entity events — deferred tx (beginTransaction) drain", () => {
     // stale version → ERR01 abort branch → whole statement fails
     tx.update(
       SimpleTestEntity,
-      { uuid: seed.uuid, version: seed.version + 999, name: "nope" } as any,
+      { uuid: seed.uuid, version: seed.version + 999n, name: "nope" } as any,
       actorOpts,
     );
     await expect(tx.commit()).rejects.toThrow();
