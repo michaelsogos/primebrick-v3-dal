@@ -15,6 +15,8 @@ type PgColRow = {
   format_type: string;
   numeric_precision: number | null;
   numeric_scale: number | null;
+  default_expr: string | null;
+  generated: string;
 };
 
 /** Primary key columns (one query per schema batch). */
@@ -100,11 +102,14 @@ export async function buildDatabaseSnapshot(
          CASE
            WHEN t.typname IN ('numeric', 'decimal') AND a.atttypmod > 0
              THEN ((a.atttypmod - 4) & 65535)::int
-         END AS numeric_scale
+         END AS numeric_scale,
+         pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+         a.attgenerated AS generated
        FROM pg_catalog.pg_attribute a
        INNER JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
        INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
        INNER JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+       LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
        WHERE n.nspname = $1::name
          AND c.relname = $2::name
          AND c.relkind IN ('r', 'p')
@@ -129,32 +134,80 @@ export async function buildDatabaseSnapshot(
         numericScale: row.numeric_scale,
         isNullable: row.is_nullable,
         isPrimaryKey: isPk,
+        // `attgenerated` ≠ '' → the attrdef entry is a GENERATED ALWAYS AS
+        // expression, not a DEFAULT — never report it as one.
+        ...(row.default_expr != null && row.generated === ""
+          ? { defaultSql: row.default_expr }
+          : {}),
       };
     }
     // secondary indexes (non-PK) — matched by constraint/index name downstream
     const { rows: idxRows } = await db.query<{
       name: string; using: string; is_unique: boolean; def: string;
+      key_defs: string[] | null; is_constraint: boolean;
+      indoption: string | null; reloptions: string[] | null;
     }>(
       `SELECT c.relname AS name, am.amname AS using, i.indisunique AS is_unique,
-              pg_get_indexdef(i.indexrelid) AS def
+              pg_get_indexdef(i.indexrelid) AS def,
+              (con.oid IS NOT NULL) AS is_constraint,
+              i.indoption::text AS indoption,
+              c.reloptions,
+              (SELECT array_agg(pg_get_indexdef(i.indexrelid, k.n, false) ORDER BY k.n)
+                 FROM generate_series(1, i.indnkeyatts) AS k(n)) AS key_defs
        FROM pg_index i
        JOIN pg_class c  ON c.oid  = i.indexrelid
        JOIN pg_am am    ON am.oid = c.relam
        JOIN pg_class t  ON t.oid  = i.indrelid
        JOIN pg_namespace n ON n.oid = t.relnamespace
+       LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
        WHERE n.nspname = $1 AND t.relname = $2 AND NOT i.indisprimary`,
       [schema, name]
     );
-    const indexes = idxRows.map((r) => ({
-      name: r.name,
-      using: r.using,
-      isUnique: r.is_unique,
-      // column list parsed from pg_get_indexdef's "( ... )" section — best effort,
-      // name-identity is the authoritative match anyway
-      columns: parseIndexColumns(r.def),
-      where: parseIndexPredicate(r.def),
-      definition: r.def,
-    }));
+    const indexes = idxRows.map((r) => {
+      // Canonical per-key definitions via `pg_get_indexdef(oid, col)` — a key
+      // that isn't a plain column of the table is an expression (e.g. the
+      // `@Relation` pair-unique `LEAST/GREATEST` keys); both sides of the
+      // snapshot then share the same expressions+columns shape.
+      const keys = r.key_defs ?? [];
+      const plain = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] !== undefined);
+      const exprs = keys.filter((k) => columns[k.replace(/^"|"$/g, "")] === undefined);
+      // indoption flags per key position (bit0=DESC, bit1=NULLS FIRST —
+      // PG stores DESC's nulls-first default explicitly). Projected onto
+      // plain-column positions so the arrays parallel `columns`.
+      const opts = (r.indoption ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter((s) => s !== "")
+        .map((s) => parseInt(s, 10) || 0);
+      const plainOpts = keys
+        .map((k, i) => ({ k, opt: opts[i] ?? 0 }))
+        .filter(({ k }) => columns[k.replace(/^"|"$/g, "")] !== undefined)
+        .map(({ opt }) => opt);
+      const sort = plainOpts.map((o) => ((o & 1) !== 0 ? ("desc" as const) : ("asc" as const)));
+      const nulls = plainOpts.map((o) => ((o & 2) !== 0 ? ("first" as const) : ("last" as const)));
+      const withOpts =
+        r.reloptions && r.reloptions.length
+          ? Object.fromEntries(r.reloptions.map((kv) => {
+              const eq = kv.indexOf("=");
+              return [kv.slice(0, eq), kv.slice(eq + 1)];
+            }))
+          : undefined;
+      return {
+        name: r.name,
+        using: r.using,
+        isUnique: r.is_unique,
+        columns: plain,
+        ...(exprs.length ? { expressions: exprs } : {}),
+        ...(plainOpts.some((o) => o !== 0) ? { sort, nulls } : {}),
+        ...(withOpts ? { with: withOpts } : {}),
+        where: parseIndexPredicate(r.def),
+        definition: r.def,
+        // Constraint-backing index (declared as UNIQUE/PK constraint, not
+        // CREATE INDEX) — drops must go through `ALTER TABLE … DROP
+        // CONSTRAINT`, `DROP INDEX` would error on it.
+        ...(r.is_constraint ? { isConstraint: true } : {}),
+      };
+    });
 
     // foreign keys
     const { rows: fkRows } = await db.query<{
@@ -196,17 +249,7 @@ export async function buildDatabaseSnapshot(
     };
   }
 
-  return { version: 1, generatedAt, source: "database", tables: out };
-}
-
-/** Extract "(a, b)" column list from pg_get_indexdef output (best effort). */
-function parseIndexColumns(def: string): string[] {
-  const m = /\(([^)]*)\)/.exec(def);
-  if (!m) return [];
-  return m[1]!
-    .split(",")
-    .map((s) => s.trim().replace(/^"|"$/g, "").replace(/\s+(asc|desc|nulls\s+\w+|opclass.*)$/i, ""))
-    .filter(Boolean);
+  return { version: 1, generatedAt, source: "database", capturesDefaults: true, tables: out };
 }
 
 /** Extract WHERE predicate from a partial index definition. */

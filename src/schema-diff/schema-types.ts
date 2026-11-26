@@ -42,6 +42,16 @@ export type SchemaIndexMeta = {
   isUnique?: boolean;
   /** PG15+ `NULLS NOT DISTINCT` on unique indexes — NULL members conflict. */
   nullsNotDistinct?: boolean;
+  /** Per-column sort directions, parallel to `columns` — "asc" members
+   *  may be omitted entity-side; comparison resolves PG defaults. */
+  sort?: ("asc" | "desc")[];
+  /** Per-column NULL placement, parallel to `columns` (PG defaults:
+   *  asc→last, desc→first — resolved at comparison/emission). */
+  nulls?: ("first" | "last")[];
+  /** Index storage parameters (`pg_class.reloptions`) — e.g. hnsw
+   *  `{ m: "16", ef_construction: "64" }`. Compared only when the entity
+   *  declares them (tuning knobs stay declarable, not mandatory). */
+  with?: Record<string, string | number>;
   /** Raw SQL expression keys — emitted verbatim (parenthesized) BEFORE the
    *  plain `columns`. Produced by the `@Relation` pair-unique derivation
    *  (`LEAST`/`GREATEST` unordered-pair keys); index comparison normalizes
@@ -51,6 +61,10 @@ export type SchemaIndexMeta = {
    *  database introspection; used as the normalized-comparison fallback
    *  for expression indexes. */
   definition?: string;
+  /** Database side only: the index backs a declared UNIQUE/PK constraint
+   *  (`pg_constraint.conindid`) — a drop must emit `ALTER TABLE … DROP
+   *  CONSTRAINT`, plain `DROP INDEX` errors on constraint-backing indexes. */
+  isConstraint?: boolean;
 };
 
 export type SchemaForeignKeyMeta = {
@@ -105,6 +119,12 @@ export type SchemaSnapshot = {
   version: 1;
   generatedAt: string;
   source: "entities" | "database";
+  /** `source:"database"` only: the introspection captured column DEFAULT
+   *  expressions (`pg_attrdef`). Absent on snapshots written before the
+   *  capture existed — the default diff treats them as "unknown", never
+   *  as "no default" (stale snapshots can't false-flag every declared
+   *  `defaultSql` as missing). */
+  capturesDefaults?: boolean;
   tables: Record<string, SchemaTableMeta>;
 };
 

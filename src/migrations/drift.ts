@@ -35,6 +35,7 @@ export function isDriftClean(diff: SchemaMetaDiffV2): boolean {
       t.likelyRenames.length ||
       t.typeMismatches.length ||
       t.nullabilityMismatches.length ||
+      (t.defaultMismatches?.length ?? 0) > 0 ||
       (t.onlyInEntityIndexes?.length ?? 0) > 0 ||
       (t.indexMismatches?.length ?? 0) > 0 ||
       (t.onlyInEntityForeignKeys?.length ?? 0) > 0 ||

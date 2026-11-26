@@ -55,11 +55,14 @@ export type EntityColumnTypeHints = {
  */
 const AUDITABLE_TYPE_PINS: Record<string, string> = {
   CREATED_AT: "timestamptz",
+  CREATED_BY: "text",
   UPDATED_AT: "timestamptz",
+  UPDATED_BY: "text",
   VERSION: "int4",
 };
 const DELETABLE_TYPE_PINS: Record<string, string> = {
   DELETED_AT: "timestamptz",
+  DELETED_BY: "text",
 };
 const SYNCHRONIZABLE_TYPE_PINS: Record<string, string> = {
   LAST_SYNCED_AT: "timestamptz",
@@ -352,12 +355,13 @@ const UUID_NAME_RE = /(^|_)uuid$/i;
  * - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
  *   The name SAYS uuid; either the column should be `uuid` (retype the prop
  *   to `UUID` or set `pgType:"uuid"`) or the name lies.
- * - `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
- *   would resolve without it (annotation stripped — erased at runtime, so
- *   a restatement of the annotation default is NOT redundant: it is the
- *   required runtime declaration). Truly redundant only when the type
- *   comes from another runtime-visible channel — e.g. `pgType:"text"` on
- *   a string prop, or a pgType already covered by a semantic/jsType pin.
+ * - `redundant-pgType` — explicit `pgType` equal to what a RUNTIME
+ *   channel already produces without it (semantic decorator pins,
+ *   `jsType` pins). The TS annotation never counts: it is erased at
+ *   transpile, so `pgType` on a plain prop IS the required runtime
+ *   declaration — the `entity-type-declared` lint mandates it. Nor can
+ *   the `"text"` fallback in {@link inferPgTypeFromEntityColumn} prove
+ *   redundancy: it is a guess, not evidence.
  */
 export function columnTypeWarnings(
   entityName: string,
@@ -382,20 +386,20 @@ export function columnTypeWarnings(
     });
   }
   if (h.explicitPgType !== undefined && !uuidNamed) {
-    const runtimeDefault = canonicalPgType(
-      stripTypeModifiers(
-        inferPgTypeFromEntityColumn({ ...h, explicitPgType: undefined, annotation: undefined }),
-      ),
-    );
-    if (runtimeDefault === canonResolved) {
-      out.push({
-        kind: "redundant-pgType",
-        entity: entityName,
-        column: h.sqlName,
-        message:
-          `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" is what runtime ` +
-          `inference resolves anyway (${runtimeDefault}) — remove it`,
-      });
+    const stripped: EntityColumnTypeHints = { ...h, explicitPgType: undefined };
+    const base = semanticPin(stripped) ?? jsTypePin(stripped);
+    if (base !== undefined) {
+      const runtimeDefault = canonicalPgType(stripTypeModifiers(applyTypeModifiers(base, stripped)));
+      if (runtimeDefault === canonResolved) {
+        out.push({
+          kind: "redundant-pgType",
+          entity: entityName,
+          column: h.sqlName,
+          message:
+            `${entityName}.${h.propertyKey}: pgType "${h.explicitPgType}" is what runtime ` +
+            `inference resolves anyway (${runtimeDefault}) — remove it`,
+        });
+      }
     }
   }
   return out;

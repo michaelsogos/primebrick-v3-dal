@@ -20,6 +20,20 @@
 - Setup is **idempotent**: use `CREATE TABLE IF NOT EXISTS` for all test tables.
 - Schema setup runs once per test run (or per suite) and does not assume a clean DB.
 
+## Test-DB convention (MANDATORY)
+
+Test tables are **lifecycle-owned**: every table a test creates is dropped by
+the same test's teardown (or the suite's `afterAll`). **Never** leave test
+objects behind on the shared dev database — leftover `dal_test_*` tables on
+`primebrick` were the incident that motivated this rule (dropped 2026-11-24).
+
+- Most tests need real entities: declare them under `test/entities/` and let
+  the suite create + drop their tables inside its own lifecycle.
+- Ad-hoc / destructive experiments (schema surgery, engine edge cases,
+  anything that cannot self-clean) run against the **dedicated scratch DB**
+  — e.g. `primebrick_dal_test`, already provisioned for this purpose —
+  via a `DATABASE_URL` pointing at it, never the shared dev database.
+
 ## Test Isolation
 
 - Between tests, tables are cleared via:

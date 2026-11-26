@@ -44,7 +44,7 @@ const dal = getDal({
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | `connectionString` | `string` | (required) | PostgreSQL connection string |
-| `schemas` | `string[]` | (required, non-empty) | Declared schema domain. `search_path` on every connection = `schemas` + `public` (extension/type resolution only). Every `@Entity` schema pin must belong to this set — violations throw `SchemaDomainViolationError` at `getDal()` (boot guard) and on every entity operation (runtime guard), before SQL is built |
+| `schemas` | `string[]` | (required, non-empty) | Declared schema domain — **always the service's `OWNED_SCHEMAS` const**, spread into the config (`schemas: [...OWNED_SCHEMAS]`). `[0]` is the primary schema. `search_path` on every connection = `schemas` + `public` (extension/type resolution only). Every `@Entity` schema pin must belong to this set — violations throw `SchemaDomainViolationError` at `getDal()` (boot guard) and on every entity operation (runtime guard), before SQL is built |
 | `max` | `number` | `10` | Maximum pool size. Formula: `max ≤ (PG max_connections − reserved) / service_instances` |
 | `statementTimeoutMs` | `number` | `30000` | Per-statement timeout in ms, set via `SET statement_timeout`. Set to `0` to disable |
 | `connectionTimeoutMillis` | `number` | `5000` | Time to wait when acquiring a connection before erroring. Fail fast when pool exhausted |
@@ -81,6 +81,15 @@ const dal = getDal({
 3. **`configureSchemaDomain`** — registers the declared `schemas` as the
    process-wide entity domain. Entities pinned to a schema outside the set
    fail before any SQL is emitted.
+
+   **Schema identity is code, never env.** Each service declares
+   `OWNED_SCHEMAS` in its `db/dal.ts` (backend: `src/db/owned-schemas.ts`)
+   — the single source feeding this config, `createMicroservice({ schemas })`
+   (the service-registry ownership claim), and the `db:check`/`db:meta:compare`
+   wrappers (`--schema`). `DATABASE_SCHEMA` in env is a **reserved
+   violation**: `assertDbEnv` throws on it, so docker/compose cannot inject
+   schema identity. Reordering `OWNED_SCHEMAS` changes the primary schema —
+   that is a deliberate entity-relocation decision, never a config tweak.
 4. **`onConnect`** — runs on every new connection: `SET search_path TO
    &lt;schemas…&gt;, public`, `SET statement_timeout TO &lt;ms&gt;`,
    `SET application_name TO '&lt;name&gt;'`. The `public` tail exists only so

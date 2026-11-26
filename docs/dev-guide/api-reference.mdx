@@ -109,7 +109,7 @@ The SDK's IConfigEntity interface mirrors the field names for port-level use.
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 
@@ -355,7 +355,7 @@ This class is DB-agnostic — it does NOT import from @primebrick/sdk.
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 
@@ -466,7 +466,7 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| body | `Record<string, unknown> & { version: number }` |  |
+| body | `Record<string, unknown> & { version: bigint }` |  |
 | tx | `Repository` |  |
 
 #### `DomainService.delete(uuid, version): Promise<TEntity>`
@@ -474,21 +474,21 @@ is available here.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.restore(uuid, version): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.purge(uuid, version): Promise<TEntity>`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | uuid | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 #### `DomainService.duplicate(uuids): Promise<DuplicateResult>`
 
@@ -818,6 +818,118 @@ closer).
 | entity | `EntityClass` |  |
 | options | `{ tableName: string }` |  |
 
+#### `Repository.sequenceAllocate(spec): Promise<{ first: bigint; last: bigint }>`
+
+sequenceAllocate — the ONE counter claim primitive. INTERNAL ENGINE:
+services call it inside their own `dal.transaction` — it has no route,
+no RPC, no remote surface. The claim is a single atomic statement:
+
+  - the row's own UPDATE takes the row lock — concurrent claimers
+    serialize on commit order, never interleave ranges (no doubles);
+  - it lives in the consumer tx, so a ROLLBACK returns the range —
+    no holes either (unlike PG `nextval`, which can never roll back);
+  - INSERT..ON CONFLICT covers the first claim of a
+    (period, partition) atomically — no create-if-missing race.
+
+`counter` is NEXT-TO-EMIT: emitting `count` codes with `step` consumes
+`[counter, counter + (count-1)·step]` and stores `counter + count·step`.
+RETURNING `first`/`last` is uniform across the INSERT and UPDATE
+branches. `start` is only used when the counter row is created.
+
+SQL moves integers only — the code STRING never touches the database;
+interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ sequence_uuid: string; period_key: string; partition_key: string; count: number; step: bigint; start: bigint; actor: string }` |  |
+
+#### `Repository.sequenceSet(spec): Promise<{ counter_uuid: string; period_key: string; partition_key: string; counter: bigint }>`
+
+Governed counter SET — writes an EXPLICIT next-to-emit value into
+ `sequence_counters`: the operator's re-seed after legacy imports or
+ drift. Never allocates, never emits a rendered value. A single
+ UPSERT is atomic on its own — on a tx-bound repo it joins the
+ caller's transaction like every other repo op. `actor` is required:
+ SET exists only behind the governed `sequence.set` RPC which always
+ has an authenticated operator.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ seq: { uuid: string }; next: bigint; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date; actor: string }` |  |
+
+#### `Repository.sequenceRevive(spec): Promise<{ revived: { from_uuid: string; to_uuid: string; name: string }[]; switched: string[] }>`
+
+The reviver — phase A creates the successor of every expired
+ reviving row (`expire_at <= now`, no successor yet — idempotent
+ re-fires), chaining until the CURRENT generation owns now (a late
+ job catches the chain up, one real period at a time — never
+ fabricates history); phase B physically retires rows whose
+ `switch_at` passed (soft-delete — history stays queryable).
+
+ Successor construction, atomic with its INSERT:
+   - `revive_slot`'s value advances via `derivePeriodLabel`
+     (parse-and-preserve: "2026"→"2027", "26"→"27", "2026-Q1"→"2026-Q2");
+   - `name` = base (trailing `#…` stripped) + `#` + the new slot
+     values — `MySeq` → `MySeq#27` → `MySeq#28`;
+   - `expire_at` = next calendar boundary after the predecessor's
+     (chained calendar — a late fire never compresses periods);
+   - `switch_at` = new expire + grace (grace absent → expire);
+   - `default_from` = the predecessor's expire boundary — the
+     `at`-axis seam series resolution serves;
+   - `binding_key`/`pattern`/`step`/`start`/`tz`/revive config carry
+     over — the series and the cadence outlive the row;
+   - `revived_from`/`revived_at`/`revived_by` = who/what/when.
+ `only_uuid` scopes the run to one row (the governed revive RPC);
+ phase B always sweeps the whole table — a switched row retires on
+ schedule regardless of what the caller asked about.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ actor: string; now: Date; only_uuid: string }` |  |
+
+#### `Repository.sequenceReviveAxesUpdate(spec): Promise<void>`
+
+Guarded revive-axis edit — the ATOMIC in-tempo contract. The row is
+ locked `FOR UPDATE` first — symmetric serialization with the sweep's
+ own `FOR UPDATE` due-set read: whoever takes the lock first wins, and
+ the loser re-evaluates post-commit (the clone's re-read sees the moved
+ `expire_at` and drops the row; our re-read sees the successor). With
+ the lock held for the whole tx, code-side checks are atomic — no
+ check-then-write window:
+
+  - expire axis (`every` present): editable only while the row is
+    still in tempo — `expire_at > now` AND no successor exists
+    (`revived_from`). Once cloned, the moment is history.
+  - switch axis (`grace` present): editable only while
+    `switch_at > now` — the grace window is exactly what this edits.
+
+ `every → NULL` is "revive off": clears `expire_at`/`switch_at`/
+ `revive_slot` — the row becomes the permanent final generation.
+ The optimistic-lock `version` is enforced HERE (the generic update
+ may be skipped on axes-only bodies) and bumped only when
+ `bumpVersion` — mixed bodies leave the single bump to `update()`.
+ Throws `OptimisticLockError` on stale version, `sequence_revive_closed`
+ when the guard refuses. Caller MUST run inside a transaction.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; version: bigint; every: string \| null; grace: string \| null; expire_at: Date \| null; switch_at: Date \| null; bumpVersion: boolean; actor: string }` |  |
+
+#### `Repository.sequenceAnalyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
+
+Read-only column-usage analysis for a sequence pattern — the
+ operator's pre-check before `sequenceSet` (or a fresh bind): scans a
+ physical text column inside the module's own schema with a
+ pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
+ sequences sharing a prefix never pollute each other's report).
+ Target resolves from explicit `table`/`column`, else the bound NAME
+ `<table>.<field>` carried by the row. Pure SELECTs — nothing is
+ created or mutated.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ seq: { uuid: string }; table: string; column: string; sez: string \| null; sez2: string \| null; sez3: string \| null; at: Date }` |  |
+
 #### `Repository.distinctAuditActors(entity): Promise<{ value: string; label: string }[]>`
 
 distinctAuditActors — the governed vocabulary behind
@@ -964,8 +1076,8 @@ Bulk update — auditable entity (actor required).
 ### `SchemaDomainViolationError`
 
 Schema sovereignty domain — the set of PostgreSQL schemas a service is
-allowed to touch, declared via `DATABASE_SCHEMA` and pushed here by the
-`Dal` constructor (`getDal({ schemas })`).
+allowed to touch, declared in code (the service's `OWNED_SCHEMAS` const)
+and pushed here by the `Dal` constructor (`getDal({ schemas })`).
 
 Enforcement points:
 - boot: `assertEntitySchemaDomain` (schema-domain-assert.ts) — every
@@ -982,6 +1094,429 @@ Enforcement points:
 |-----------|------|-------------|
 | message | `string` |  |
 | details | `{ entity: string; schema: string; allowed: string[] }` |  |
+
+### `SequenceCounterEntity`
+
+SequenceCounterEntity — the machine state of a persisted sequence
+(`sequence_counters` table). NOT a domain entity: never routed, never
+listed — rows exist only to be claimed atomically inside a consumer's
+transaction (`Repository.sequenceAllocate`).
+
+Identity = (sequence_uuid, period_key, partition_key):
+  - `period_key` derives from the pattern's finest date token at the
+    allocation business date (`''` for period-free patterns). Rows are
+    append-only: an old period's row IS the immutable record of where
+    that period ended — nothing is ever closed or deleted, the next
+    period simply keys differently.
+  - `partition_key` is the fixed 3-slot sezionale tuple
+    (`sez\x1fsez2\x1fsez3` — `core/sequence.ts sequencePartitionKey`).
+  - `counter` is NEXT-TO-EMIT (not last-emitted): the row answers
+    "where did it get to" at a glance; the claim bumps it by count*step
+    and RETURNS the emitted range in one atomic statement.
+
+`last_alloc_*` = attribution without a trail — who/when/how many took
+the last claim, overwritten each time.
+
+SEALED: same `new.target` construction guard as SequenceEntity.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `bigint` |  |
+| uuid | `string` |  |
+| sequence_uuid | `string` | → `sequences.uuid` of the owning definition (same module schema). |
+| period_key | `string` | Period identity from `derivePeriodKey` — `''` for period-free patterns. |
+| partition_key | `string` | Sezionale tuple `sez\x1fsez2\x1fsez3` — `''`…`''` when partition-free. |
+| counter | `bigint` | NEXT-TO-EMIT counter — claimed ranges bump it atomically. |
+| last_alloc_at | `Date \| null` | Instant of the last claim (attribution, overwritten). |
+| last_alloc_by | `string \| null` | Actor of the last claim (attribution, overwritten). |
+| last_alloc_count | `bigint \| null` | Codes taken by the last claim (attribution, overwritten). |
+
+#### `SequenceCounterEntity()`
+
+### `SequenceEntity`
+
+SequenceEntity — the governed DEFINITION row of a persisted sequence
+(`sequences` table). Shared CONCRETE class: every module that owns
+sequences declares the same class — the schema resolves to the
+service's `domain.primary` (never declared here, so one class serves
+every owner schema).
+
+SEALED by construction: subclassing would fork the counter namespace
+and break the one-registry-per-module ownership contract — `new.target`
+throws on any descendant instantiation (hydration bypasses ctors, but
+a subclass is useless the moment anything instantiates it).
+
+  uuid    — the ONLY identity: directives, counter FKs, RPC params and
+            the deterministic bound-row provisioning key all chain uuid
+  name    — the operator-facing display name, plain text, NOT unique
+            (bound rows carry `<table>.<field>` as their name value;
+            ambiguity between operator rows is the operator's business)
+  pattern — the authored template verbatim (`core/sequence.ts` grammar);
+            validation happens at the service boundary via
+            `parseSequencePattern`, the column is the verbatim store
+  step    — signed increment (≠0; negative = countdown)
+  start   — first next-to-emit counter for a fresh period/partition
+  tz      — IANA zone for date tokens + period boundary —
+            `NOT NULL DEFAULT 'UTC'` (physical + served default)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| created_at | `Date` |  |
+| created_by | `string` |  |
+| updated_at | `Date` |  |
+| updated_by | `string` |  |
+| version | `bigint` |  |
+| deleted_at | `Date` |  |
+| deleted_by | `string` |  |
+| uuid | `string` |  |
+| name | `string` | Operator-facing name — display data, never an identity (uuid is the
+ only chain). Bound rows carry `<table>.<field>` as their name value. |
+| pattern | `string` | Authored pattern verbatim — `{seq:W}`, date tokens, `{sez}`/`{sez2}`/`{sez3}`. |
+| step | `bigint` | Signed increment per emitted code — non-zero by service validation.
+ `DEFAULT 1` is the physical + served default: the create surface
+ prefills it and an omitted value resolves in the DB. |
+| start | `bigint` | First next-to-emit value for a fresh (period, partition) counter —
+ `DEFAULT 1`, same contract as `step`. |
+| tz | `string` | IANA zone for date tokens + period_key boundary — `DEFAULT 'UTC'`,
+ same physical+served contract as `step`/`start` (constant literal →
+ the create surface prefills it, an omitted value resolves in DB). |
+| description_key | `string \| null` | i18n key for the explanatory description — doubles as the option
+ tooltip on sequence pickers. |
+| sez | `string \| null` | Row-owned sezionale defaults — the pattern's `{sez}`/`{sez2}`/`{sez3}`
+ slots take the row value when the directive doesn't supply them;
+ owned slots are immutable at claim time (revive axis). |
+| sez2 | `string \| null` |  |
+| sez3 | `string \| null` |  |
+| binding_key | `string \| null` | Series identity for declared bindings — `<table>.<field>` (or
+ `…@expr_<hash>`); written ONLY by the system at binding
+ materialize, never a write key. Operator rows keep NULL. |
+| revive_every | `string \| null` | Revive spec `'N (day|week|month|quarter|year)[s]' | 'at <RFC3339>'`
+ — cadence-derived expiry, or an explicit pin on the `expire_at`
+ axis (the literal never propagates: the clone sanitizes it to NULL
+ and the successor lives as the permanent final generation). Stored
+ as varchar to keep the closed wire format verbatim (PG `interval`
+ output normalizes '3 months'→'3 mons', breaking round-trip). |
+| revive_grace | `string \| null` | Overlap spec `'N unit' | 'until <RFC3339>'` — how long the retired
+ row survives `expire_at` so backdated `at` still resolves it, or a
+ direct `switch_at` pin (literal sanitized to NULL on successors).
+ Editable — moves only `switch_at`. |
+| revive_slot | `string \| null` | Which sez slot the period label advances at revive — must be a
+ slot the pattern uses whose value parses under `derivePeriodLabel`.
+ IMMUTABLE post-create. |
+| expire_at | `Date \| null` | Period boundary on the `at` axis — computed at create (calendar-
+ anchored), immutable; the successor's `default_from`. |
+| switch_at | `Date \| null` | Physical retirement instant — `expire_at + revive_grace`; phase-B
+ soft-deletes the row here. Recomputed on `revive_grace` edits. |
+| default_from | `Date \| null` | When the row starts serving as the binding default — `created_at`
+ for first rows, predecessor's `expire_at` for successors. |
+| revived_from | `string \| null` | Chain link to the retired predecessor — job idempotency, audit
+ navigation. |
+| revived_at | `Date \| null` | When the revive actually ran — may lag `expire_at` (late jobs
+ resume, never halt). |
+| revived_by | `string \| null` | Who fired the revive — `system`/job actor today; the column exists
+ so a user-triggered revive later is data, not schema. |
+
+#### `SequenceEntity()`
+
+### `SequenceNotFoundError`
+
+Thrown when a sequence directive references a sequence that does not
+ exist — the missing code/uuid is in `identity`. NEVER falls back to a
+ default: an explicitly-named missing sequence and a missing derived
+ default are the same hard error.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| code | `"SEQUENCE_NOT_FOUND"` |  |
+| identity | `string` | The missing sequence's code or uuid — always populated. |
+
+#### `SequenceNotFoundError(identity)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| identity | `string` | The missing sequence's code or uuid — always populated. |
+
+### `SequencesService`
+
+The contract every entity service must satisfy — enforced on the router.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| cfg | `EntityServiceConfig<SequenceEntity & Record<string, unknown>>` |  |
+
+#### `SequencesService(actor, ownedSchema)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| actor | `() => string` |  |
+| ownedSchema | `string` |  |
+
+#### `SequencesService.update(uuid, body, tx): Promise<SequenceEntity & Record<string, unknown>>`
+
+Update path — revive axes are editable WHILE IN TEMPO: the persisted
+ moments (`expire_at`/`switch_at`) recompute here, and the atomic
+ guard lives in `sequenceReviveAxesUpdate`'s WHERE (the sweep locks
+ the row `FOR UPDATE`, this UPDATE locks it back — whoever commits
+ second sees the other through the guard predicates).
+
+ Recompute rules — anchored at NOW (mid-generation edits; the
+ create-time `default_from` anchor is history):
+  - `revive_every='N unit'` → `expire_at` = next calendar boundary;
+  - `revive_every='at <ISO>'` → the literal pin (must stay future);
+  - `revive_every→NULL`    → revive off — clears expire/switch/slot
+    (permanent final generation);
+  - `switch_at` always recomputes when an axis moves: `expire+grace`,
+    an `'until'` literal verbatim, `expire_at` when grace is NULL.
+
+ `version` rides the optimistic-lock lane via `super.update` inside
+ the SAME tx — a lost race rolls the guarded write back with it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| body | `Record<string, unknown> & { version: bigint }` |  |
+| tx | `Repository` |  |
+
+#### `SequencesService.create(body, tx): Promise<SequenceEntity & Record<string, unknown>>`
+
+Create path — the wire validator already ran `assertReviveCoherence`
+ on the full body; this override exists only to stamp the derived
+ revive anchors (`expire_at`/`switch_at`/`default_from`) that the
+ route surface never accepts as write keys.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| body | `Record<string, unknown>` |  |
+| tx | `Repository` |  |
+
+#### `SequencesService.list(query): Promise<EntityListResult<SequenceEntity & Record<string, unknown>>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
+
+#### `SequencesService.get(uuid, options): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| options | `EntityGetOptions & { throwIfNotFound: true }` |  |
+
+#### `SequencesService.forecast(spec): Promise<{ period_key: string; partition_key: string; counter: bigint \| null; next: string; uuid: string; name: string }>`
+
+`sequence-forecast` RPC — explicit-context (sez and at) forecast.
+ READ-ONLY by construction: uuid resolution + counter SELECT +
+ render. uuid is the ONLY sequence identity — `name` is display
+ data and is never accepted as an address.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
+#### `SequencesService.setCounter(spec): Promise<{ uuid: string; period_key: string; partition_key: string; counter: unknown }>`
+
+`sequence-set` RPC — governed counter re-seed: writes the explicit
+ next-to-emit value for (uuid, period derived from `at`, partition
+ from `sez*`). Never allocates, never emits a value. The counter row
+ is created when the period/partition was never claimed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; next: bigint; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
+#### `SequencesService.revive(spec): Promise<{ revived: { from_uuid: string; to_uuid: string; name: string }[]; switched: string[] }>`
+
+`sequence-revive` RPC — operator-triggered revive of ONE row: runs
+ the same atomic primitive the JH job fires (`sequenceRevive` with
+ `only_uuid`), under the caller's actor (`revived_by` attribution).
+ A not-due row is a clean no-op report — the contract is "catch up
+ if expired", never a forced generation skip. Phase B always sweeps
+ the whole table.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string }` |  |
+
+#### `SequencesService.analyze(spec): Promise<{ table: string; column: string; in_use: bigint; max_value: bigint \| null; suggested_start: bigint; next_proposed: string \| null; next_in_use: boolean; conflicts_above: bigint \| null; partitions: { partition_key: string; in_use: bigint; max_value: bigint \| null }[]; ambiguous: string[] }>`
+
+`sequence-analyze` RPC — read-only column-usage scan for the
+ pattern (the operator's pre-check before `sequence-set` or a fresh
+ bind). Delegates to the repository primitive inside a governed tx —
+ pure SELECTs, nothing mutates.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `{ uuid: string; table: string; column: string; sez: string; sez2: string; sez3: string; at: Date }` |  |
+
+#### `SequencesService.svcFor(entity): EntityService<T2>`
+
+Governed `EntityService` handle for ANOTHER entity — memoized.
+ Rare: collaborator services are the norm for cross-entity work;
+ this exists for reads/lookups into a sibling entity where a full
+ collaborator would be ceremony (config refs, display joins).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| entity | `EntityClass & () => object` |  |
+
+#### `SequencesService.registerRefDisplay(display)`
+
+Ref-display registration sink — the route layer (which is DAL-free
+ and can't reach the registry directly) feeds the entity's
+ materialized display template, derived from the SAME authored
+ `decl.meta` that serves `/entities/{e}/meta`. Called once at route
+ wiring — module-load time, so the registry is complete before any
+ `svc` builds and before the first request. Plain
+ `EntityServiceLike` facades simply don't carry it — duck-typed.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| display | `string \| null` |  |
+
+#### `SequencesService.buildConfig(): EntityServiceConfig<SequenceEntity & Record<string, unknown>>`
+
+Subclass seam for config enrichment (auditPort / actor / userEntity
+injection). Runs once, inside the lazy `svc` resolution — `this.dal`
+is available here.
+
+#### `SequencesService.exists(options): Promise<boolean>`
+
+`exists` — boolean existence probe (`SELECT EXISTS(SELECT 1 …)`):
+ the cheap "does it exist" door — no row materialized, no dto.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `FindOptions` |  |
+
+#### `SequencesService.query(fields, options): Promise<TResult[]>`
+
+`query` — the single named internal door for code-authored reads the
+ wire contract cannot express: `Project.field`/`Project.expr`
+ projections (`TResult` need not be `TEntity`), `Filter.expr`,
+ `groupBy`/`having`, `joins`, `deletedRecords`, `tableName`. Accepts
+ the raw `FindOptions` DSL — the SQL fragments are code-authored in
+ service source, NEVER request-authored over the wire (`svc.list`
+ stays the sanitizable `EntityListQuery` contract). Returns rows in
+ the caller's declared shape; no `toDto` mapping.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `SequencesService.find(fields, options): Promise<TResult \| null>`
+
+`find` — the single-row variant of `query` (`repo.find` pass-through):
+ `LIMIT 1`, honors `throwIfNotFound` (default true → `NotFoundError`).
+ Same code-authored DSL door — `svc.find(fields, opts)` is the 1:1
+ governed replacement for `dal.find(entity, fields, opts)`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fields | `FieldProjector[] \| null` |  |
+| options | `FindOptions` |  |
+
+#### `SequencesService.delete(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `bigint` |  |
+
+#### `SequencesService.restore(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `bigint` |  |
+
+#### `SequencesService.purge(uuid, version): Promise<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| version | `bigint` |  |
+
+#### `SequencesService.duplicate(uuids): Promise<DuplicateResult>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuids | `string[]` |  |
+
+#### `SequencesService.bulkDelete(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.bulkRestore(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.bulkUpdate(items): Promise<unknown>`
+
+Internal bulk ops — NOT wire actions (no route registers on them):
+ atomic `updateMany`/`hardDeleteMany` for service-internal batch work
+ (config batch writes, retention purges). The per-entity bulk gating
+ lives in the entity's declared actions and is untouched by these.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkUpdateItem[]` |  |
+
+#### `SequencesService.bulkPurge(items): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| items | `BulkItem[]` |  |
+
+#### `SequencesService.transaction(fn, options): Promise<T>`
+
+`transaction` — atomic multi-op work through the governed surface:
+ the callback receives a tx-scoped `Repository`; pass it to the same
+ `svc.*` ops (`svc.create(body, tx)`, `svc.update(uuid, body, tx)`,
+ `svc.query(fields, opts)` does not take tx — query inside the
+ callback via `tx.findAll` if the row must join the tx). BEGIN /
+ COMMIT / ROLLBACK is automatic. Requires the gateway tx runner
+ (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| fn | `(tx: Repository) => Promise<T>` |  |
+| options | `TimeoutOverrideOptions` |  |
+
+#### `SequencesService.beginTransaction(options): DeferredTransaction`
+
+`beginTransaction` — the deferred-tx door for ref()-bound
+ single-statement writes (`tx.add/update/...` return `Deferred`
+ handles whose `.ref()` binds one op's RETURNING into another — the
+ ONLY form that compiles a multi-write CTE). Repo ops inside carry
+ `{ actor }` explicitly by contract. Requires the gateway tx
+ beginner (`dal.entityService` injects it) — fails fast otherwise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| options | `TimeoutOverrideOptions` |  |
+
+#### `SequencesService.audit(uuid, page, limit): Promise<unknown>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| uuid | `string` |  |
+| page | `number` |  |
+| limit | `number` |  |
+
+#### `SequencesService.stream(query): AsyncGenerator<SequenceEntity & Record<string, unknown>>`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | `EntityListQuery` |  |
 
 ### `ServiceRegistryRefEntity`
 
@@ -1045,7 +1580,7 @@ Plus standard audit columns (created_at/by, updated_at/by, version, deleted_at/b
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | deleted_at | `Date` |  |
 | deleted_by | `string` |  |
 | id | `bigint` |  |
@@ -1180,8 +1715,6 @@ Declarative aggregate rollup projected into list rows.
 
 Audit port — consumers inject their own audit writer.
 The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
-Returns the inserted audit row key (used as `audit_log_id` in collaboration
-markers); ports that do not persist a row may return `0n`.
 
 ### `AuditRow`
 
@@ -1194,8 +1727,34 @@ markers); ports that do not persist a row may return `0n`.
 | changed_by | `string` |  |
 | changed_by_display_name | `string \| null` |  |
 | changed_by_idp_code | `string \| null` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 | delta | `Record<string, unknown>` |  |
+
+### `AuditWriteResult`
+
+Result of an audit write — the inserted row's key plus its authoritative
+`changed_at` read back from the RETURNING projection. The timestamp is
+DB-clock truth (the write stamps it via the DAL_NOW sentinel, never the
+application clock): collaboration markers MUST take it from here when the
+entity's own freshly stamped `updated_at` is unavailable (HARD_DELETE),
+because the application never knows the real time.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| key | `string \| bigint` | Inserted audit row key (used as `audit_log_id` in collaboration
+ markers); ports that do not persist a row may return `0n`. |
+| changed_at | `Date` | The audit row's changed_at as stamped by the database, read back from
+ the insert's RETURNING — ports that do not persist a row may use any
+ authoritative DB-clock timestamp they themselves observe. |
+
+### `BuiltinDeclCtx`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| actor | `() => string` |  |
+| schemas | `readonly string[]` | The module's declared schema list (code const, [0] = owned). Carried
+ through the cross-package ctx so builtin decls resolve their i18n
+ namespace without env and without waiting for the dal domain. |
 
 ### `BulkCustomAction`
 
@@ -1208,6 +1767,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | translation_key | `string` | i18n key for the CTA label. |
 | icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
 | color | `ActionColor` | Semantic color for icon + label together — see `ActionColor`. |
+| variant | `ActionVariant` | CTA shape — `default` or `outline` (CTA-only axis, never dialogs). |
 | required_permission | `string \| string[]` | Permission required to see/use the action. |
 | requires_selection | `boolean` | When true, the CTA is enabled only with rows selected and the body
  receives `selected_uuids`; false = fires with an empty body
@@ -1221,7 +1781,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+| version | `bigint` | Required on auditable entities (repo-enforced optimistic lock);
  absent on non-auditable ones (no version column exists). |
 
 ### `BulkUpdateItem`
@@ -1229,7 +1789,7 @@ UI configuration for a selection-aware bulk CTA (endpoint-backed op
 | Field | Type | Description |
 |-------|------|-------------|
 | uuid | `string` |  |
-| version | `number` | Required on auditable entities (repo-enforced optimistic lock);
+| version | `bigint` | Required on auditable entities (repo-enforced optimistic lock);
  absent on non-auditable ones. |
 
 ### `CheckEntityFieldsOptions`
@@ -1247,6 +1807,15 @@ Collaboration fragment injected by `assembleMeta` at serve time.
 |-------|------|-------------|
 | enabled | `boolean` |  |
 | expose_editing_value | `boolean` |  |
+
+### `CoreLogEntry`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| level | `CoreLogLevel` |  |
+| msg | `string` |  |
+| meta | `Record<string, unknown>` |  |
+| at | `string` | UTC ISO-8601 timestamp of emission. |
 
 ### `Dal`
 
@@ -1268,7 +1837,8 @@ Configuration for the Dal gateway.
 |-------|------|-------------|
 | connectionString | `string` | PostgreSQL connection string. Required. |
 | schemas | `string[]` | Declared schema domain — the ONLY PostgreSQL schemas this service may
-touch (from `DATABASE_SCHEMA`). `schemas[0]` is the owned/primary schema
+touch (the service's `OWNED_SCHEMAS` const in code — never env).
+`schemas[0]` is the owned/primary schema
 (patch registry, config_entries live here). Entity operations resolving
 outside this set throw SchemaDomainViolationError. Required. |
 | sharedTables | `string[]` | Shared table names exempt from the schema-domain check — governed
@@ -1354,7 +1924,7 @@ most recent change without scanning the audit log.
 |-------|------|-------------|
 | entity_type | `string` |  |
 | entity_uuid | `string` |  |
-| version | `number` | The new `version` after the save. |
+| version | `bigint` | The new `version` after the save. |
 | audit_log_id | `string \| number` | The audit row key of the change — bigint for legacy surrogate-id
  audit tables, uuid string for post-eradication `*_audit` rows
  (PK `(uuid, changed_at)`). |
@@ -1460,6 +2030,21 @@ served response. Used automatically for edit-page titles; reusable for
 comboboxes, lists, chips. |
 | actions_overrides | `ActionsOverrides` | Per-op enable overrides — may ONLY toggle `enabled` on route-backed
  ops; a missing route already produces `enabled: false`. |
+| create | `{ surface: "form" \| "sheet" }` | Create surface declaration — HOW `create.single` is exercised.
+ `"form"` (default when absent) → census `kind:"create"` route +
+ `page_props.form` → `EntityFormPage` page (the canonical archetype).
+ `"sheet"` → NO route required (a sheet is never a nav leaf): the
+ list create CTA opens `entity.record` in `mode:"create"` — the same
+ record panel, no fetch, empty draft, POST on commit.
+ Authored on the entity meta — never via component props. |
+| form | `{ validators: string[] }` | Entity-level form policy — the surface an entity declares for
+ surfaces that have no authored `page_props.form` (builtin/platform
+ entities have no route decl to author against: their record-sheet
+ forms ride the synthesized fallback). Consumed by
+ `synthesizeFormDecl`, which attaches `validators` verbatim — an
+ authored route `page_props.form` always wins (page-domain
+ placement beats entity policy). Field census stays synthesized:
+ `meta.columns` order is the single source, never duplicated. |
 | columns | `MetaColumn[]` | Entity field dictionary (root-level, transversal). |
 | table | `TableMeta` | Table options — omit when the entity has no table page
  (e.g. a self-service form meta). |
@@ -1527,7 +2112,7 @@ A single validation finding. `path` is the entity field key (or a
 | Field | Type | Description |
 |-------|------|-------------|
 | path | `string` |  |
-| code | `"required" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "schema_mismatch" \| "not_in_vocab" \| "immutable"` |  |
+| code | `"required" \| "immutable" \| "schema_mismatch" \| "invalid_type" \| "too_small" \| "too_big" \| "invalid_string" \| "invalid_json" \| "not_in_vocab"` |  |
 | message | `string` |  |
 
 ### `IAuditableEntity`
@@ -1543,7 +2128,7 @@ both are required (the Dal write-path signatures already do this).
 | created_by | `string` |  |
 | updated_at | `Date` |  |
 | updated_by | `string` |  |
-| version | `number` |  |
+| version | `bigint` |  |
 
 ### `IClonableEntity`
 
@@ -1794,6 +2379,7 @@ UI configuration for a non-standard row CTA (route-backed bare op).
 | translation_key | `string` | i18n key for the CTA label. |
 | icon | `string` | Icon name (Lucide in the reference FE) — absent renders an icon-less CTA. |
 | color | `ActionColor` | Semantic color for icon + label together — see `ActionColor`. |
+| variant | `ActionVariant` | CTA shape — `default` or `outline` (CTA-only axis, never dialogs). |
 | disabled_when_deleted | `boolean` | Disable the CTA on soft-deleted rows. |
 | required_permission | `string \| string[]` | Permission required to see/use the action (filtered client-side
  against the user's permission set). |
@@ -1806,6 +2392,99 @@ UI configuration for a non-standard row CTA (route-backed bare op).
  equals one of these values — e.g. show `resume` only on `paused`
  rows. Absent = always visible. Scalar comparison — boolean/number
  fields are allowed (e.g. `enabled ∈ [false]` for an Enable CTA). |
+
+### `SequenceDecl`
+
+A sequence DEFINITION carried on the wire — the same shape
+`@SequenceField(decl)` declares on the entity class and the expr form
+of a write directive carries. `step`/`start` are bigint-only (ext-json
+decodes integers to bigint; plain-JSON clients cannot express the expr
+form — they select existing sequences by code/uuid instead).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| pattern | `string` | Pattern source — parsed by parseSequencePattern at every boundary. |
+| step | `bigint` | Counter increment per emitted value — non-zero. |
+| start | `bigint` | First emitted counter value when the sequence is materialized. |
+| tz | `string \| null` | IANA zone for date tokens — `null`/`undefined` = server default. |
+| sez | `string` | Row-owned sezionale defaults materialized onto the sequence row —
+ the pattern's `{sez}`/`{sez2}`/`{sez3}` slots take the row's value
+ when the directive doesn't supply them (owned slots are immutable
+ at claim time — a directive may only supply non-owned slots). |
+| sez2 | `string` |  |
+| sez3 | `string` |  |
+| revive_every | `string` | Revive cadence `'N (day|week|month|quarter|year)[s]'` — the row is
+ cloned on a chained calendar (`expire_at` boundary, `switch_at`
+ retirement); NULL/absent = the row never revives. IMMUTABLE
+ post-create (the period contract is the row's identity). |
+| revive_grace | `string` | Overlap window `'N unit'` — how long the retired row survives
+ `expire_at` so backdated `at` values still resolve it. Editable —
+ only moves `switch_at`. Default `'0'`. |
+| revive_slot | `SequenceSezToken` | Which sez slot the period label advances at revive — must be a
+ slot the pattern uses; its value must parse under
+ derivePeriodLabel for the unit. Default `'sez'`. |
+
+### `SequenceDirectiveContext`
+
+Optional per-allocation context carried by the object directive forms —
+ the sezionale slot values (`sez`/`sez2`/`sez3` — the counter partitions
+ are persisted per `(sequence, period, partition_key)`; the pattern's
+ slots decide which are required/allowed), the business date `at`
+ (ISO string — drives `period_key` + date tokens; default = write
+ time), and `tz` (IANA zone overriding the row's for THIS allocation —
+ resolve-time context, never stored on the counter).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| sez | `string` |  |
+| sez2 | `string` |  |
+| sez3 | `string` |  |
+| at | `string` |  |
+| tz | `string \| null` |  |
+
+### `SequencePattern`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source | `string` | The authored pattern string — persisted verbatim on the sequence row. |
+| segments | `SequenceSegment[]` |  |
+| counter_width | `number` | `{seq:W}` pad width (0 → no padding). |
+| period_kind | `SequencePeriodKind` | Counter-identity granularity implied by the date tokens present. |
+| sez_slots | `SequenceSezToken[]` | Sezionale slots the pattern uses, in slot order (`[]` → partition-free). |
+
+### `SequenceTokenContext`
+
+Authoring context for token examples/previews — the pattern-builder
+widget renders "what this token would emit" through the same helpers
+the real renderer uses. `counter`/`partitions` are ILLUSTRATIVE sample
+values (partitions are claim-time context, never persisted on the
+sequence row); `at` defaults to now, `tz` to UTC.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| counter | `bigint` |  |
+| at | `Date` |  |
+| tz | `string` |  |
+| partitions | `SequencePartitions` |  |
+
+### `SequenceTokenSpec`
+
+One insertable entry of the pattern grammar — the SINGLE catalog the
+ authoring widget lists, so the FE never re-declares the token set.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | `string` | Catalog identity — testids and the spec discriminator. |
+| key | `string` | i18n key suffix — `app.widgets.sequence_pattern.tokens.<key>`.
+ Explicit because the key grammar is lowercase-only and token ids
+ are case-meaningful: `{MM}` (month) and `{mm}` (minutes) would
+ both lowercase to `mm` — so minutes carries `min`, and `{HH}`/
+ `{hh}` carry `hh`/`hh12`. |
+| insert | `string` | Insertable source text — for `kind:"counter"` the panel composes
+ `{seq}`/`{seq:W}` from its padding form, so this stays `{seq}`. |
+| kind | `"date" \| "time" \| "counter" \| "sez" \| "literal"` |  |
+| slot | `string` | The used-set slot this insert consumes (`seq`, `yyyy`, `HH`, `sez`…).
+ `undefined` for repeatable literals — `{{`/`}}` never mark used. |
 
 ### `SnapshotQueryable`
 
@@ -1922,7 +2601,21 @@ Closed action-color vocabulary — ONE semantic drives BOTH the icon and
 Per-op overrides — `enabled` toggles route-backed ops; chrome fields
  restyle the standard CTA without touching its logic.
 
-**Type:** `Record<string, { enabled: boolean; label_key: string; icon: string; color: ActionColor; confirm_key: string; busy_key: string }>`
+**Type:** `Record<string, { enabled: boolean; label_key: string; icon: string; color: ActionColor; variant: ActionVariant; confirm_key: string; busy_key: string }>`
+
+### `ActionVariant`
+
+Closed action-variant vocabulary — the CTA SHAPE axis, orthogonal to
+`color`. Same names as the svelte `Button` shape prop:
+`default` = filled severity variant (the standard look);
+`outline` = gradient-outline ghost (secondary affordance, e.g. export).
+`variant` reaches ONLY the CTA — never the dialog: an "outline dialog"
+would be the `tone="soft"` security-family style, and that tone is
+semantically reserved (MFA/OTP/session), not a shape pick.
+A meta may never smuggle a shape outside this set — the enum IS the
+contract.
+
+**Type:** `"default" \| "outline"`
 
 ### `AuditableWriteOptions`
 
@@ -1956,6 +2649,18 @@ declarations carrying `payload_schema` — the schema IS the listing opt-in
 (a callable without a contract is not mappable). The service declares its
 own domain subject only — nothing in this axis knows scheduling exists.
 
+### `ColumnDefaultSpec`
+
+`ColumnDefaultSpec` — the computed-default vocabulary a `MetaColumn.default`
+may carry instead of a literal. Closed union — consumers recognize the
+spec by `kind` membership, never by object shape alone (a jsonb column
+may legitimately hold a literal object default).
+
+  - `"next_day_start_local"` — the form seeds tomorrow at 00:00 in the
+    USER's local zone, serialized to the column's wire type (`datetime`
+    → UTC ISO). The anchor-default for "starts from" fields (e.g.
+    `sequence.default_from`).
+
 ### `ColumnOptions`
 
 ### `ColumnPgPersistenceHints`
@@ -1985,9 +2690,44 @@ Mirrors the SDK `ConfigType` and the BE `type` column.
 
 **Type:** `"string" \| "text" \| "boolean" \| "bigint" \| "number" \| "money" \| "badge" \| "single_select" \| "multi_select" \| "url" \| "secret" \| "json" \| "date" \| "datetime" \| "time" \| "email" \| "phone"`
 
+### `CoreLogLevel`
+
+Minimal environment-neutral logger — the shared logging floor for every
+primebrick library.
+
+Why this exists: libraries below the SDK (dal-pg, anything in core itself)
+cannot import the SDK logger — the dependency direction forbids it. Before
+this module they fell back to raw `console.*`, which produced unformatted
+bare lines in service output. Every library MUST route diagnostics through
+`logger` here instead of `console.*`.
+
+Design:
+- **Environment-neutral** — no Node APIs, no DOM, no OTel. `console` exists
+  in every runtime; the default transport writes formatted lines there.
+- **Never bare** — even with zero wiring, output carries timestamp + level,
+  so an unconfigured library can never print a naked message again.
+- **Transport hook** — the runtime owner (the SDK in `createMicroservice`,
+  or the BE at its own boot) installs ONE transport via
+  setCoreLogTransport; entries then flow into the host pipeline
+  (trace correlation, batching, OTel) and become indistinguishable from
+  host logs. Libraries never know nor care.
+- **Zero state beyond the transport** — no level filtering here: when a
+  transport is wired the host pipeline already gates levels; the default
+  path emits everything (libraries log sparingly by contract).
+
+**Type:** `"debug" \| "info" \| "warn" \| "error"`
+
+### `CoreLogTransport`
+
+**Type:** `(entry: CoreLogEntry) => void`
+
 ### `DalErrorCode`
 
 **Type:** `typeof DalErrorCodes[keyof typeof DalErrorCodes]`
+
+### `DalNow`
+
+**Type:** `symbol`
 
 ### `DecimalInput`
 
@@ -2225,6 +2965,18 @@ host-mounted component root.
 
 Options for `@Index()` — plain (non-unique) secondary indexes of any PG access method.
 
+### `IndexSpec`
+
+Class-level index spec — the form for indexes that cannot be declared
+property-side: mixin-owned columns (`created_at`, `deleted_at`, …) or
+spec-owned composites. A `columns` array makes it a spec; a spec name
+must not collide with a property-level `@Index` group.
+
+### `IndexSpecColumn`
+
+One member of a class-level IndexSpec — position in `columns` IS
+ the index order; `sort`/`nulls` are per-column options.
+
 ### `ISODate`
 
 **Type:** `string & { [isoDateBrand]: "ISODate" }`
@@ -2281,13 +3033,6 @@ crosses the wire. Same physical-column rule as `color_field`.
 
 ### `MetaColumnDependsCondition`
 
-A sibling-value condition — the SAME vocabulary `null_label.when` and
-`visible_on` already use for row-gated rendering, lifted to form scope.
-`prop` compares against the pivot ROW's prop (the picked ref option's
-raw row — e.g. its `code`); absent `prop` compares the pivot's stored
-value directly. `equals`/`not` take a single literal, `values` a set
-(IN semantics).
-
 ### `MetaColumnFormat`
 
 Authored field-format vocabulary — the SEMANTIC input contract of a
@@ -2299,7 +3044,7 @@ Closed union on purpose: an unknown `format` in a `*.meta.ts` file is a
 compile error — the US→FE option boundary is enforced by the type.
 New formats are additive literals (never breaking).
 
-**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang"`
+**Type:** `"text" \| "textarea" \| "email" \| "url" \| "phone" \| "secret" \| "nats_subject" \| "service_code" \| "schedule_spec" \| "json" \| "display_name" \| "idp_name" \| "color_hex" \| "number" \| "money" \| "date" \| "datetime" \| "time" \| "identifier" \| "snake_key" \| "dotted_key" \| "dotted_glob" \| "rule_filter" \| "slug" \| "no_space" \| "lang" \| "sequence" \| "sequence_pattern" \| "revive_interval" \| "revive_offset" \| "i18n_key"`
 
 ### `MetaColumnOptionsSource`
 
@@ -2308,7 +3053,7 @@ COLUMN (`MetaColumn.options_source`), never on a form placement:
 the same contract feeds forms, list filters and docs generation.
 Closed union on purpose — an unknown source is a construction error.
 
-**Type:** `"census.emits" \| "census.callables" \| "audit.actors" \| "system.roles"`
+**Type:** `"census.emits" \| "census.callables" \| "audit.actors" \| "system.roles" \| "iana.tzones"`
 
 ### `MetaColumnType`
 
@@ -2366,13 +3111,6 @@ absent — adimensional, it is a `kind` of its own.
 **Type:** `"length" \| "mass" \| "volume" \| "area" \| "time" \| "temperature" \| "digital" \| "angle"`
 
 ### `MetaColumnUomSource`
-
-Option vocabulary a unit-of-measure selector may draw from.
-`"currencies"`: the ISO 4217 list resolved client-side (`getAllCurrencies`
-— same source the config-domain currency picker uses). `{entity}`: the
-UoM codes persist as rows of another entity (resolved via its `/list`).
-`{api_url}`: an explicit endpoint serving the options.
-Closed union on purpose — an unknown source is a construction error.
 
 **Type:** `"currencies" \| { entity: string } \| { api_url: string; value_field: string; label_field: string }`
 
@@ -2729,6 +3467,12 @@ declaring the vendor specifiers/versions it was compiled against.
 
 ### `RenameHeuristicResult`
 
+### `ReviveSpec`
+
+A revive axis value: a `'N unit'` interval or a pinned instant.
+
+**Type:** `{ kind: "interval"; count: number; unit: SequenceReviveUnit } \| { kind: "at"; at: Date }`
+
 ### `RoundingMode`
 
 **Type:** `"UP" \| "DOWN" \| "CEILING" \| "FLOOR" \| "HALF_UP" \| "HALF_DOWN" \| "HALF_EVEN"`
@@ -2763,6 +3507,117 @@ Schema-diff: canonical entity-vs-database snapshot machinery.
 Generation side of the migration engine (migrations/ is the apply side).
 
 ### `SelectQueryInput`
+
+### `SequenceBound`
+
+The resolution-time shape: the authored decl plus the derived bound
+ identity — `name` = `<table>.<field>` (display data, never an
+ address), `uuid` = `sequenceBoundUuid(name)` (the deterministic row
+ identity). Carried on persistence column meta and served-meta
+ `seq.uuid`/`seq.name`.
+
+**Type:** `SequenceDecl & { uuid: string; name: string }`
+
+### `SequenceDateToken`
+
+Sequence pattern engine — the ONE generator shared by ad-hoc (runtime)
+and persisted (counter-in-DB) sequences. String interpolation NEVER
+happens in SQL: the database only escrows integer counters; this module
+turns `{pattern, counter, step}` into rendered codes, identically for
+the FE forecast and the BE assignment (same function → no drift).
+
+Grammar (closed):
+
+  segment   := literal | counter | dateToken | timeToken | partition
+  counter   := "&#123;seq&#125;" | "&#123;seq:" width "&#125;"     — exactly ONE per pattern
+  dateToken := "&#123;yyyy&#125;" | "&#123;yy&#125;" | "&#123;MM&#125;" | "&#123;dd&#125;" | "&#123;q&#125;"
+  timeToken := "&#123;HH&#125;" | "&#123;hh&#125;" | "&#123;mm&#125;" | "&#123;ss&#125;" — at most once each
+  partition := "&#123;sez&#125;" | "&#123;sez2&#125;" | "&#123;sez3&#125;"   — up to 3, any position
+  literal   := any chars except unescaped braces; "&#123;&#123;"→"&#123;", "&#125;&#125;"→"&#125;"
+
+Invariants:
+ - exactly one `{seq[:W]}` slot — two numeric slots would need two
+   counters, and that is scope creep not a pattern;
+ - `width` is a MIN-width zero-pad, never a max — a counter that
+   overflows its width renders honestly (`{seq:5}` + 100000 →
+   `"100000"`): uniqueness beats aesthetics, always;
+ - a pattern carrying date tokens is PERIOD-SCOPED by its finest
+   token: `{yyyy}`→reset per year, `+{q}`→per quarter, `+{MM}`→per
+   month, `+{dd}`→per day (Italian-invoice semantics — no holes,
+   no duplicates inside one period). TIME TOKENS NEVER SCOPE the
+   counter — `{mm}`/`{ss}` are claim-time cosmetics (a timestamp
+   suffix), not period granularity: an hourly counter reset would
+   be a different feature entirely;
+ - case IS the grammar: `{MM}` is month, `{mm}` is minutes; `{HH}`
+   is 24-hour, `{hh}` is 12-hour — the token sets are disjoint by
+   case, exactly like strftime/moment conventions;
+ - `{sez}`/`{sez2}`/`{sez3}` are POSITIONAL sezionale slots rendered
+   from directive fields (`sez`, `sez2`, `sez3`); the counter PK is
+   `(sequence_id, period_key, partition_key)` where partition_key is
+   the used slots joined in slot order — `{sez3}` alone ≠ `{sez}`
+   with the same value: empty slots stay meaningful;
+ - the two period axes are ORTHOGONAL: date tokens always render `at`
+   (the business date on the directive ctx, default now — never
+   ambient wall-clock of the caller's choosing) and drive the
+   counter-level auto-roll via `period_key`; sez slots are the
+   ROW-OWNED period axis — a reviving sequence clones the row and
+   advances the `revive_slot` value via `derivePeriodLabel`, the
+   counter resets because the successor is a new uuid (new counter
+   namespace), never because a counter row is rewritten;
+ - `step` is a non-zero bigint — negative steps are honest arithmetic
+   (countdown sequences exist) and are NOT special-cased;
+ - counters are `bigint` end to end: width 19 is PG bigint capacity
+   and ext-json carries bigint natively.
+
+**Type:** `"yyyy" \| "yy" \| "MM" \| "dd" \| "q"`
+
+### `SequenceDirective`
+
+**Type:** `{ seq: string } \| { seq: { uuid: string } & SequenceDirectiveContext } \| { seq: SequenceDecl & SequenceDirectiveContext }`
+
+### `SequenceMode`
+
+Sequence-widget modes — the two write-path configurations a
+`format:"sequence"` control may offer. Closed union on purpose.
+ - `"generate"` — inline pattern builder emitting a `{seq:{pattern,…}}`
+   directive (resolved + materialized inside the write transaction);
+ - `"select"` — combobox over the module's `sequence` registry,
+   emitting `{seq:{uuid}}` (uuid is the ONLY sequence identity).
+
+**Type:** `"generate" \| "select"`
+
+### `SequencePartitions`
+
+Sezionale values supplied per assignment — positional per token.
+
+**Type:** `Partial<Record<SequenceSezToken, string>>`
+
+### `SequencePeriodKind`
+
+**Type:** `"none" \| "year" \| "quarter" \| "month" \| "day"`
+
+### `SequenceReviveSlot`
+
+**Type:** `typeof SEQUENCE_REVIVE_SLOTS[number]`
+
+### `SequenceReviveUnit`
+
+**Type:** `"day" \| "week" \| "month" \| "quarter" \| "year"`
+
+### `SequenceSegment`
+
+**Type:** `{ kind: "literal"; text: string } \| { kind: "counter"; width: number } \| { kind: "date"; token: SequenceDateToken } \| { kind: "time"; token: SequenceTimeToken } \| { kind: "sez"; slot: SequenceSezToken }`
+
+### `SequenceSezToken`
+
+**Type:** `"sez" \| "sez2" \| "sez3"`
+
+### `SequenceTimeToken`
+
+`{HH}`=24h, `{hh}`=12h, `{mm}`=minutes, `{ss}`=seconds — cosmetic
+ claim-time stamps; NEVER participate in `period_key`.
+
+**Type:** `"HH" \| "hh" \| "mm" \| "ss"`
 
 ### `SnakeCaseSingular`
 
@@ -2821,9 +3676,18 @@ Tooltip visual severity — drives icon and title color in priority
 
 ### `TrustedKey`
 
-### `UniqueOptions`
+### `UniqueIndexSpec`
 
-Unique constraint options for composite unique indexes.
+Class-level unique-index declaration — the ONLY place index options
+ live. Referenced by `@Unique(name, order)` column memberships.
+
+ Enforcement (construction-time, in `getEntityPersistenceMeta`):
+ - a `@Unique(name, …)` membership with no matching `@UniqueIndex({name})`
+   throws — index options cannot be smuggled per-column;
+ - a `@UniqueIndex` with zero member columns throws;
+ - `where` may only reference the entity's own columns, and must NOT
+   contain a `deleted_at` predicate (declare `aliveOnly` instead);
+ - `aliveOnly` is only meaningful on Deletable entities.
 
 ### `UpsertOptions`
 
@@ -2907,6 +3771,58 @@ anything outside this closed set (raw strings on the wire can never reach
 the renderer).
 
 **Type:** `readonly ActionColor[]`
+
+### `ACTION_VARIANTS`
+
+The full `ActionVariant` vocabulary — construction/lint validation
+ rejects anything outside this closed set.
+
+**Type:** `readonly ActionVariant[]`
+
+### `BUILTIN_DECL_REGISTRY_KEY`
+
+**Type:** `typeof BUILTIN_DECL_REGISTRY_KEY`
+
+### `BUILTIN_ENTITIES`
+
+BUILTIN_ENTITIES — the platform-owned entity classes mounted BY
+CONSTRUCTION in every module schema. These classes are never declared
+in a module's `ENTITY_REGISTRY` (the framework knows them, the module
+does not) and never subclassed (sealed constructors).
+
+One canonical list consumed by every surface that must know the
+built-in set:
+  - `primebrick-db compare/check` — merges them into the scan so the
+    emitted patches cover `<module>.sequences` etc.
+  - the sdk route facades — mount the governed management surface
+    (sequence registry routes) at boot, like the health route.
+
+Schema resolution: the classes carry NO `@Entity` schema pin — the
+effective schema is the consuming module's `OWNED_SCHEMAS[0]` (primary),
+passed via `ctx.schemas` / `--schema` in tooling.
+
+**Type:** `readonly [typeof SequenceEntity, typeof SequenceCounterEntity]`
+
+### `DAL_NOW`
+
+`DAL_NOW` — write-path marker that renders `clock_timestamp()` as a SQL
+literal (not a bound parameter) in generated INSERT/UPDATE statements.
+Pass it as a column value on `insert`/`update`/bulk paths for columns
+that mean "DB-clock at write instant" (`used_at`, `sent_at`,
+`status_changed_at`, …). `Symbol.for` keeps identity stable across
+duplicated library copies (remote module bundles ship their own dal).
+
+Audit clocks (`created_at`, `updated_at`, `deleted_at`, audit
+`changed_at`) never need it — the write path stamps them itself.
+Rejected on non-timestamp columns.
+
+**Type:** `typeof DAL_NOW`
+
+### `DAL_NOW_SQL`
+
+SQL text the sentinel renders as. Single clock function — the doctrine.
+
+**Type:** `"clock_timestamp()"`
 
 ### `DalErrorCodes`
 
@@ -3146,6 +4062,17 @@ treated from the merged record the caller passes.
 
 **Type:** `RegExp`
 
+### `logger`
+
+**Type:** `{ debug: (msg: string, meta: Record<string, unknown>) => void; info: (msg: string, meta: Record<string, unknown>) => void; warn: (msg: string, meta: Record<string, unknown>) => void; error: (msg: string, meta: Record<string, unknown>) => void }`
+
+| Field | Value |
+|-------|-------|
+| debug | "" |
+| info | "" |
+| warn | "" |
+| error | "" |
+
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
@@ -3295,6 +4222,20 @@ Ordered strict → loose; documented for consumers of `diff-entities-vs-database
 
 **Type:** `readonly string[]`
 
+### `REVIVE_AT_RE`
+
+**Type:** `RegExp`
+
+### `REVIVE_INTERVAL_RE`
+
+`'15 days'`, `'1 month'`, `'2 years'` — the closed wire format.
+
+**Type:** `RegExp`
+
+### `REVIVE_UNTIL_RE`
+
+**Type:** `RegExp`
+
 ### `SEMANTIC_ICON_COLORS`
 
 Semantic action icons — names whose COLOR IS PART OF THE ICON's meaning.
@@ -3310,6 +4251,38 @@ label can never drift apart even by accident.
 - `exec-stop`  → destructive (stop/disable is a destructive op)
 
 **Type:** `Record<string, ActionColor>`
+
+### `SEQUENCE_REVIVE_SLOTS`
+
+The three positional sezionale slots — the only legal `revive_slot`
+ values, and the slots a pattern's `{sez}`/`{sez2}`/`{sez3}` tokens map.
+
+**Type:** `readonly ["sez", "sez2", "sez3"]`
+
+### `SEQUENCE_REVIVE_UNITS`
+
+**Type:** `readonly SequenceReviveUnit[]`
+
+### `sequenceTokenExampleDefaults`
+
+Illustrative defaults the catalog (and any pattern-builder preview)
+ falls back to when the caller does not override the example context —
+ exported so the authoring widget and the token sheet share ONE set
+ of sample values instead of re-declaring them.
+
+**Type:** `{ counter: {"value":"42","negative":false}; partitions: { sez: "A"; sez2: "01"; sez3: "X" } }`
+
+| Field | Value |
+|-------|-------|
+| counter | {"value":"42","negative":false} |
+| partitions | "" |
+
+### `SEZ_VALUE_RE`
+
+Sezionale value charset — alphanumerics and separators; the join
+ separator (US \x1f) can never appear inside a value.
+
+**Type:** `RegExp`
 
 ### `SLUG_RE`
 
@@ -3341,7 +4314,7 @@ The canonical vocabulary of standard entity ops. Every op is always
 present in `meta.actions` — ops whose route is not registered are emitted
 with `enabled: false` (explicitly unavailable) instead of being omitted.
 
-**Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk"]`
+**Type:** `readonly ["list", "meta", "get", "create.single", "update.single", "delete.single", "purge.single", "restore.single", "read.audit", "export", "delete.bulk", "restore.bulk", "duplicate.bulk", "update.bulk"]`
 
 ### `SUPPORTED_LANGUAGES`
 
@@ -3456,6 +4429,20 @@ both. Shared internals still dedupe through the bundler's shared chunks.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `acceptsDalNow(col): boolean`
+
+True when `colMeta` describes a timestamp-ish column that may carry
+ the marker. Accepts `instant` jsType or a timestamp/date column type.
+ The type is resolved through the documented runtime cascade — explicit
+ `pgType`, else `inferredPgType` (which carries semantic-pin resolutions
+ like `@SynchronizableField` → timestamptz): never the explicit `pgType`
+ alone, or pin-only columns are rejected despite being timestamps by
+ contract (see `effectivePgStorageType` above).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `{ jsType: unknown; pgType: string; inferredPgType: string } \| undefined` |  |
 
 ### `actionColorClass(color): string`
 
@@ -3726,6 +4713,16 @@ Destructive changes (DROP) are never emitted — DB-only objects are WARN commen
 |-----------|------|-------------|
 | input | `VectorHybridInput` |  |
 
+### `builtinSequenceEntityDecl(ctx): Record<string, unknown>`
+
+Build the `sequence` EntityRouteDecl for the calling module. The
+ return type is structural — dal cannot import the SDK's
+ EntityRouteDecl; makeServiceRoutes consumes the shape.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| ctx | `BuiltinDeclCtx` |  |
+
 ### `Calculated(expr, opts): PropertyDecorator`
 
 Marks a property as a calculated SQL projection — never a physical column.
@@ -3886,7 +4883,30 @@ Override SQL name / `pgType` / `nullable` only; otherwise the property is alread
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniqueIndexName: string; uniqueIndexOrder: number; uniqueNullsNotDistinct: boolean; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
+| col | `{ propertyKey: string; sqlName: string; isKey: boolean; isUnique: boolean; uniques: { name: string; order: number }[]; nullable: boolean; nullableAuthored: boolean; pgType: string; jsType: JsType; defaultSql: string; length: number; precision: number; scale: number; inferredPgType: string; usePostgresIdentity: boolean; isAuditable: boolean; auditableType: AuditableFieldType; isDeletable: boolean; deletableType: DeletableFieldType; isSynchronizable: boolean; synchronizableType: SynchronizableFieldType; isClone: boolean; cloneType: CloneFieldType; refEntity: string; seqBound: SequenceBound; castInJoin: string; isPartition: boolean; partitionOpts: PartitionOptions; isRetention: boolean; retentionOpts: { duration: string } }` |  |
+
+### `columnSchemaLeaf(col): { type: string \| string[]; format: string; enum: string[] }`
+
+Canonical `MetaColumn → JSON-schema leaf` conversion — the honest WIRE
+shape of the column so schema-driven resolvers (`schemaTypeIcon`,
+`schemaLeafSub`, `schemaToNavNodes` — the ONE vocabulary shared with
+the payload-map editor and rule-filter picker) can render it without a
+second icon map:
+
+  - the declared `format` wins over the bare `type` (`email`→`"email"`
+    → mail, `identifier`→`"uuid"` → file-key, `json`/`rule_filter`→
+    `"object"` → braces);
+  - a `badge` column exposes its value vocabulary as `enum` (→ tags),
+    `ref` is its uuid wire shape, `sparkline` is an array;
+  - `nullable` flags the type union with `"null"` — the resolver
+    renders the base icon dashed.
+
+Icon names live ONLY in `schemaTypeIcon`; this function must never
+carry a glyph of its own.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `Pick<MetaColumn, "type"> & Partial<Pick<MetaColumn, "nullable" \| "format" \| "badge">>` |  |
 
 ### `columnTypeWarnings(entityName, h, resolved): EntityTypeWarning[]`
 
@@ -3894,12 +4914,13 @@ Authoring warnings for one column:
 - `uuid-name` — a `*_uuid`/`uuid` column resolving to a non-uuid type.
   The name SAYS uuid; either the column should be `uuid` (retype the prop
   to `UUID` or set `pgType:"uuid"`) or the name lies.
-- `redundant-pgType` — explicit `pgType` equal to what RUNTIME inference
-  would resolve without it (annotation stripped — erased at runtime, so
-  a restatement of the annotation default is NOT redundant: it is the
-  required runtime declaration). Truly redundant only when the type
-  comes from another runtime-visible channel — e.g. `pgType:"text"` on
-  a string prop, or a pgType already covered by a semantic/jsType pin.
+- `redundant-pgType` — explicit `pgType` equal to what a RUNTIME
+  channel already produces without it (semantic decorator pins,
+  `jsType` pins). The TS annotation never counts: it is erased at
+  transpile, so `pgType` on a plain prop IS the required runtime
+  declaration — the `entity-type-declared` lint mandates it. Nor can
+  the `"text"` fallback in inferPgTypeFromEntityColumn prove
+  redundancy: it is a guess, not evidence.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4029,6 +5050,41 @@ decorators express physical reality — the two cannot diverge.
 | columns | `MetaColumn[]` |  |
 | entity | `EntityClass` |  |
 
+### `derivePeriodKey(kind, at, tz): string`
+
+The counter-identity key for `period_kind` at `at` — `''` for
+period-free patterns. `derivePeriodKey` + `INSERT..ON CONFLICT` make
+the first allocation of a period atomic (no create-if-missing race).
+`at` is the BUSINESS date (document date on the directive, default
+now()): a Jan-issued invoice dated December lands in the Dec period.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| kind | `SequencePeriodKind` |  |
+| at | `Date` |  |
+| tz | `string` |  |
+
+### `derivePeriodLabel(current, every): string`
+
+Advance a row-owned period label by one `revive_every` interval —
+parse-and-preserve: the CURRENT value's shape decides the render,
+never a declared format. `2026`→`2027`, `26`→`27`,
+`2026-Q1`→`2026-Q2` (or `2027-Q1` by year unit), `2026-03`→`2026-04`,
+`2026-W14`→`2026-W15`, `2026-03-16`→`2026-03-17`.
+
+Compatibility rule: the unit must not be FINER than the label's
+granularity — `'1 month'` on `2026` cannot render (throw);
+`'1 year'` on `2026-03` renders `2027-03`. A bare 2-digit label is
+`YY` under a year unit, `MM` under a month unit — anything else is a
+construction error. Throws on unparseable values: create-time
+validation calls this same function so a reviving row can never be
+built with an un-incrementable slot.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| current | `string` |  |
+| every | `string` |  |
+
 ### `deriveVisibleKeyPrefs(visibleKeys, columns): VisibleKeyPrefs`
 
 Derive the persistable intent from the resolved set + served columns:
@@ -4157,11 +5213,21 @@ Numeric equality ignoring scale — `eq(1.0, 1.00)` is `true`.
 
 ### `extJsonParse(text): T`
 
-Parse an Ext-JSON string.
+Parse an Ext-JSON string — strict.
 
-ALL integers are returned as native `bigint` (via reviver).
-Floats (values with decimal point or scientific notation) are `number`.
-Strings, booleans, null are unaffected.
+ALL integer-valued numbers are returned as native `bigint`; non-integer
+floats stay `number`; strings/booleans/null are unaffected.
+
+The single sanctioned exception: the `status` integer of an RFC7807
+problem-details object (shape-detected by type+title+detail strings)
+stays `number` — the error model is HTTP-native and its status is
+classified with typeof guards across the ecosystem. An integer `status`
+outside that shape is a domain integer and stays bigint, always.
+
+Throws `SyntaxError` on malformed input, trailing commas, and
+duplicate keys at any depth (native JSON.parse silently last-wins —
+that failure mode is deliberately closed: a duplicated key is a wire
+contract violation, not data).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -4280,6 +5346,10 @@ meta validation throws and points to `@PartitionChildOf` for that shape.
 | ctor | `EntityClass` |  |
 | propertyKey | `string \| symbol` |  |
 
+### `getCoreLogTransport(): CoreLogTransport \| null`
+
+Current transport — exposed for tests that need to snapshot/restore.
+
 ### `getDal(config): Dal`
 
 Returns the process-wide singleton Dal instance. Creates it on first call.
@@ -4387,14 +5457,26 @@ bare numeric string), `vector` → `Vector`.
 | instance | `T` |  |
 | meta | `EntityPersistenceMeta` |  |
 
-### `Index(): PropertyDecorator`
+### `Index(spec): ClassDecorator`
 
-Declares a secondary (non-unique) index. Bare `@Index()` → single-column
-btree auto-named `<table>_<col>_idx`. Same `name` on multiple columns →
-composite index ordered by `order`. Supports every PG access method:
-`@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
-`@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
-Unique indexes stay on `@Unique()`.
+Declares a secondary (non-unique) index — two forms:
+
+**Property**: bare `@Index()` → single-column btree auto-named
+`<table>_<col>_idx`; same `name` on multiple columns → composite ordered
+by `order`; index-level options (`using`/`opclass`/`where`/`with`) must be
+identical on every member; `sort`/`nulls` are per-member.
+
+**Class**: `@Index({ name, columns: [...], ... })` — the spec form for
+indexes on mixin-owned columns (`created_at`, `deleted_at`, …) or
+spec-owned composites; `columns` order IS the index order and each member
+may carry `sort`/`nulls`. A spec name must not collide with a
+property-level group.
+
+Unique indexes stay on `@Unique()`/`@UniqueIndex()`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `IndexSpec` |  |
 
 ### `isAuditableEntity(meta): boolean`
 
@@ -4739,6 +5821,15 @@ time, so the option can be built before `initDal()` runs.
 |-----------|------|-------------|
 | entities | `readonly EntityClass[]` |  |
 
+### `makeSequenceReviveJob(): { needed: boolean; run: () => Promise<unknown>; i18nNs: () => string }`
+
+Sequence-revive job factory — the ONE wiring a service passes to
+`createMicroservice({ sequenceRevive })`. The builtin `sequences`
+table mounts unconditionally with dal-pg, so `needed` is always true
+for a dal-backed service (the run short-circuits on an empty due
+set); `run` resolves the DAL singleton lazily at fire time, so the
+option can be built before `initDal()` runs.
+
 ### `makeTableAuditPort(repo): AuditPort`
 
 `makeTableAuditPort` — writes audit log rows to `{tableName}_audit` via the
@@ -4836,6 +5927,21 @@ Strip trailing fractional zeros — `1.230` → `1.23`, `12.000` → `12`.
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
 
+### `normalizeDefaultExpr(expr): string \| undefined`
+
+Canonicalize a column DEFAULT expression for snapshot comparison.
+`pg_get_expr` de-parses stored defaults into PG's canonical form —
+`'x'::character varying`, `(1)::bigint`, `'now'::text::timestamptz` —
+while the entity side authors the raw SQL (`'x'`, `1`, `now()`).
+We strip `::<type>` casts and redundant outer parens, and collapse
+whitespace — all strictly outside single-quoted literals so values
+like `'foo::bar'` or `'a  b'` survive untouched.
+`undefined` = no default (or unknown).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| expr | `string \| null \| undefined` |  |
+
 ### `normalizePatchEol(body): string`
 
 Patch integrity hashes are EOL-insensitive: a Windows checkout may
@@ -4875,6 +5981,14 @@ Scale is preserved as written (`"1.230"` → scale 3).
 |-----------|------|-------------|
 | input | `string` |  |
 
+### `parseGraceSpec(text): ReviveSpec \| null`
+
+`revive_grace` spec — `'N unit'` offset or `'until <RFC3339>'` pin.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
 ### `parseMapKeysDeclaration(raw): Record<string, MapKeyDecl>`
 
 Parse an `x_map_keys.prop` declaration row (the template's `variables`
@@ -4907,6 +6021,45 @@ Whole-file `-- pb:no-transaction` is equivalent to wrapping everything.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | raw | `string` |  |
+
+### `parseReviveInterval(text): { count: number; unit: SequenceReviveUnit } \| null`
+
+Parse a `'N unit'` revive interval — null on anything outside the
+ closed format (validators turn null into the construction error).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
+### `parseReviveSpec(text): ReviveSpec \| null`
+
+`revive_every` spec — `'N unit'` cadence or `'at <RFC3339>'` pin.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| text | `string` |  |
+
+### `parseSequenceDirective(raw): SequenceDirective \| null`
+
+The ONLY accepted wire shape for a `format:"sequence"` column — see
+SequenceDirective for the three forms. Returns the parsed
+directive or `null` (shape/decl violation — the caller emits the
+`app.common.validation.sequence_directive` issue). A literal value is
+never writable: the repository resolves the directive in-transaction.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| raw | `unknown` |  |
+
+### `parseSequencePattern(source): SequencePattern`
+
+Parse a pattern string into segments — the construction gate: anything
+outside the closed grammar throws, so an invalid pattern can never be
+persisted on a sequence row nor accepted on the wire.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
 
 ### `Partition(opts): PropertyDecorator`
 
@@ -5051,6 +6204,22 @@ through unchanged.
 |-----------|------|-------------|
 | n | `number` |  |
 
+### `PublicEntity(tableName): (ctor: Function) => void`
+
+`@PublicEntity("user_profiles")` — declares an entity on the cross-service
+`public` schema: the shared platform surface (shared-table contracts and
+BE-owned business entities). This is the ONLY alternative to
+primary-schema resolution available to module code — free-form schema
+pins are reserved for dal-internal machinery (translation entities).
+
+Self-limiting by construction: a service whose declared schema domain
+does not include `public` fails `resolveEntitySchema` at boot
+(SchemaDomainViolationError) — microservices cannot opt into `public`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| tableName | `string` |  |
+
 ### `quoteIdent(ident): string`
 
 | Parameter | Type | Description |
@@ -5069,6 +6238,12 @@ Declares a served-meta reference: the column's value is the uid (uuid)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | entity | `string` |  |
+
+### `registerBuiltinEntityDeclFactory(factory): void`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| factory | `BuiltinDeclFactory` |  |
 
 ### `registerEntityService(cfg): void`
 
@@ -5105,6 +6280,21 @@ forward/inverse label pair; `hierarchical` opts into deep-cycle
 |-----------|------|-------------|
 | opts | `RelationFacet` |  |
 
+### `removeSequenceToken(source, slot): string`
+
+Remove the FIRST occurrence of a token slot from the pattern source —
+the sheet's "unuse" affordance (`-` on a consumed slot). `slot` is the
+used-set name: `seq` strips `{seq}` or `{seq:W}` whole (the width is
+part of the token, not trailing text); every other slot strips the
+literal `{slot}` span. Escaped `{{`/`}}` are skipped exactly like the
+tokenizer reads them, so `{{seq}}` literals are never stripped.
+Never throws — a slot not present returns the source unchanged.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
+| slot | `string` |  |
+
 ### `renderDisplayTemplate(template, entity, alias): string`
 
 | Parameter | Type | Description |
@@ -5112,6 +6302,35 @@ forward/inverse label pair; `hierarchical` opts into deep-cycle
 | template | `string` |  |
 | entity | `EntityClass` |  |
 | alias | `string` |  |
+
+### `renderSequenceRange(pattern, first, step, count, at, opts): string[]`
+
+Render the full code series for `count` items starting at `first` —
+`codes[i] = render(first + i*step)`. THE shared function: the FE calls
+it for forecast display, the BE calls it inside the claim transaction
+for the actual assignment. `count === 0` → `[]`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| first | `bigint` |  |
+| step | `bigint` |  |
+| count | `number` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
+
+### `renderSequenceValue(pattern, counter, at, opts): string`
+
+Render ONE counter value through the pattern. Padding is min-width:
+`String(abs(counter)).padStart(width,"0")`; a negative counter renders
+the sign before the digits (`-0042`) — honest, never truncated.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| counter | `bigint` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
 
 ### `rescale(d, newScale, mode): Decimal`
 
@@ -5267,6 +6486,49 @@ failed → pending: next runMigrations retries them (and past them, in order).
 | schema | `string` |  |
 | actor | `string` |  |
 
+### `reviveAddInterval(at, interval, tz): Date`
+
+Add a `'N unit'` interval to `at` on the WALL calendar of `tz`
+(grace arithmetic — DST-safe, the wall clock owns the semantics;
+`'1 day'` after a DST-jump boundary still lands on the next local
+midnight, not +24h into the wrong offset). `at` is an instant;
+the interval walks its zoned wall time forward, then converts back.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| at | `Date` |  |
+| interval | `string` |  |
+| tz | `string` |  |
+
+### `reviveAdvanceSpec(every, period_kind): { count: number; unit: SequenceReviveUnit } \| null`
+
+The interval a successor's sez label advances by — the authored
+ interval itself, or `'1 <period_kind>'` under an `'at'` pin (the
+ pattern's own grain is the natural advance — `'26'`→`'27'` under a
+ yearly pattern). `null` when the spec is unparseable or `'at'` meets
+ a period-free pattern (`period_kind:'none'` — no grain to advance).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| every | `string` |  |
+| period_kind | `SequencePeriodKind` |  |
+
+### `reviveExpireAt(at, every, tz): Date`
+
+The calendar-anchored expiry instant for a reviving row — the first
+period boundary strictly after `at` in the row's timezone:
+  start of current period (midnight today / ISO-week Monday /
+  1st-of-month / quarter start / Jan-1) + `count` units.
+`'15 days'` is day-aligned rolling from today's local midnight;
+`'1 year'` created Mar-15-2026 expires Jan-1-2027 00:00 local.
+This is the successor's `default_from` — the `at`-axis boundary.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| at | `Date` |  |
+| every | `string` |  |
+| tz | `string` |  |
+
 ### `rewriteLucideBarrelImports(code): LucideRewriteResult`
 
 Remote-build transform: decomposes named imports of the lucide vendor
@@ -5380,6 +6642,87 @@ never masquerade as user edits.
 | sourceEntity | `{ key: string; entity: string; table: string } \| undefined` |  |
 | map | `PayloadMap` |  |
 
+### `sequenceBoundUuid(seed): string`
+
+Deterministic uuid for a self-materialized sequence row — the bound
+ name is sha256'd under a fixed namespace and the digest is formatted
+ as a uuid (v5-style version/variant bits; NOT RFC 4122 — a private
+ deterministic scheme). Any replica derives the same uuid from the
+ same seed, so `INSERT … ON CONFLICT ("uuid") DO NOTHING` is
+ idempotent without a second functional key. The sequence `name`
+ stays display-only.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| seed | `string` |  |
+
+### `SequenceField(decl): PropertyDecorator`
+
+Marks a plain text column as sequence-bound — see SequenceDecl.
+ Accepted shape (positive form): a physical, business-owned text/varchar
+ column — not a key, not a ref, not a partition/retention/audit/deletable/
+ synchronizable/clone facet, not a foreign key — carrying a valid
+ sequence definition. Anything outside that shape is a boot error at
+ declaration or resolution time, never a runtime surprise.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| decl | `SequenceDecl` |  |
+
+### `sequencePartitionKey(_pattern, partitions): string`
+
+Deterministic counter partition identity — the FIXED 3-slot tuple
+ `sez|sez2|sez3` (unused slots empty), so a `{sez3}`-only pattern can
+ never collide with a `{sez}`-only one even if the pattern is edited
+ over the sequence's life: the slot position IS the identity.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| _pattern | `SequencePattern` |  |
+| partitions | `SequencePartitions` |  |
+
+### `sequencePreview(pattern, first, step, count, at, opts): { first: string \| null; last: string \| null }`
+
+Forecast `{first, last}` — what the bulk editor shows before apply.
+For a persisted sequence `first` is the counter read WITHOUT
+incrementing (optimistic preview; a concurrent claim may shift it —
+the claim RETURNING is the only truth).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| first | `bigint` |  |
+| step | `bigint` |  |
+| count | `number` |  |
+| at | `Date` |  |
+| opts | `{ tz: string; partitions: Partial<Record<SequenceSezToken, string>> }` |  |
+
+### `sequenceReviveShapeIssues(row): FieldIssue[]`
+
+The revive contract on a (possibly merged) sequence row — ONE predicate
+consumed by the form's cross-field registry, the wire validator, and
+the service's merged-row check, so the three surfaces can never drift:
+
+  - a supplied `sez*` value must name a slot the pattern declares;
+  - `revive_slot` requires `revive_every` and is required by it;
+  - `revive_slot` must be a slot the pattern uses;
+  - the slot's row-owned value must be present and advanceable by
+    `derivePeriodLabel` — a free-text sezionale can never revive.
+
+An unparseable `pattern` contributes NO issues — the `sequence_pattern`
+format check owns that finding; this predicate is the shape layer.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| row | `{ pattern: string; sez: string \| null; sez2: string \| null; sez3: string \| null; revive_every: string \| null; revive_slot: string \| null }` |  |
+
+### `sequenceTokenCatalog(): SequenceTokenSpec[]`
+
+The closed token vocabulary of the pattern grammar — counter slot
+(`{seq}` plain and `{seq:W}` width example), date tokens, sezionale
+slots, literal braces. Derived from the same token sets/render helpers
+the parser and renderer use — extending the grammar extends the sheet.
+
 ### `serviceApiBase(listBasePath): string`
 
 Service API base of an entity list basePath — strips the trailing
@@ -5390,6 +6733,16 @@ meta (e.g. sparkline `endpoint: "/actions/job-run-stats"`) resolve to
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | listBasePath | `string` |  |
+
+### `setCoreLogTransport(t): void`
+
+Install the host transport. Idempotent-by-replacement: the last install
+wins (test harnesses may re-wire; production installs exactly once at
+boot). Pass `null` to restore the default console transport.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| t | `CoreLogTransport \| null` |  |
 
 ### `sha256Hex(body): string`
 
@@ -5523,6 +6876,23 @@ Wire form — `"…d"` suffixed string.
 | conditions | `ListFilterCondition[] \| null \| undefined` |  |
 | options | `ListFilterOptions` |  |
 
+### `TranslationEntity(schema): (ctor: Function) => void`
+
+`@TranslationEntity(schema)` — declares a concrete `translations` table
+entity pinned to a module schema. This is the dal's ONLY schema-pinning
+decorator: it hardcodes the table name and rejects classes that do not
+extend TranslationEntityBase, so it cannot be repurposed to pin
+arbitrary entities. Works as a class decorator for static declarations
+(`@TranslationEntity("public")`) and as a callable decorator factory for
+runtime-synthesized subclasses (`TranslationEntity(code)(cls)`).
+
+Module entities use `@Entity` (primary-schema resolution) or
+`@PublicEntity` (`public`) — never this.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| schema | `string` |  |
+
 ### `translationKeyGrammarError(key): string \| null`
 
 First grammar violation as a human-readable reason, `null` when legal.
@@ -5586,13 +6956,37 @@ True if two metas are “same enough” for rename pairing (not for strict migra
 
 Unique constraint (PostgreSQL: unique index in generated patches).
 
+ Bare `@Unique()` → auto-named single-column index `<table>_<column>_uq`.
+ `@Unique(name, order)` → membership in the class-level `@UniqueIndex({name})`
+ declaration (accumulates — one column may join N indexes).
+
+### `UniqueIndex(spec): (ctor: Function) => void`
+
+Class-level unique-index declaration — see UniqueIndexSpec.
+ Repeatable: one decorator per index.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| spec | `UniqueIndexSpec` |  |
+
+### `usedSequenceTokens(source): Set<string>`
+
+Best-effort scan of the pattern source for already-consumed slots —
+the sheet marks used tokens (grammar: one counter, each date/sez at
+most once). NEVER throws: mid-typing text like `INV-{seq:}` still
+reports `seq` used — the UI affordance must survive invalid states.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| source | `string` |  |
+
 ### `utcTimestampForFilename(d): string`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `Date` |  |
 
-### `validateActionChrome(icon, color): string \| null`
+### `validateActionChrome(icon, color, variant): string \| null`
 
 Validates the icon↔color contract of a single action chrome override.
 Returns a diagnostic string on violation, `null` when the pair is legal:
@@ -5604,6 +6998,18 @@ Returns a diagnostic string on violation, `null` when the pair is legal:
 |-----------|------|-------------|
 | icon | `string \| undefined` |  |
 | color | `string \| undefined` |  |
+| variant | `string` |  |
+
+### `validateSequencePartitions(pattern, partitions): SequencePartitions`
+
+Validate the directive's sezionale fields against the pattern's slots —
+every used token requires its field; unused slots must NOT be supplied
+(a sez the pattern ignores would silently mis-key the counter).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pattern | `SequencePattern` |  |
+| partitions | `Partial<Record<SequenceSezToken, string>> \| undefined` |  |
 
 ### `verifyManifest(manifest, keyring, allowedTrust): TrustedKey`
 

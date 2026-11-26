@@ -10,7 +10,6 @@ function assertValidIdentPart(s: string, what: string): void {
   // Keep it strict to avoid SQL injection through identifiers.
   // Allow: letters, digits, underscore; must start with letter or underscore.
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) {
-    // standards-exempt: ext-json — error-message quoting of an identifier (no @primebrick/sdk dep)
     throw new Error(`Invalid ${what}: ${JSON.stringify(s)}`);
   }
 }

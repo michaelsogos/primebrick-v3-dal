@@ -21,12 +21,43 @@ import {
   type ColumnPgPersistenceHints,
   effectivePgStorageType,
   jsValueToPgParam,
+  DAL_NOW,
+  DAL_NOW_SQL,
+  acceptsDalNow,
+  hydrateEntityRow,
+  hydrateEntityRows,
 } from "../meta/column-pg-io.js";
 
 import type { FieldProjector, FieldRef, FilterExpr, JoinExpr, SortingExpr } from "../query/dsl.js";
 import { field, Filter } from "../query/dsl.js";
 import { buildSelectQuery, buildVectorSearchQuery, quoteIdent } from "../query/query-builder.js";
 import { createStream } from "../query/streaming.js";
+import { SequenceCounterEntity } from "../entities/sequence-counter-entity.js";
+import { SequenceEntity } from "../entities/sequence-entity.js";
+import {
+  extJsonStringify,
+  parseSequenceDirective,
+  parseSequencePattern,
+  validateSequencePartitions,
+  sequencePartitionKey,
+  derivePeriodKey,
+  reviveExpireAt,
+  reviveAddInterval,
+  reviveAdvanceSpec,
+  parseReviveSpec,
+  parseGraceSpec,
+  derivePeriodLabel,
+  renderSequenceValue,
+  renderSequenceRange,
+  type SequenceDecl,
+  type SequenceDirective,
+  type SequencePattern,
+  type SequencePartitions,
+} from "@primebrick/core";
+import type { SequenceBound } from "../meta/entity-decorators.js";
+import { sequenceBoundUuid } from "../meta/entity-decorators.js";
+import { getSchemaDomain } from "../meta/schema-domain.js";
+import { sha256Hex } from "../schema-diff/patch-naming.js";
 import type {
   FindByIdOptions,
   FindOptions,
@@ -43,7 +74,7 @@ import type {
   BulkResult,
 } from "../types/types.js";
 import { AuditAction } from "../types/types.js";
-import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError } from "../errors/errors.js";
+import { NotFoundError, MultipleRowsError, UnknownColumnError, ValidationError, MissingVersionError, RecordVanishedError, DuplicateRecordError, BulkTimeoutError, OptimisticLockError, MatchSelectorError, IdentityConflictError, SequenceNotFoundError } from "../errors/errors.js";
 import { DalErrorCodes } from "../errors/error-codes.js";
 import type { IAuditableEntity, IDeletableEntity, IClonableEntity } from "../types/entities.js";
 import { isUuidV7, newUuidV7 } from "../types/uuid.js";
@@ -126,6 +157,24 @@ function auditEntityId(
 }
 
 /**
+ * The entity row's freshly stamped `updated_at` from the post-write
+ * RETURNING record — the authoritative DB-clock modification time, carried
+ * into AuditParams for wire markers. Null when the entity carries no
+ * updated_at column. NEVER the pre-write stale value: callers pass the
+ * remapped RETURNING row by construction.
+ */
+function entityUpdatedAt(
+  meta: { columns: Record<string, { auditableType?: unknown; sqlName: string }> },
+  returningRecord: Record<string, unknown> | undefined,
+): Date | null {
+  if (!returningRecord) return null;
+  const col = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+  if (!col) return null;
+  const v = returningRecord[col.sqlName];
+  return v instanceof Date ? v : null;
+}
+
+/**
  * Resolve which column to use as the WHERE left operand for BULK write ops
  * (single-column selector — the multi-identity design is single-row only).
  * matchBy may arrive as a string or 1-element array (shared option type);
@@ -139,6 +188,26 @@ interface MatchCondition {
   value: unknown;
   hints: ColumnPgPersistenceHints;
 }
+
+/** Resolved sequence-row spec — identity + parsed pattern + bigint
+ *  counters + row-owned sez defaults + the series columns the binding
+ *  resolution reads. `pattern` arrives as text, exits parsed. */
+interface SequenceRowSpec {
+  uuid: string;
+  name: string;
+  pattern: SequencePattern;
+  step: bigint;
+  start: bigint;
+  tz: string | null;
+  sez: string | null;
+  sez2: string | null;
+  sez3: string | null;
+  binding_key: string | null;
+  default_from: Date | null;
+}
+
+/** Raw SQL projection — pattern still text, bigint possibly un-parsed. */
+type SequenceRowSpecRaw = Omit<SequenceRowSpec, "pattern"> & { pattern: string };
 
 /** Render `a = $i AND b = $j ...` for the identity conditions (shared by all CTEs + the write). */
 function identityWhere(conditions: MatchCondition[], paramStart: number, alias?: string): string {
@@ -178,7 +247,7 @@ function extractVersion(
   payload: Record<string, unknown>,
   versionCol: { sqlName: string; propertyKey: string } | null,
   entityClassName: string,
-): { expectedVersion: number; remainingPayload: Record<string, unknown> } | null {
+): { expectedVersion: bigint; remainingPayload: Record<string, unknown> } | null {
   if (!versionCol) return null; // non-auditable entity — no guard
   const versionValue = payload[versionCol.propertyKey];
   if (versionValue === undefined || versionValue === null) {
@@ -188,7 +257,7 @@ function extractVersion(
   }
   const remainingPayload = { ...payload };
   delete remainingPayload[versionCol.propertyKey];
-  return { expectedVersion: Number(versionValue), remainingPayload };
+  return { expectedVersion: versionValue as bigint, remainingPayload };
 }
 
 /**
@@ -205,7 +274,7 @@ async function disambiguateZeroRows(
   table: string,
   conditions: MatchCondition[],
   entityClassName: string,
-  expectedVersion: number,
+  expectedVersion: bigint,
   versionColSqlName: string,
 ): Promise<never> {
   const condSql = conditions.map((c, i) => `${quoteIdent(c.sqlName)} = $${i + 1}`).join(" AND ");
@@ -326,6 +395,23 @@ export function pickReturningRow<TResult>(raw: Record<string, unknown>, visibleK
   return out as TResult;
 }
 
+/**
+ * The write-path hydration funnel — every single-row write (insert, update,
+ * delete, restore, hard-delete, clone) returns through here, so RETURNING
+ * rows are hydrated into entity shape BY CONSTRUCTION: the TS annotation
+ * (`version!: bigint` over int4 storage, vector/decimal codecs, …) never
+ * lies at runtime. Hydration resolves aliases through the RETURNING map
+ * and is idempotent — driver-native types pass through unchanged.
+ * @internal
+ */
+export function finalizeReturningRow<TResult>(
+  meta: EntityPersistenceMeta,
+  ret: { visibleKeys: string[]; rowKeyToSqlName: Map<string, string> },
+  raw: Record<string, unknown>,
+): TResult {
+  return pickReturningRow<TResult>(hydrateEntityRow(meta, raw, ret.rowKeyToSqlName), ret.visibleKeys);
+}
+
 /** Rebuild a sqlName-keyed record from a RETURNING row (for audit deltas). */
 function remapReturningRow(raw: Record<string, unknown>, rowKeyToSqlName: Map<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -381,7 +467,7 @@ export class Repository {
     evt: {
       action: EntityWriteAction;
       uuid: string;
-      version?: number;
+      version?: bigint;
       before: Record<string, unknown> | null;
       after: Record<string, unknown> | null;
       delta: Record<string, { old: unknown; new: unknown }> | null;
@@ -464,16 +550,23 @@ export class Repository {
    * returned deadline is checked between statements so the whole op cannot
    * outlive the budget even across many fast statements.
    */
-  private async bulkBegin(options: { timeoutMs?: number } | undefined): Promise<{ client: PoolClient; deadline: number | null }> {
+  private async bulkBegin(options: { timeoutMs?: number } | undefined): Promise<{ client: PoolClient; deadline: number | null; owned: boolean }> {
     const client = await this.getClient();
-    await client.query("BEGIN");
+    // `owned` = this bulk op opened its own transaction. On a tx-bound
+    // repo (dal.transaction) the caller's BEGIN/COMMIT owns the boundary —
+    // a nested BEGIN here would warn-no-op and a COMMIT would commit the
+    // caller's work early, so both are skipped.
+    const owned = this.poolBound();
+    if (owned) {
+      await client.query("BEGIN");
+    }
     const budget = options?.timeoutMs ?? this.bulkTimeoutMs;
     let deadline: number | null = null;
     if (budget !== undefined && budget !== null && budget > 0) {
       await client.query(`SET LOCAL statement_timeout TO ${budget}`);
       deadline = Date.now() + budget;
     }
-    return { client, deadline };
+    return { client, deadline, owned };
   }
 
   /** Throws when the bulk operation has outlived its wall-clock budget. */
@@ -511,7 +604,7 @@ export class Repository {
     });
 
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (!throwIfNotFound) return rows[0] ?? null;
     if (rows.length === 0) throw new NotFoundError(`No ${meta.tableName} found with id ${id}`);
@@ -541,7 +634,7 @@ export class Repository {
     });
 
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (!throwIfNotFound) return rows[0] ?? null;
     if (rows.length === 0) throw new NotFoundError(`No ${meta.tableName} found with uuid ${uuid}`);
@@ -570,7 +663,7 @@ export class Repository {
       limit: 1,
     });
     const r = await this.db.query(q.text, q.values);
-    const rows = (r.rows ?? []) as TResult[];
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
 
     if (rows.length === 0) {
       if (throwIfNotFound) throw new NotFoundError(`No ${meta.tableName} found matching filters`);
@@ -624,7 +717,12 @@ export class Repository {
         groupBy: options.groupBy,
         having: options.having,
       });
-      return createStream<TResult>(this.db, q.text, q.values);
+      const rawStream = createStream<Record<string, unknown>>(this.db, q.text, q.values);
+      // stream rows hydrate through the same canonical funnel as every other
+      // path — entity shape is wired by construction, cursor-paced.
+      return (async function* (): AsyncIterable<TResult> {
+        for await (const row of rawStream) yield hydrateEntityRow(meta, row) as TResult;
+      })();
     }
 
     const q = buildSelectQuery({
@@ -639,7 +737,7 @@ export class Repository {
       having: options?.having,
     });
     const r = await this.db.query(q.text, q.values);
-    return (r.rows ?? []) as TResult[];
+    return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as TResult[];
   }
 
   /**
@@ -663,6 +761,7 @@ export class Repository {
     queryVector: number[] | string,
     options?: VectorSearchOptions<TEntity>,
   ): Promise<Array<TResult & { similarity?: number; distance?: number }>> {
+    const meta = getEntityPersistenceMeta(entity);
     const topK = options?.topK ?? 10;
     if (topK <= 0) throw new ValidationError("vectorSearch: topK must be a positive integer");
     const op = options?.distance ?? "<=>";
@@ -692,7 +791,7 @@ export class Repository {
         scoreAdjust: options?.scoreAdjust,
       });
       const r = await this.db.query(q.text, q.values);
-      return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+      return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { similarity?: number; distance?: number }>;
     }
 
     const q = buildSelectQuery({
@@ -711,7 +810,7 @@ export class Repository {
       limit: topK,
     });
     const r = await this.db.query(q.text, q.values);
-    return (r.rows ?? []) as Array<TResult & { similarity?: number; distance?: number }>;
+    return hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { similarity?: number; distance?: number }>;
   }
 
   async findByPage<TEntity extends object, TResult = TEntity>(
@@ -721,6 +820,7 @@ export class Repository {
     fields?: FieldProjector[] | null,
     options?: FindOptions
   ): Promise<PaginatedEntity<TResult>> {
+    const meta = getEntityPersistenceMeta(entity);
     if (page <= 0) throw new ValidationError("Cannot query with page number lower than 1");
     if (recordsPerPage <= 0) throw new ValidationError("Cannot query with records per page lower than 1");
 
@@ -743,7 +843,7 @@ export class Repository {
     });
     const r = await this.db.query(q.text, q.values);
 
-    const rows = (r.rows ?? []) as Array<TResult & { _total_records?: bigint | null }>;
+    const rows = hydrateEntityRows(meta, (r.rows ?? []) as Array<Record<string, unknown>>) as Array<TResult & { _total_records?: bigint | null }>;
     const total_records = rows[0]?._total_records ?? 0n;
 
     const entities = rows.map((x) => {
@@ -760,6 +860,985 @@ export class Repository {
       : getQualifiedTableName(entity);
     const r = await this.db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM ${table}`, []);
     return r.rows?.[0]?.n ?? 0n;
+  }
+
+  /**
+   * sequenceAllocate — the ONE counter claim primitive. INTERNAL ENGINE:
+   * services call it inside their own `dal.transaction` — it has no route,
+   * no RPC, no remote surface. The claim is a single atomic statement:
+   *
+   *   - the row's own UPDATE takes the row lock — concurrent claimers
+   *     serialize on commit order, never interleave ranges (no doubles);
+   *   - it lives in the consumer tx, so a ROLLBACK returns the range —
+   *     no holes either (unlike PG `nextval`, which can never roll back);
+   *   - INSERT..ON CONFLICT covers the first claim of a
+   *     (period, partition) atomically — no create-if-missing race.
+   *
+   * `counter` is NEXT-TO-EMIT: emitting `count` codes with `step` consumes
+   * `[counter, counter + (count-1)·step]` and stores `counter + count·step`.
+   * RETURNING `first`/`last` is uniform across the INSERT and UPDATE
+   * branches. `start` is only used when the counter row is created.
+   *
+   * SQL moves integers only — the code STRING never touches the database;
+   * interpolation lives in `core/sequence.ts` (`renderSequenceRange`).
+   */
+  async sequenceAllocate(spec: {
+    sequence_uuid: string;
+    period_key: string;
+    partition_key: string;
+    count: number;
+    step: bigint;
+    start: bigint;
+    actor: string;
+  }): Promise<{ first: bigint; last: bigint }> {
+    return this.sequenceAllocateOn(this.db, spec);
+  }
+
+  /** The claim primitive bound to an explicit queryable — the seq-bound
+   *  resolver calls it on the caller's tx (lazy mini-tx, bulk `client`,
+   *  or the inherited tx connection) so counter claim + entity write are
+   *  ONE atomic unit. INTERNAL — never routed. */
+  private async sequenceAllocateOn(q: Queryable, spec: {
+    sequence_uuid: string;
+    period_key: string;
+    partition_key: string;
+    count: number;
+    step: bigint;
+    start: bigint;
+    actor: string;
+  }): Promise<{ first: bigint; last: bigint }> {
+    if (!Number.isInteger(spec.count) || spec.count < 1) {
+      throw new ValidationError(`sequenceAllocate: count must be a positive integer, got ${spec.count}`);
+    }
+    if (spec.step === 0n) {
+      throw new ValidationError("sequenceAllocate: step must be non-zero");
+    }
+    const table = getQualifiedTableName(SequenceCounterEntity);
+    const r = await q.query<{ first: bigint; last: bigint }>(
+      `INSERT INTO ${table}
+         (uuid, sequence_uuid, period_key, partition_key, counter,
+          last_alloc_at, last_alloc_by, last_alloc_count,
+          created_at, created_by, updated_at, updated_by, version)
+       VALUES (uuidv7(), $1, $2, $3, $4::bigint + $5::bigint * $6::bigint,
+               now(), $7, $5::bigint, now(), $8, now(), $8, 1)
+       ON CONFLICT (sequence_uuid, period_key, partition_key) DO UPDATE
+         SET counter = ${table}.counter + $5::bigint * $6::bigint,
+             last_alloc_at = now(),
+             last_alloc_by = $7,
+             last_alloc_count = $5::bigint,
+             updated_at = now(),
+             updated_by = $8,
+             version = ${table}.version + 1
+       RETURNING counter - $5::bigint * $6::bigint AS first,
+                 counter - $6::bigint AS last`,
+      [
+        spec.sequence_uuid,
+        spec.period_key,
+        spec.partition_key,
+        spec.start,
+        spec.count,
+        spec.step,
+        spec.actor,
+        spec.actor,
+      ],
+    );
+    const row = r.rows[0];
+    if (!row) throw new ValidationError("sequenceAllocate: claim returned no row — identity constraint unreachable");
+    return { first: row.first, last: row.last };
+  }
+
+  /** Governed counter SET — writes an EXPLICIT next-to-emit value into
+   *  `sequence_counters`: the operator's re-seed after legacy imports or
+   *  drift. Never allocates, never emits a rendered value. A single
+   *  UPSERT is atomic on its own — on a tx-bound repo it joins the
+   *  caller's transaction like every other repo op. `actor` is required:
+   *  SET exists only behind the governed `sequence.set` RPC which always
+   *  has an authenticated operator. */
+  async sequenceSet(spec: {
+    seq: { uuid: string };
+    next: bigint;
+    sez?: string | null;
+    sez2?: string | null;
+    sez3?: string | null;
+    at?: Date;
+    actor: string;
+  }): Promise<{ counter_uuid: string; period_key: string; partition_key: string; counter: bigint }> {
+    if (typeof spec.next !== "bigint") {
+      throw new ValidationError("sequenceSet: next must be a bigint");
+    }
+    const q = this.db as Queryable;
+    const s = await this.loadSequence(q, spec.seq);
+    const parts = validateSequencePartitions(s.pattern, {
+      ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+      ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+      ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+    } as SequencePartitions);
+    const partition_key = sequencePartitionKey(s.pattern, parts);
+    const period_key = derivePeriodKey(s.pattern.period_kind, spec.at ?? new Date(), s.tz ?? undefined);
+    const table = getQualifiedTableName(SequenceCounterEntity);
+    const r = await q.query<{ uuid: string; counter: bigint }>(
+      `INSERT INTO ${table}
+         (uuid, sequence_uuid, period_key, partition_key, counter,
+          last_alloc_at, last_alloc_by, last_alloc_count,
+          created_at, created_by, updated_at, updated_by, version)
+       VALUES (uuidv7(), $1, $2, $3, $4::bigint, NULL, NULL, NULL,
+               now(), $5, now(), $5, 1)
+       ON CONFLICT (sequence_uuid, period_key, partition_key) DO UPDATE
+         SET counter = $4::bigint,
+             updated_at = now(),
+             updated_by = $6,
+             version = ${table}.version + 1
+       RETURNING uuid, counter`,
+      [s.uuid, period_key, partition_key, spec.next, spec.actor, spec.actor],
+    );
+    const row = r.rows[0];
+    if (!row) throw new ValidationError("sequenceSet: upsert returned no row — identity constraint unreachable");
+    return { counter_uuid: row.uuid, period_key, partition_key, counter: row.counter };
+  }
+
+  /** The reviver — phase A creates the successor of every expired
+   *  reviving row (`expire_at <= now`, no successor yet — idempotent
+   *  re-fires), chaining until the CURRENT generation owns now (a late
+   *  job catches the chain up, one real period at a time — never
+   *  fabricates history); phase B physically retires rows whose
+   *  `switch_at` passed (soft-delete — history stays queryable).
+   *
+   *  Successor construction, atomic with its INSERT:
+   *    - `revive_slot`'s value advances via `derivePeriodLabel`
+   *      (parse-and-preserve: "2026"→"2027", "26"→"27", "2026-Q1"→"2026-Q2");
+   *    - `name` = base (trailing `#…` stripped) + `#` + the new slot
+   *      values — `MySeq` → `MySeq#27` → `MySeq#28`;
+   *    - `expire_at` = next calendar boundary after the predecessor's
+   *      (chained calendar — a late fire never compresses periods);
+   *    - `switch_at` = new expire + grace (grace absent → expire);
+   *    - `default_from` = the predecessor's expire boundary — the
+   *      `at`-axis seam series resolution serves;
+   *    - `binding_key`/`pattern`/`step`/`start`/`tz`/revive config carry
+   *      over — the series and the cadence outlive the row;
+   *    - `revived_from`/`revived_at`/`revived_by` = who/what/when.
+   *  `only_uuid` scopes the run to one row (the governed revive RPC);
+   *  phase B always sweeps the whole table — a switched row retires on
+   *  schedule regardless of what the caller asked about. */
+  async sequenceRevive(spec: {
+    actor: string;
+    now?: Date;
+    only_uuid?: string;
+  }): Promise<{
+    revived: Array<{ from_uuid: string; to_uuid: string; name: string }>;
+    switched: string[];
+  }> {
+    const q = this.db as Queryable;
+    const now = spec.now ?? new Date();
+    const table = getQualifiedTableName(SequenceEntity);
+    const revived: Array<{ from_uuid: string; to_uuid: string; name: string }> = [];
+    // Phase A — loop until no due row lacks a successor: each pass
+    // advances the chain one real period, so a long-slept job lands on
+    // the generation that owns `now` (skipped periods are real rows —
+    // documents dated into them resolve correctly).
+    for (;;) {
+      const due = await q.query<{
+        uuid: string; name: string; tz: string | null; pattern: string;
+        sez: string | null; sez2: string | null; sez3: string | null;
+        revive_every: string; revive_grace: string | null; revive_slot: string;
+        expire_at: Date; binding_key: string | null;
+      }>(
+        `SELECT s."uuid", s."name", s."tz", s."pattern", s."sez", s."sez2", s."sez3",
+                s."revive_every", s."revive_grace", s."revive_slot",
+                s."expire_at", s."binding_key"
+           FROM ${table} s
+          WHERE s."revive_every" IS NOT NULL AND s."deleted_at" IS NULL
+            AND s."expire_at" IS NOT NULL AND s."expire_at" <= ${spec.now !== undefined ? "$1" : "clock_timestamp()"}
+            ${spec.only_uuid ? `AND s."uuid" = ${spec.now !== undefined ? "$2" : "$1"}` : ""}
+            AND NOT EXISTS (
+              SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
+            )
+          ORDER BY s."expire_at"
+          LIMIT 1
+          FOR UPDATE OF s`,
+        spec.now !== undefined
+          ? (spec.only_uuid ? [now, spec.only_uuid] : [now])
+          : (spec.only_uuid ? [spec.only_uuid] : []),
+      );
+      const prev = due.rows[0];
+      if (!prev) break;
+      const slot = prev.revive_slot as "sez" | "sez2" | "sez3";
+      // The sez advance interval — the authored cadence, or the pattern's
+      // own grain under an `'at'` pin. `FOR UPDATE` above serializes this
+      // read against concurrent in-tempo edits of the predecessor row.
+      const adv = reviveAdvanceSpec(prev.revive_every, parseSequencePattern(prev.pattern).period_kind);
+      if (!adv) {
+        throw new ValidationError(
+          `sequenceRevive: predecessor ${prev.uuid} revive spec "${prev.revive_every}" cannot advance — stored contract broken`,
+        );
+      }
+      const nextSlotValue = derivePeriodLabel(prev[slot] as string, `${adv.count} ${adv.unit}`);
+      const nextSez = { sez: prev.sez, sez2: prev.sez2, sez3: prev.sez3, [slot]: nextSlotValue };
+      const tz = prev.tz ?? "UTC";
+      // Explicit-instant literals never propagate: an 'at' pin fires once —
+      // the successor inherits NULL axes and lives as the permanent final
+      // generation; an 'until' grace pin likewise resolves to immediate
+      // switch at the successor's own expire.
+      const pinned = parseReviveSpec(prev.revive_every)?.kind === "at";
+      const graceLiteral = prev.revive_grace && parseGraceSpec(prev.revive_grace)?.kind === "at";
+      const succ_every = pinned ? null : prev.revive_every;
+      const succ_grace = pinned || graceLiteral ? null : prev.revive_grace;
+      const expire_at = pinned ? null : reviveExpireAt(prev.expire_at, prev.revive_every, tz);
+      const switch_at = !succ_every || !succ_grace ? expire_at : reviveAddInterval(expire_at as Date, succ_grace, tz);
+      const baseName = prev.name.replace(/#[^#]*$/, "");
+      const label = [nextSez.sez, nextSez.sez2, nextSez.sez3].filter((v) => v !== null).join("-");
+      const name = `${baseName}#${label}`.slice(0, 100);
+      const ins = await q.query<{ uuid: string }>(
+        `INSERT INTO ${table}
+           ("uuid","name","pattern","step","start","tz","sez","sez2","sez3",
+            "binding_key","revive_every","revive_grace","revive_slot",
+            "expire_at","switch_at","default_from",
+            "revived_from","revived_at","revived_by",
+            "created_at","created_by","updated_at","updated_by","version")
+         SELECT uuidv7(), $1, "pattern", "step", "start", "tz", $2, $3, $4,
+                "binding_key", $13, $14, "revive_slot",
+                $5, $6, $7, $8, ${spec.now !== undefined ? "$9" : "clock_timestamp()"}, $10,
+                clock_timestamp(), $11, clock_timestamp(), $11, 1
+           FROM ${table} WHERE "uuid" = $12
+         RETURNING "uuid"`,
+        [
+          name, nextSez.sez, nextSez.sez2, nextSez.sez3,
+          expire_at, switch_at, prev.expire_at,
+          prev.uuid, now, spec.actor, spec.actor, prev.uuid,
+          succ_every, succ_grace,
+        ],
+      );
+      const to_uuid = ins.rows[0]?.uuid;
+      if (!to_uuid) throw new ValidationError(`sequenceRevive: predecessor ${prev.uuid} vanished mid-run`);
+      revived.push({ from_uuid: prev.uuid, to_uuid, name });
+    }
+    // Phase B — physical retirement: switch_at passed → soft-delete.
+    const switched = await q.query<{ uuid: string }>(
+      `UPDATE ${table} SET "deleted_at" = ${spec.now !== undefined ? "$1" : "clock_timestamp()"}, "deleted_by" = $2
+        WHERE "switch_at" IS NOT NULL AND "switch_at" <= ${spec.now !== undefined ? "$1" : "clock_timestamp()"}
+          AND "deleted_at" IS NULL
+        RETURNING "uuid"`,
+      [now, spec.actor],
+    );
+    return { revived, switched: switched.rows.map((r) => r.uuid) };
+  }
+
+  /** Guarded revive-axis edit — the ATOMIC in-tempo contract. The row is
+   *  locked `FOR UPDATE` first — symmetric serialization with the sweep's
+   *  own `FOR UPDATE` due-set read: whoever takes the lock first wins, and
+   *  the loser re-evaluates post-commit (the clone's re-read sees the moved
+   *  `expire_at` and drops the row; our re-read sees the successor). With
+   *  the lock held for the whole tx, code-side checks are atomic — no
+   *  check-then-write window:
+   *
+   *   - expire axis (`every` present): editable only while the row is
+   *     still in tempo — `expire_at > now` AND no successor exists
+   *     (`revived_from`). Once cloned, the moment is history.
+   *   - switch axis (`grace` present): editable only while
+   *     `switch_at > now` — the grace window is exactly what this edits.
+   *
+   *  `every → NULL` is "revive off": clears `expire_at`/`switch_at`/
+   *  `revive_slot` — the row becomes the permanent final generation.
+   *  The optimistic-lock `version` is enforced HERE (the generic update
+   *  may be skipped on axes-only bodies) and bumped only when
+   *  `bumpVersion` — mixed bodies leave the single bump to `update()`.
+   *  Throws `OptimisticLockError` on stale version, `sequence_revive_closed`
+   *  when the guard refuses. Caller MUST run inside a transaction. */
+  async sequenceReviveAxesUpdate(spec: {
+    uuid: string;
+    version: bigint;
+    /** `undefined` → axis untouched; `null` → revive off. */
+    every?: string | null;
+    /** `undefined` → axis untouched; `null` → immediate switch at expire. */
+    grace?: string | null;
+    expire_at: Date | null;
+    switch_at: Date | null;
+    /** Axes-only writes bump the version themselves. */
+    bumpVersion: boolean;
+    actor: string;
+  }): Promise<void> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const db = this.db as Queryable;
+    const everyEdit = spec.every !== undefined;
+    const graceEdit = spec.grace !== undefined;
+
+    // 1. Take the row lock — serializes against the sweep's due-set lock.
+    const cur = await db.query<{
+      version: string; expire_at: Date | null; switch_at: Date | null; has_successor: boolean;
+    }>(
+      `SELECT s."version"::text AS version, s."expire_at", s."switch_at",
+              EXISTS(
+                SELECT 1 FROM ${table} n WHERE n."revived_from" = s."uuid"
+              ) AS has_successor
+         FROM ${table} s
+        WHERE s."uuid" = $1 AND s."deleted_at" IS NULL
+        FOR UPDATE`,
+      [spec.uuid],
+    );
+    const row = cur.rows[0];
+    if (!row) {
+      throw new NotFoundError(
+        `SequenceEntity: row ${spec.uuid} vanished (deleted) between read and revive-axis update`,
+      );
+    }
+    if (BigInt(row.version) !== BigInt(spec.version)) {
+      throw new OptimisticLockError(
+        `SequenceEntity: optimistic concurrency violation — expected version ${spec.version}, row is at version ${row.version}`,
+      );
+    }
+
+    // 2. In-tempo guards — evaluated under the held lock.
+    const closed = (axis: string): never => {
+      const err = new ValidationError(
+        `sequence: revive axis closed — the persisted moment already passed or a successor exists; the edit is out of tempo`,
+      ) as ValidationError & { issues?: unknown[] };
+      err.issues = [{
+        path: axis,
+        code: "schema_mismatch",
+        message: "app.common.validation.sequence_revive_closed",
+      }];
+      throw err;
+    };
+    const now = Date.now();
+    if (
+      everyEdit &&
+      !(row.expire_at !== null && row.expire_at.getTime() > now && !row.has_successor)
+    ) {
+      closed("revive_every");
+    }
+    if (graceEdit && !(row.switch_at !== null && row.switch_at.getTime() > now)) {
+      closed("revive_grace");
+    }
+
+    // 3. The write — the lock makes the checked state still current.
+    await db.query(
+      `UPDATE ${table} SET
+         "revive_every" = CASE WHEN $2 THEN $3 ELSE "revive_every" END,
+         "revive_slot"  = CASE WHEN $2 AND $3 IS NULL THEN NULL ELSE "revive_slot" END,
+         "expire_at"    = CASE WHEN $2 THEN $4 ELSE "expire_at" END,
+         "revive_grace" = CASE WHEN $5 THEN $6 ELSE "revive_grace" END,
+         "switch_at"    = CASE WHEN $2 OR $5 THEN $7 ELSE "switch_at" END,
+         "updated_at"   = clock_timestamp(),
+         "updated_by"   = $8,
+         "version"      = "version" + $9::int
+       WHERE "uuid" = $1`,
+      [
+        spec.uuid, everyEdit, spec.every ?? null, spec.expire_at,
+        graceEdit, spec.grace ?? null, spec.switch_at, spec.actor,
+        spec.bumpVersion ? 1 : 0,
+      ],
+    );
+  }
+
+  /** Read-only column-usage analysis for a sequence pattern — the
+   *  operator's pre-check before `sequenceSet` (or a fresh bind): scans a
+   *  physical text column inside the module's own schema with a
+   *  pattern-exact, fully-anchored regex (never a prefix LIKE — sibling
+   *  sequences sharing a prefix never pollute each other's report).
+   *  Target resolves from explicit `table`/`column`, else the bound NAME
+   *  `<table>.<field>` carried by the row. Pure SELECTs — nothing is
+   *  created or mutated. */
+  async sequenceAnalyze(spec: {
+    seq: { uuid: string };
+    table?: string;
+    column?: string;
+    sez?: string | null;
+    sez2?: string | null;
+    sez3?: string | null;
+    at?: Date;
+  }): Promise<{
+    table: string; column: string;
+    in_use: bigint;
+    max_value: bigint | null;
+    suggested_start: bigint;
+    next_proposed: string | null;
+    next_in_use: boolean;
+    conflicts_above: bigint | null;
+    partitions: { partition_key: string; in_use: bigint; max_value: bigint | null }[];
+    ambiguous: string[];
+  }> {
+    const q = this.db as Queryable;
+    const s = await this.loadSequence(q, spec.seq);
+    const pattern = s.pattern;
+
+    // ── target column: explicit, else derived from the `<table>.<field>`
+    //    bound NAME carried by the row (display data, not an identity)
+    const IDENT = /^[a-z_][a-z0-9_]*$/;
+    let table = spec.table;
+    let column = spec.column;
+    if (table === undefined && column === undefined) {
+      const parts = s.name.split(".");
+      if (parts.length === 2) { table = parts[0]; column = parts[1]; }
+    }
+    if (table === undefined || column === undefined) {
+      throw new ValidationError(
+        "sequenceAnalyze: table and column are required (the sequence name carries no derivable <table>.<field> binding)",
+      );
+    }
+    if (!IDENT.test(table) || !IDENT.test(column)) {
+      throw new ValidationError("sequenceAnalyze: table/column must be snake_case identifiers");
+    }
+    // Bound-table probe: the bound column is a business field — it may live
+    // in ANY owned schema (module business tables on `public` when the
+    // platform namespace is `system`), not just the domain primary. Probe the
+    // whole domain; zero matches → missing, multiple → ambiguous.
+    const domain = getSchemaDomain();
+    const probeSchemas = domain ? [...domain.allowed] : ["public"];
+    const colMeta = await q.query<{ table_schema: string; data_type: string }>(
+      `SELECT table_schema, data_type FROM information_schema.columns
+        WHERE table_schema = ANY($1) AND table_name = $2 AND column_name = $3`,
+      [probeSchemas, table, column],
+    );
+    if (colMeta.rows.length === 0) {
+      throw new ValidationError(`sequenceAnalyze: {${probeSchemas.join(",")}}.${table}.${column} does not exist`);
+    }
+    if (colMeta.rows.length > 1) {
+      throw new ValidationError(
+        `sequenceAnalyze: ${table}.${column} is ambiguous — exists in schemas [${colMeta.rows.map((r) => r.table_schema).join(", ")}]`,
+      );
+    }
+    const schema = colMeta.rows[0]!.table_schema;
+    if (colMeta.rows[0]!.data_type !== "character varying" && colMeta.rows[0]!.data_type !== "text") {
+      throw new ValidationError(
+        `sequenceAnalyze: ${schema}.${table}.${column} is ${colMeta.rows[0].data_type}, expected text/varchar`,
+      );
+    }
+    const hasDeletedAt = (await q.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2 AND column_name = 'deleted_at'`,
+      [schema, table],
+    )).rows[0]!.n > 0;
+
+    // ── pattern → anchored POSIX regex; counter + given sez slots are capture groups
+    const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const DATE_W: Record<string, string> = { yyyy: "4", yy: "2", MM: "2", dd: "2", q: "1" };
+    let seqIdx = 0;
+    const sezIdx = new Map<string, number>();
+    let groups = 0;
+    const rx = "^" + pattern.segments.map((seg) => {
+      if (seg.kind === "literal") return esc(seg.text);
+      if (seg.kind === "counter") { seqIdx = ++groups; return `([0-9]{${seg.width > 0 ? `${seg.width},` : ""}})`; }
+      if (seg.kind === "date") {
+        // `{q}` renders `Q<digit>` (e.g. `Q4`) — a bare width would never match.
+        return seg.token === "q" ? "Q[1-4]" : `[0-9]{${DATE_W[seg.token]}}`;
+      }
+      // time tokens all render zero-padded 2-digit (HH/hh/mm/ss)
+      if (seg.kind === "time") return "[0-9]{2}";
+      // sez: an explicit ctx value narrows to that partition, else a charset group
+      const v = spec[seg.slot];
+      if (v !== undefined && v !== null && v !== "") return esc(v);
+      sezIdx.set(seg.slot, ++groups);
+      return `([A-Za-z0-9][A-Za-z0-9_.\\-/]*)`;
+    }).join("") + "$";
+
+    // ── per-partition scan: GROUP BY the captured sez segments
+    const qualified = `"${schema}"."${table}"`;
+    const alive = hasDeletedAt ? ` AND t."deleted_at" IS NULL` : "";
+    const slots = [...pattern.sez_slots];
+    const scan = await q.query<{ m: string[] }>(
+      `SELECT m FROM (
+         SELECT (regexp_match(t."${column}", $1)) AS m
+           FROM ${qualified} t WHERE t."${column}" ~ $1${alive}
+       ) x`,
+      [rx],
+    );
+    const groups2 = new Map<string, { partition_key: string; in_use: bigint; max_value: bigint | null }>();
+    let in_use = 0n;
+    let max_value: bigint | null = null;
+    for (const r of scan.rows) {
+      const m = r.m as string[];
+      const n = BigInt(m[seqIdx - 1]);
+      in_use += 1n;
+      if (max_value === null || n > max_value) max_value = n;
+      const key = slots.map((slot, i) => String(m[(sezIdx.get(slot) ?? 0) - 1] ?? "")).join("\x1f");
+      const g = groups2.get(key) ?? { partition_key: key, in_use: 0n, max_value: null as bigint | null };
+      g.in_use += 1n;
+      if (g.max_value === null || n > g.max_value) g.max_value = n;
+      groups2.set(key, g);
+    }
+
+    // ── counter context for the CURRENT period + default partition —
+    //    meaningful only when the partition is fully determined: a
+    //    partitioned pattern scanned without sez ctx gets per-partition
+    //    stats in `partitions[]` and null counter-context fields.
+    const fullyPartitioned = pattern.sez_slots.every(
+      (slot) => spec[slot] !== undefined && spec[slot] !== null && spec[slot] !== "",
+    );
+    let next_proposed: string | null = null;
+    let next_in_use = false;
+    let conflicts_above: bigint | null = null;
+    if (pattern.sez_slots.length === 0 || fullyPartitioned) {
+      const parts = validateSequencePartitions(pattern, {
+        ...(spec.sez !== undefined ? { sez: spec.sez } : {}),
+        ...(spec.sez2 !== undefined ? { sez2: spec.sez2 } : {}),
+        ...(spec.sez3 !== undefined ? { sez3: spec.sez3 } : {}),
+      } as SequencePartitions);
+      const partition_key = sequencePartitionKey(pattern, parts);
+      const at = spec.at ?? new Date();
+      const period_key = derivePeriodKey(pattern.period_kind, at, s.tz ?? undefined);
+      const counterTable = getQualifiedTableName(SequenceCounterEntity);
+      const crow = await q.query<{ counter: bigint }>(
+        `SELECT counter FROM ${counterTable}
+          WHERE sequence_uuid = $1 AND period_key = $2 AND partition_key = $3`,
+        [s.uuid, period_key, partition_key],
+      );
+      const current = crow.rows[0] ? BigInt(crow.rows[0].counter) : s.start;
+      next_proposed = renderSequenceValue(pattern, current, at, { tz: s.tz ?? undefined, partitions: parts });
+      const [nextHit, conflicts] = await Promise.all([
+        q.query<{ n: number }>(`SELECT 1 AS n FROM ${qualified} t WHERE t."${column}" = $1${alive} LIMIT 1`, [next_proposed]),
+        q.query<{ n: bigint }>(
+          `SELECT count(*)::bigint AS n FROM (
+             SELECT (regexp_match(t."${column}", $1)) AS m
+               FROM ${qualified} t WHERE t."${column}" ~ $1${alive}
+           ) x WHERE (m)[${seqIdx}]::bigint >= $2`,
+          [rx, current],
+        ),
+      ]);
+      next_in_use = nextHit.rows.length > 0;
+      conflicts_above = BigInt(conflicts.rows[0]!.n);
+    }
+
+    // ── ambiguity: OTHER registry sequences whose pattern also matches
+    const seqTable = getQualifiedTableName(SequenceEntity);
+    const others = await q.query<{ name: string; pattern: string }>(
+      `SELECT name, pattern FROM ${seqTable} WHERE uuid <> $1 AND deleted_at IS NULL`,
+      [s.uuid],
+    );
+    const ambiguous: string[] = [];
+    for (const o of others.rows) {
+      let opattern: SequencePattern;
+      try {
+        opattern = parseSequencePattern(o.pattern);
+      } catch {
+        continue; // a corrupt registry pattern can match nothing — skip
+      }
+      const orx = "^" + opattern.segments.map((seg) => {
+        if (seg.kind === "literal") return esc(seg.text);
+        if (seg.kind === "counter") return `[0-9]{${seg.width > 0 ? `${seg.width},` : ""}}`;
+        if (seg.kind === "date") {
+          return seg.token === "q" ? "Q[1-4]" : `[0-9]{${DATE_W[seg.token]}}`;
+        }
+        if (seg.kind === "time") return "[0-9]{2}";
+        return `[A-Za-z0-9][A-Za-z0-9_.\\-/]*`;
+      }).join("") + "$";
+      const hit = await q.query(`SELECT 1 FROM ${qualified} t WHERE t."${column}" ~ $1${alive} LIMIT 1`, [orx]);
+      if (hit.rows.length > 0) ambiguous.push(o.name);
+    }
+
+    return {
+      table, column,
+      in_use,
+      max_value,
+      suggested_start: (max_value ?? s.start - s.step) + s.step,
+      next_proposed,
+      next_in_use,
+      conflicts_above,
+      partitions: [...groups2.values()],
+      ambiguous,
+    };
+  }
+
+  // ─── seq-bound column resolution ──────────────────────────────────────
+  // A column bound via @SequenceField never stores a raw literal through
+  // the Repository: on write the value is either a sequence directive —
+  // `{seq:uuid}` / `{seq:{uuid}}` / `{seq:{pattern,step,start}}` — or
+  // omitted on create, which allocates the field's default sequence
+  // (`<table>.<field>`). The counter claim and the entity write always
+  // share ONE transaction: pool-bound calls run inside a lazy mini-tx,
+  // a tx-bound repo joins the caller's transaction.
+
+  /** Columns carrying a @SequenceField binding. */
+  private seqBoundColumns(meta: EntityPersistenceMeta) {
+    return Object.values(meta.columns).filter((c) => c.seqBound !== undefined);
+  }
+
+  /** Lazy atomicity wrapper for pool-bound seq work: opens a mini-tx on
+   *  a dedicated client and runs `fn` against a client-bound repo. Events
+   *  the inner repo emits buffer and drain AFTER COMMIT through the
+   *  caller's events port — the same post-commit contract
+   *  `dal.transaction` gives its txRepo. A tx-bound repo never reaches
+   *  this wrapper — it resolves inline on the caller's connection. */
+  private async withSeqTx<T>(
+    options: WriteOptions<any>,
+    fn: (r: Repository) => Promise<T>,
+  ): Promise<T> {
+    const client = await (this.db as Pool).connect();
+    const txRepo = new Repository(client, REPO_INTERNAL, this.bulkTimeoutMs);
+    txRepo.eventBuffer = [];
+    try {
+      await client.query("BEGIN");
+      const out = await fn(txRepo);
+      await client.query("COMMIT");
+      const drafts = txRepo.eventBuffer ?? [];
+      txRepo.eventBuffer = undefined;
+      for (const d of drafts) {
+        void options.events?.emit(d).catch((err) =>
+          (options.logger ?? noopLogger).error("[DAL Entity Event Error]", err));
+      }
+      return out;
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Is this repo pool-bound (needs the lazy mini-tx) or already
+   *  transaction-bound (joins the caller tx inline)? The discriminator is
+   *  `release` — a PoolClient has it, a Pool does not; BOTH have `connect`
+   *  (PoolClient.connect throws once connected). */
+  private poolBound(): boolean {
+    return typeof (this.db as PoolClient).release !== "function";
+  }
+
+  /** Resolved sequence-row spec — what allocation needs after the row is
+   *  read: identity + parsed pattern + bigint counters + row-owned sez
+   *  defaults + the series columns. */
+  private static readonly SEQ_SPEC_COLS =
+    `"uuid","name","pattern","step","start","tz","sez","sez2","sez3","binding_key","default_from"`;
+
+  /** Fetch a sequence row by uuid — null when absent/soft-deleted. */
+  private async querySequence(
+    q: Queryable,
+    by: { uuid: string },
+  ): Promise<SequenceRowSpec | null> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const r = await q.query<SequenceRowSpecRaw>(
+      `SELECT ${Repository.SEQ_SPEC_COLS} FROM ${table}
+        WHERE "uuid" = $1 AND "deleted_at" IS NULL`,
+      [by.uuid],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return this.sequenceRowSpec(row);
+  }
+
+  /** Series resolution — the binding names a LINE of rows, not a uuid:
+   *  `binding_key` survives revives; `default_from <= at` picks the
+   *  generation that owns the document's period. NULL default_from is
+   *  eligible (legacy-adopted rows) but loses to any anchored row. */
+  private async querySequenceSeries(
+    q: Queryable,
+    binding_key: string,
+    at: Date,
+  ): Promise<SequenceRowSpec | null> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const r = await q.query<SequenceRowSpecRaw>(
+      `SELECT ${Repository.SEQ_SPEC_COLS} FROM ${table}
+        WHERE "binding_key" = $1 AND "deleted_at" IS NULL
+          AND ("default_from" IS NULL OR "default_from" <= $2)
+        ORDER BY "default_from" DESC NULLS LAST
+        LIMIT 1`,
+      [binding_key, at],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return this.sequenceRowSpec(row);
+  }
+
+  private sequenceRowSpec(row: SequenceRowSpecRaw): SequenceRowSpec {
+    return {
+      uuid: row.uuid,
+      name: row.name,
+      pattern: parseSequencePattern(row.pattern),
+      // bigint columns arrive as strings on pools without the INT8 parser
+      // (bare probe pools, non-dal consumers) — coerce so JS arithmetic
+      // never silently degrades to string concat.
+      step: BigInt(row.step),
+      start: BigInt(row.start),
+      tz: row.tz,
+      sez: row.sez ?? null,
+      sez2: row.sez2 ?? null,
+      sez3: row.sez3 ?? null,
+      binding_key: row.binding_key ?? null,
+      default_from: row.default_from ?? null,
+    };
+  }
+
+  /** Strict sequence lookup — missing → SEQUENCE_NOT_FOUND carrying the
+   *  requested uuid (never a silent fallback to a default). */
+  private async loadSequence(
+    q: Queryable,
+    by: { uuid: string },
+  ): Promise<SequenceRowSpec> {
+    const spec = await this.querySequence(q, by);
+    if (!spec) throw new SequenceNotFoundError(by.uuid);
+    return spec;
+  }
+
+  /** Idempotent sequence-row provisioning — INSERT ... ON CONFLICT (uuid)
+   *  DO NOTHING, then re-read the STORED row: an operator-managed row
+   *  under the same deterministic uuid always wins over the decl. The
+   *  uuid is derived (`sequenceBoundUuid(seed)`) — the row identity is
+   *  known before it exists, so uuid is the ONLY functional key.
+   *  `binding_key` (system-owned, never a write key) names the series
+   *  the row belongs to; revive anchors are computed here, never taken
+   *  from the wire. */
+  private async materializeSequenceRow(
+    q: Queryable,
+    uuid: string,
+    name: string,
+    decl: SequenceDecl,
+    actor: string,
+    binding_key: string | null = null,
+  ): Promise<SequenceRowSpec> {
+    const table = getQualifiedTableName(SequenceEntity);
+    const now = new Date();
+    const tz = decl.tz ?? "UTC";
+    const expire_at = decl.revive_every ? reviveExpireAt(now, decl.revive_every, tz) : null;
+    const switch_at = expire_at
+      ? (decl.revive_grace ? reviveAddInterval(expire_at, decl.revive_grace, tz) : expire_at)
+      : null;
+    await q.query(
+      `INSERT INTO ${table}
+         ("uuid","name","pattern","step","start","tz","sez","sez2","sez3",
+          "binding_key","revive_every","revive_grace","revive_slot",
+          "expire_at","switch_at","default_from",
+          "created_at","created_by","updated_at","updated_by","version")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+               clock_timestamp(),$17,clock_timestamp(),$17,1)
+       ON CONFLICT ("uuid") DO NOTHING`,
+      [
+        uuid, name, decl.pattern, decl.step, decl.start, decl.tz ?? null,
+        decl.sez ?? null, decl.sez2 ?? null, decl.sez3 ?? null,
+        binding_key, decl.revive_every ?? null, decl.revive_grace ?? null,
+        decl.revive_slot ?? null, expire_at, switch_at, now, actor,
+      ],
+    );
+    const spec = await this.querySequence(q, { uuid });
+    if (!spec) throw new SequenceNotFoundError(uuid);
+    return spec;
+  }
+
+  /** Field-scoped expression materialization: an expr directive owns a
+   *  sequence row whose uuid derives as `<bound.name>|expr|<hash16>` —
+   *  identical exprs on DIFFERENT fields never share a counter; runtime
+   *  sharing only happens through an explicit `{seq:{uuid}}` mapping.
+   *  The row's NAME (`<table>.<field>@expr_<hash>`) is display-only.
+   *  Idempotent via ON CONFLICT (uuid). */
+  private async materializeExprSequence(
+    q: Queryable,
+    bound: SequenceBound,
+    decl: SequenceDecl,
+    actor: string,
+    at: Date,
+  ): Promise<SequenceRowSpec> {
+    const hash = sha256Hex(`${decl.pattern}|${decl.step}|${decl.start}|${decl.tz ?? ""}`).slice(0, 16);
+    const binding_key = `${bound.name}@expr_${hash}`.slice(0, 130);
+    const found = await this.querySequenceSeries(q, binding_key, at);
+    if (found) return found;
+    const uuid = sequenceBoundUuid(`${bound.name}|expr|${hash}`);
+    const legacy = await this.querySequence(q, { uuid });
+    if (legacy) return this.adoptSequenceRow(q, uuid, binding_key);
+    return this.materializeSequenceRow(q, uuid, binding_key.slice(0, 100), decl, actor, binding_key);
+  }
+
+  /** Adopt a pre-binding_key bound row into its series — stamps
+   *  `binding_key` + `default_from` (the row's own created_at) so the
+   *  uuid identity is preserved while the binding gains series
+   *  resolution. Idempotent (`binding_key IS NULL`). */
+  private async adoptSequenceRow(
+    q: Queryable,
+    uuid: string,
+    binding_key: string,
+  ): Promise<SequenceRowSpec> {
+    const table = getQualifiedTableName(SequenceEntity);
+    await q.query(
+      `UPDATE ${table} SET "binding_key" = $1,
+         "default_from" = COALESCE("default_from", "created_at")
+       WHERE "uuid" = $2 AND "binding_key" IS NULL`,
+      [binding_key, uuid],
+    );
+    const spec = await this.querySequence(q, { uuid });
+    if (!spec) throw new SequenceNotFoundError(uuid);
+    return spec;
+  }
+
+  /** The field's declared default — the binding names a SERIES of rows
+   *  (`binding_key` survives revives); `default_from <= at` picks the
+   *  generation that owns the document's period. Empty series → adopt
+   *  the legacy deterministic row, else materialize generation 0. */
+  private async loadOrMaterializeBound(
+    q: Queryable,
+    bound: SequenceBound,
+    actor: string,
+    at: Date,
+  ): Promise<SequenceRowSpec> {
+    const found = await this.querySequenceSeries(q, bound.name, at);
+    if (found) return found;
+    const legacy = await this.querySequence(q, { uuid: bound.uuid });
+    if (legacy) return this.adoptSequenceRow(q, bound.uuid, bound.name);
+    return this.materializeSequenceRow(q, bound.uuid, bound.name, bound, actor, bound.name);
+  }
+
+  /** Merge directive-supplied sez slots with the row's owned defaults —
+   *  owned slots are immutable at claim time (a directive that pins a
+   *  DIFFERENT value for an owned slot is a construction error, never a
+   *  silent override). */
+  private mergeSequencePartitions(
+    spec: SequenceRowSpec,
+    partitions: SequencePartitions,
+  ): SequencePartitions {
+    const merged: Record<string, string> = {};
+    for (const slot of ["sez", "sez2", "sez3"] as const) {
+      const owned = spec[slot];
+      const given = partitions[slot];
+      if (owned !== null) {
+        if (given !== undefined && given !== owned) {
+          throw new ValidationError(
+            `sequence.${slot}: row owns slot value "${owned}" — directives cannot override an owned slot`,
+          );
+        }
+        merged[slot] = owned;
+      } else if (given !== undefined) {
+        merged[slot] = given;
+      }
+    }
+    return merged as SequencePartitions;
+  }
+
+  /** Resolve the sequence spec for a directive (or null = field default). */
+  private async sequenceSpecFor(
+    q: Queryable,
+    bound: SequenceBound,
+    dir: SequenceDirective | null,
+    actor: string,
+  ): Promise<SequenceRowSpec & { partitions: SequencePartitions; at?: Date }> {
+    const base = (
+      spec: SequenceRowSpec,
+      ctx: { partitions: SequencePartitions; at?: Date },
+    ) => ({ ...spec, partitions: this.mergeSequencePartitions(spec, ctx.partitions), ...(ctx.at ? { at: ctx.at } : {}) });
+    if (dir === null) {
+      return base(await this.loadOrMaterializeBound(q, bound, actor, new Date()), { partitions: {} });
+    }
+    const s = dir.seq;
+    if (typeof s === "string") {
+      return base(await this.loadSequence(q, { uuid: s }), { partitions: {} });
+    }
+    const ctx: { partitions: SequencePartitions; at?: Date } = {
+      partitions: Object.fromEntries(
+        (["sez", "sez2", "sez3"] as const).filter((k) => s[k] !== undefined).map((k) => [k, s[k]!]),
+      ) as SequencePartitions,
+      ...(s.at !== undefined ? { at: new Date(s.at) } : {}),
+    };
+    if ("uuid" in s) {
+      return base(await this.loadSequence(q, { uuid: s.uuid }), ctx);
+    }
+    return base(await this.materializeExprSequence(q, bound, s, actor, ctx.at ?? new Date()), ctx);
+  }
+
+  /** Claim `count` values on the resolved spec and render them. */
+  private async allocateAndRender(
+    q: Queryable,
+    spec: Awaited<ReturnType<Repository["sequenceSpecFor"]>>,
+    colLength: number | undefined,
+    count: number,
+    actor: string,
+  ): Promise<string[]> {
+    const { uuid, pattern, step, start, tz, partitions } = spec;
+    const parts = validateSequencePartitions(pattern, partitions);
+    const partition_key = sequencePartitionKey(pattern, parts);
+    const at = spec.at ?? new Date();
+    const period_key = derivePeriodKey(pattern.period_kind, at, tz ?? undefined);
+    const claim = await this.sequenceAllocateOn(q, {
+      sequence_uuid: uuid,
+      period_key,
+      partition_key,
+      count,
+      step,
+      start,
+      actor,
+    });
+    const rendered =
+      count === 1
+        ? [renderSequenceValue(pattern, claim.first, at, { tz: tz ?? undefined, partitions: parts })]
+        : renderSequenceRange(pattern, claim.first, step, count, at, { tz: tz ?? undefined, partitions: parts });
+    for (const value of rendered) {
+      if (colLength !== undefined && value.length > colLength) {
+        throw new ValidationError(
+          `sequence value exceeds column length ${colLength}: ${value.length} chars rendered by pattern "${pattern.source}"`,
+        );
+      }
+    }
+    return rendered;
+  }
+
+  /** Single-row seq resolution — mutates `rec` in place: every seq-bound
+   *  column exits holding a rendered literal (or absent on update).
+   *  STRICT: a raw literal reaching the repository is rejected even when
+   *  the API-layer predicate was bypassed. */
+  private async resolveSeqColumns(
+    q: Queryable,
+    meta: EntityPersistenceMeta,
+    rec: Record<string, unknown>,
+    mode: "create" | "update",
+    actor: string,
+  ): Promise<void> {
+    for (const col of Object.values(meta.columns)) {
+      const bound = col.seqBound;
+      if (!bound) continue;
+      const value = rec[col.propertyKey];
+      if (value === undefined || value === null) {
+        if (mode === "update") continue;
+        const spec = await this.sequenceSpecFor(q, bound, null, actor);
+        [rec[col.propertyKey]] = await this.allocateAndRender(q, spec, col.length, 1, actor);
+        continue;
+      }
+      const dir = parseSequenceDirective(value);
+      if (!dir) {
+        throw new ValidationError(
+          `${meta.entityClassName}.${col.propertyKey}: seq-bound column accepts only a sequence directive — raw literals are rejected`,
+        );
+      }
+      const spec = await this.sequenceSpecFor(q, bound, dir, actor);
+      [rec[col.propertyKey]] = await this.allocateAndRender(q, spec, col.length, 1, actor);
+    }
+  }
+
+  /** Bulk seq resolution — STRICT bulk contract: a seq-bound column must
+   *  carry the SAME directive on every row, or be absent on every row
+   *  (absent = field-default allocation on create). Mixed directives or
+   *  mixed presence are rejected. ONE contiguous counter claim covers the
+   *  whole group (`count:N`), then literals map back row-by-row. */
+  private async resolveSeqRows(
+    q: Queryable,
+    meta: EntityPersistenceMeta,
+    rows: Array<Record<string, unknown>>,
+    actor: string,
+    mode: "create" | "update",
+  ): Promise<void> {
+    for (const col of Object.values(meta.columns)) {
+      const bound = col.seqBound;
+      if (!bound) continue;
+      const groups = new Map<string, { dir: SequenceDirective | null; idxs: number[] }>();
+      rows.forEach((rec, i) => {
+        const value = rec[col.propertyKey];
+        const dir = value === undefined || value === null ? null : parseSequenceDirective(value);
+        if (value !== undefined && value !== null && !dir) {
+          throw new ValidationError(
+            `${meta.entityClassName}.${col.propertyKey}: seq-bound column accepts only a sequence directive — raw literals are rejected`,
+          );
+        }
+        const groupKey = dir === null ? "" : sha256Hex(extJsonStringify(dir.seq));
+        const g = groups.get(groupKey) ?? { dir, idxs: [] };
+        g.idxs.push(i);
+        groups.set(groupKey, g);
+      });
+      if (groups.size > 1) {
+        throw new ValidationError(
+          `${meta.entityClassName}.${col.propertyKey}: bulk seq-bound writes require the same directive on every row (or none) — mixed directives are rejected`,
+        );
+      }
+      for (const g of groups.values()) {
+        // update mode: all-absent = column untouched, never default-allocates.
+        if (mode === "update" && g.dir === null) continue;
+        const spec = await this.sequenceSpecFor(q, bound, g.dir, actor);
+        const rendered = await this.allocateAndRender(q, spec, col.length, g.idxs.length, actor);
+        g.idxs.forEach((rowIdx, j) => {
+          rows[rowIdx]![col.propertyKey] = rendered[j];
+        });
+      }
+    }
   }
 
   /**
@@ -861,6 +1940,22 @@ export class Repository {
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound columns: directives resolve to literals and omissions on
+    // create allocate the field default — inside ONE transaction with the
+    // INSERT (lazy mini-tx when pool-bound, the caller's tx otherwise).
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `add: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.add(entity as never, row as never, options as never) as Promise<TResult>);
+      }
+      await this.resolveSeqColumns(this.db, meta, row as Record<string, unknown>, "create", actor);
+    }
+
     const rec = row as Record<string, unknown>;
     let keys = Object.keys(rec).filter((k) => rec[k] !== undefined);
 
@@ -888,7 +1983,6 @@ export class Repository {
     }
 
     // Stamp audit fields if entity is auditable
-    const now = new Date();
     const values: unknown[] = [];
     const colsSql: string[] = [];
     const params: string[] = [];
@@ -903,6 +1997,14 @@ export class Repository {
       const colMeta = meta.columns[sqlName];
       colsSql.push(quoteIdent(sqlName));
       const rawVal = rec[k] ?? null;
+      if (rawVal === (DAL_NOW as unknown)) {
+        if (!acceptsDalNow(colMeta)) {
+          throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+        }
+        params.push(DAL_NOW_SQL);
+        attemptedParam.set(k, DAL_NOW_SQL);
+        continue;
+      }
       const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
       values.push(pgVal);
       params.push(`$${values.length}`);
@@ -918,9 +2020,8 @@ export class Repository {
 
       if (createdAtCol && !keys.includes(createdAtCol.propertyKey)) {
         colsSql.push(quoteIdent(createdAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-        attemptedParam.set(createdAtCol.propertyKey, `$${values.length}`);
+        params.push("clock_timestamp()");
+        attemptedParam.set(createdAtCol.propertyKey, "clock_timestamp()");
       }
       if (createdByCol && !keys.includes(createdByCol.propertyKey)) {
         colsSql.push(quoteIdent(createdByCol.sqlName));
@@ -930,9 +2031,8 @@ export class Repository {
       }
       if (updatedAtCol && !keys.includes(updatedAtCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedAtCol.sqlName));
-        values.push(now);
-        params.push(`$${values.length}`);
-        attemptedParam.set(updatedAtCol.propertyKey, `$${values.length}`);
+        params.push("clock_timestamp()");
+        attemptedParam.set(updatedAtCol.propertyKey, "clock_timestamp()");
       }
       if (updatedByCol && !keys.includes(updatedByCol.propertyKey)) {
         colsSql.push(quoteIdent(updatedByCol.sqlName));
@@ -1014,7 +2114,8 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     }
 
     const result = await this.db.query(sql, values);
-    const inserted = result.rows?.[0] as Record<string, unknown> | undefined;
+    const insertedRawRow = result.rows?.[0] as Record<string, unknown> | undefined;
+    const inserted = insertedRawRow ? hydrateEntityRow(meta, insertedRawRow, ret.rowKeyToSqlName) : undefined;
 
     // raise-mode CTE returned zero rows: a unique conflict happened on a group
     // whose attempted values were not all identifiable (e.g. a DB-generated
@@ -1040,8 +2141,9 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         entityId,
         entityUuid,
         action: AuditAction.INSERT,
-        changedAt: now,
-        version: 1,
+        changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, insertedRecord),
+        version: 1n,
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
@@ -1052,7 +2154,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
       this.emitEntityEvent(entity, meta, options, {
         action: "create",
         uuid: (insertedRecord["uuid"] as string) ?? "",
-        version: (insertedRecord["version"] as number) ?? 1,
+        version: (insertedRecord["version"] as bigint) ?? 1n,
         before: null,
         after: insertedRecord,
         delta: calculateDelta({}, safe),
@@ -1060,33 +2162,36 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     }
 
     // May be undefined when onConflict === "ignore" and the row was skipped.
-    return inserted === undefined ? (undefined as TResult) : pickReturningRow<TResult>(inserted, ret.visibleKeys);
+    return inserted === undefined ? (undefined as TResult) : finalizeReturningRow<TResult>(meta, ret, inserted);
   }
 
   /**
    * Unique groups of the entity, derived purely from metadata:
    * - `@Unique()` single-column → group keyed by the column's sqlName.
    * - `@Unique(name, order)` → all columns sharing `name`, ordered by `order`.
+   *   A column may join N named groups (e.g. solo-unique AND composite).
    */
   private uniqueConflictGroups(
     meta: EntityPersistenceMeta,
   ): { name: string; cols: EntityPersistenceMeta["columns"][string][] }[] {
     type Col = EntityPersistenceMeta["columns"][string];
     const groups: { name: string; cols: Col[] }[] = [];
-    const named = new Map<string, Col[]>();
+    const named = new Map<string, { col: Col; order: number }[]>();
     for (const c of Object.values(meta.columns)) {
       if (!c.isUnique) continue;
-      if (c.uniqueIndexName) {
-        const arr = named.get(c.uniqueIndexName) ?? [];
-        arr.push(c);
-        named.set(c.uniqueIndexName, arr);
+      if (c.uniques?.length) {
+        for (const u of c.uniques) {
+          const arr = named.get(u.name) ?? [];
+          arr.push({ col: c, order: u.order });
+          named.set(u.name, arr);
+        }
       } else {
         groups.push({ name: c.sqlName, cols: [c] });
       }
     }
     for (const [name, cols] of named) {
-      cols.sort((a, b) => (a.uniqueIndexOrder ?? 0) - (b.uniqueIndexOrder ?? 0));
-      groups.push({ name, cols });
+      cols.sort((a, b) => a.order - b.order);
+      groups.push({ name, cols: cols.map((x) => x.col) });
     }
     return groups;
   }
@@ -1121,8 +2226,18 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
     const pk = findPkColumn(meta);
 
     const groups = this.uniqueConflictGroups(meta);
-    const groupOf = new Map<string, { name: string; cols: typeof meta.columns[string][] }>();
-    for (const g of groups) for (const c of g.cols) groupOf.set(c.propertyKey, g);
+    // A column may belong to N unique groups (e.g. solo-unique AND composite).
+    // matchBy expands to the UNION of every group containing the prop —
+    // fail-closed identity (the prop alone does not uniquely identify a row
+    // when its only uniques are scoped, e.g. partial-index predicates).
+    const groupColsOf = new Map<string, Map<string, EntityPersistenceMeta["columns"][string]>>();
+    for (const g of groups) {
+      for (const c of g.cols) {
+        const m = groupColsOf.get(c.propertyKey) ?? new Map();
+        for (const gc of g.cols) m.set(gc.sqlName, gc);
+        groupColsOf.set(c.propertyKey, m);
+      }
+    }
 
     const requested = matchBy == null ? [] : typeof matchBy === "string" ? [matchBy] : [...matchBy];
     const required = new Set<string>();
@@ -1133,14 +2248,14 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
           `matchBy: '${prop}' is not a column of ${entityName}`,
         );
       }
-      const g = groupOf.get(prop);
-      if (prop !== pk?.propertyKey && !g) {
+      const gCols = groupColsOf.get(prop);
+      if (prop !== pk?.propertyKey && !gCols) {
         throw new MatchSelectorError(
           `matchBy: '${prop}' on ${entityName} is not a @Unique/@Key column — ` +
             `writes must uniquely identify the target row(s)`,
         );
       }
-      if (g) for (const c of g.cols) required.add(c.propertyKey);
+      if (gCols) for (const c of gCols.values()) required.add(c.propertyKey);
       else required.add(prop);
     }
     return required;
@@ -1894,7 +3009,7 @@ WHERE agg.n > 0`;
   //         entityId,
   //         entityUuid,
   //         action,
-  //         changedAt: now,
+  //         changedAt: DAL_NOW,
   //         version: newVersion,
   //         changedBy: actor,
   //         delta,
@@ -1932,15 +3047,34 @@ WHERE agg.n > 0`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound writes need atomic claim+update — pool-bound runs through
+    // the lazy mini-tx; a tx-bound repo resolves inline below.
+    const seqCols = this.seqBoundColumns(meta);
+    const seqWrite =
+      seqCols.length > 0 &&
+      seqCols.some((c) => (remainingUpdates as Record<string, unknown>)[c.propertyKey] !== undefined);
+    if (seqWrite) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `update: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.update(entity as never, updates as never, options as never) as Promise<TResult>);
+      }
+    }
+
     // Optimistic concurrency: extract version from payload for auditable entities
     const versionCol = findVersionColumn(meta);
     const versionExtract = extractVersion(remainingUpdates, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
     const finalUpdates = versionExtract?.remainingPayload ?? remainingUpdates;
+    if (seqWrite) {
+      await this.resolveSeqColumns(this.db, meta, finalUpdates as Record<string, unknown>, "update", actor!);
+    }
 
     const setClauses: string[] = [];
     const values: unknown[] = [];
-    const now = new Date();
 
     // Add audit stamping
     if (auditable && actor !== undefined) {
@@ -1948,8 +3082,7 @@ WHERE agg.n > 0`;
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
 
       if (updatedAtCol) {
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-        values.push(now);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol) {
         setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -1969,6 +3102,15 @@ WHERE agg.n > 0`;
       const colMeta = meta.columns[sqlName];
       if (!colMeta) {
         throw new UnknownColumnError(`update: unknown column/property ${key}`);
+      }
+      if (value === (DAL_NOW as unknown)) {
+        if (!acceptsDalNow(colMeta)) {
+          throw new ValidationError(`${meta.entityClassName}.${key}: DAL_NOW requires a timestamp column`);
+        }
+        setClauses.push(`${quoteIdent(sqlName)} = ${DAL_NOW_SQL}`);
+        paramRefByProp.set(key, DAL_NOW_SQL);
+        userFieldCount++;
+        continue;
       }
       const ref = `$${values.length + 1}`;
       setClauses.push(`${quoteIdent(sqlName)} = ${ref}`);
@@ -2126,7 +3268,7 @@ SELECT * FROM upd`;
       );
     }
 
-    const updatedRaw = result.rows[0] as Record<string, unknown>;
+    const updatedRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const updated = remapReturningRow(updatedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
@@ -2134,7 +3276,7 @@ SELECT * FROM upd`;
       const entityId = auditEntityId(updated, oldRecord);
       const entityUuid = (updated["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-      const newVersion = versionCol ? (updated[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (updated[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
       const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
@@ -2151,7 +3293,8 @@ SELECT * FROM upd`;
         entityId,
         entityUuid,
         action: AuditAction.UPDATE,
-        changedAt: now,
+        changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, updated),
         version: newVersion,
         changedBy: actor,
         delta,
@@ -2167,14 +3310,14 @@ SELECT * FROM upd`;
       this.emitEntityEvent(entity, meta, options, {
         action: "update",
         uuid: (updated["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (updated[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (updated[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
       });
     }
 
-    return pickReturningRow<TResult>(updatedRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, updatedRaw);
   }
 
   async delete<TEntity extends object & IAuditableEntity & IDeletableEntity, TResult = TEntity>(
@@ -2211,7 +3354,6 @@ SELECT * FROM upd`;
     const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
-    const now = new Date();
     const setClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -2221,16 +3363,14 @@ SELECT * FROM upd`;
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
 
     if (deletedAtCol) {
-      setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (deletedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${values.length + 1}`);
       values.push(actor);
     }
     if (updatedAtCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -2285,14 +3425,14 @@ SELECT * FROM w`;
       );
     }
 
-    const deletedRaw = result.rows[0] as Record<string, unknown>;
+    const deletedRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const deleted = remapReturningRow(deletedRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const entityId = auditEntityId(deleted, oldRecord);
       const entityUuid = (deleted["uuid"] as string | undefined) ?? "";
-      const newVersion = versionCol ? (deleted[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (deleted[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -2309,7 +3449,8 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.SOFT_DELETE,
-        changedAt: now,
+        changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, deleted),
         version: newVersion,
         changedBy: actor,
         delta,
@@ -2325,14 +3466,14 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "delete",
         uuid: (deleted["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (deleted[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (deleted[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
       });
     }
 
-    return pickReturningRow<TResult>(deletedRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, deletedRaw);
   }
 
   /** Restore — auditable+deletable entity (actor required). */
@@ -2370,7 +3511,6 @@ SELECT * FROM w`;
     const versionExtract = extractVersion(match as Record<string, unknown>, versionCol, meta.entityClassName);
     const expectedVersion = versionExtract?.expectedVersion ?? null;
 
-    const now = new Date();
     const setClauses: string[] = [];
     const values: unknown[] = [];
 
@@ -2386,8 +3526,7 @@ SELECT * FROM w`;
       setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
     }
     if (updatedAtCol && auditable && actor !== undefined) {
-      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${values.length + 1}`);
-      values.push(now);
+      setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
     }
     if (updatedByCol && auditable && actor !== undefined) {
       setClauses.push(`${quoteIdent(updatedByCol.sqlName)} = $${values.length + 1}`);
@@ -2442,14 +3581,14 @@ SELECT * FROM w`;
       );
     }
 
-    const restoredRaw = result.rows[0] as Record<string, unknown>;
+    const restoredRaw = hydrateEntityRow(meta, result.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     const restored = remapReturningRow(restoredRaw, ret.rowKeyToSqlName);
 
     // Write audit log (fire-and-forget)
     if (auditable && options.audit && actor !== undefined && oldRecord) {
       const entityId = auditEntityId(restored, oldRecord);
       const entityUuid = (restored["uuid"] as string | undefined) ?? "";
-      const newVersion = versionCol ? (restored[versionCol.sqlName] as number) : 1;
+      const newVersion = versionCol ? (restored[versionCol.sqlName] as bigint) : 1n;
       const forcedFields: string[] = [];
       if (deletedAtCol) forcedFields.push(deletedAtCol.sqlName);
       if (deletedByCol) forcedFields.push(deletedByCol.sqlName);
@@ -2466,7 +3605,8 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.RESTORE,
-        changedAt: now,
+        changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, restored),
         version: newVersion,
         changedBy: actor,
         delta,
@@ -2482,14 +3622,14 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "restore",
         uuid: (restored["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (restored[versionCol.sqlName] as number) : undefined,
+        version: versionCol ? (restored[versionCol.sqlName] as bigint) : undefined,
         before: oldRecord ?? null,
         after: merged,
         delta: before ? calculateDeltaWithForcedFields(before, merged, evtForced) : calculateDelta({}, merged),
       });
     }
 
-    return pickReturningRow<TResult>(restoredRaw, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, restoredRaw);
   }
 
   /** Hard-delete — auditable entity (actor required for audit log). */
@@ -2570,7 +3710,7 @@ SELECT * FROM w`;
       const entityId = auditEntityId(oldRecord);
       const entityUuid = (oldRecord["uuid"] as string | undefined) ?? "";
       const versionCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.VERSION);
-      const oldVersion = versionCol ? (oldRecord[versionCol.sqlName] as number) : 1;
+      const oldVersion = versionCol ? (oldRecord[versionCol.sqlName] as bigint) : 1n;
       const delta: Record<string, { old: unknown; new: unknown }> = {};
       for (const key of Object.keys(oldRecord)) {
         const val = oldRecord[key];
@@ -2584,7 +3724,7 @@ SELECT * FROM w`;
         entityId,
         entityUuid,
         action: AuditAction.HARD_DELETE,
-        changedAt: new Date(),
+        changedAt: DAL_NOW,
         version: oldVersion,
         changedBy: actor,
         delta,
@@ -2600,7 +3740,7 @@ SELECT * FROM w`;
       this.emitEntityEvent(entity, meta, options, {
         action: "purge",
         uuid: (purgedRow["uuid"] as string | undefined) ?? (oldRecord?.["uuid"] as string | undefined) ?? "",
-        version: versionCol ? (purgedRow[versionCol.sqlName] as number | undefined) ?? (oldRecord?.[versionCol.sqlName] as number | undefined) : undefined,
+        version: versionCol ? (purgedRow[versionCol.sqlName] as bigint | undefined) ?? (oldRecord?.[versionCol.sqlName] as bigint | undefined) : undefined,
         before: oldRecord ?? null,
         after: purgedRow,
         delta: evtDelta,
@@ -2608,7 +3748,7 @@ SELECT * FROM w`;
     }
 
     // RETURNING yields the row as it was before the physical delete.
-    return pickReturningRow<TResult>(result.rows[0] as Record<string, unknown>, ret.visibleKeys);
+    return finalizeReturningRow<TResult>(meta, ret, result.rows[0] as Record<string, unknown>);
   }
 
   // ─── Clone ─────────────────────────────────────────────────────────────────
@@ -2638,6 +3778,21 @@ SELECT * FROM w`;
     const table = getQualifiedTableName(entity);
     const actor = options.actor;
 
+    // Seq-bound columns are @Unique — skipped by the copy loop below — so
+    // the clone ALLOCATES a fresh value per bound column (a clone never
+    // shares the source's unique code). Claim + INSERT share one tx.
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0) {
+      if (actor === undefined) {
+        throw new ValidationError(
+          `clone: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+        );
+      }
+      if (this.poolBound()) {
+        return this.withSeqTx(options, (r) => r.clone(entity, sourceUuid, options) as Promise<TEntity>);
+      }
+    }
+
     // Find the uuid column (marked with @Unique or named 'uuid')
     const uuidColEntry = Object.entries(meta.columns).find(
       ([name, col]) => name === "uuid" || col.isUnique,
@@ -2656,7 +3811,6 @@ SELECT * FROM w`;
     // Build the cloned record
     const clonedRecord: Record<string, unknown> = {};
     const newUuid = newUuidV7();
-    const now = new Date();
 
     for (const [, colMeta] of Object.entries(meta.columns)) {
       const sqlName = colMeta.sqlName;
@@ -2669,7 +3823,7 @@ SELECT * FROM w`;
         switch (colMeta.auditableType) {
           case AuditableFieldType.CREATED_AT:
           case AuditableFieldType.UPDATED_AT:
-            clonedRecord[sqlName] = now;
+            clonedRecord[sqlName] = DAL_NOW;
             continue;
           case AuditableFieldType.CREATED_BY:
           case AuditableFieldType.UPDATED_BY:
@@ -2705,17 +3859,28 @@ SELECT * FROM w`;
     }
     const clonedAtField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_AT);
     if (clonedAtField) {
-      clonedRecord[clonedAtField.sqlName] = now;
+      clonedRecord[clonedAtField.sqlName] = DAL_NOW;
     }
     const clonedByField = Object.values(meta.columns).find((c) => c.cloneType === CloneFieldType.CLONED_BY);
     if (clonedByField && actor !== undefined) {
       clonedRecord[clonedByField.sqlName] = actor;
     }
 
-    // Build and execute INSERT
+    // Allocate fresh sequence values for bound columns (skipped by the
+    // unique-copy loop above) — inside the same tx as the INSERT.
+    for (const col of seqCols) {
+      const spec = await this.sequenceSpecFor(this.db, col.seqBound!, null, actor!);
+      [clonedRecord[col.sqlName]] = await this.allocateAndRender(this.db, spec, col.length, 1, actor!);
+    }
+
+    // Build and execute INSERT — sentinel values render as SQL literals
+    // and drop out of the bound-parameter list.
     const columns = Object.keys(clonedRecord);
-    const values = Object.values(clonedRecord);
-    const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+    const rawValues = Object.values(clonedRecord);
+    const values: unknown[] = [];
+    const placeholders = rawValues
+      .map((v) => (v === (DAL_NOW as unknown) ? DAL_NOW_SQL : `$${values.push(v)}`))
+      .join(", ");
     const columnNames = columns.map((c) => quoteIdent(c)).join(", ");
 
     const ret = buildReturningClause(entity, options.returning);
@@ -2728,7 +3893,7 @@ SELECT * FROM w`;
 
     // Audit the clone as `CLONE` (fire-and-forget) — full-row delta like
     // INSERT, plus `cloned_from` already carries the source uuid.
-    const insertedRow = insertResult.rows[0] as Record<string, unknown>;
+    const insertedRow = hydrateEntityRow(meta, insertResult.rows[0] as Record<string, unknown>, ret.rowKeyToSqlName);
     if (options.audit && actor !== undefined) {
       const delta = calculateDelta({}, insertedRow);
       options.audit.writeAudit({
@@ -2737,8 +3902,8 @@ SELECT * FROM w`;
         entityId: auditEntityId(insertedRow),
         entityUuid: newUuid,
         action: AuditAction.CLONE,
-        changedAt: now,
-        version: 1,
+        changedAt: DAL_NOW,
+        version: 1n,
         changedBy: actor,
         delta,
       }).catch((err) => (options.logger ?? noopLogger).error("[DAL Audit Error]", err));
@@ -2747,13 +3912,13 @@ SELECT * FROM w`;
     this.emitEntityEvent(entity, meta, options, {
       action: "duplicate",
       uuid: newUuid,
-      version: 1,
+      version: 1n,
       before: null,
       after: remapReturningRow(insertedRow, ret.rowKeyToSqlName),
       delta: calculateDelta({}, remapReturningRow(insertedRow, ret.rowKeyToSqlName)),
     });
 
-    return pickReturningRow<TEntity>(insertedRow, ret.visibleKeys);
+    return finalizeReturningRow<TEntity>(meta, ret, insertedRow);
   }
 
   // ─── Bulk ops ──────────────────────────────────────────────────────────────
@@ -2792,8 +3957,24 @@ SELECT * FROM w`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound columns — bulk contract: every row carries the SAME
+    // directive or none (omission = field-default allocation on create).
+    // Resolution allocates one contiguous range and runs on the bulk
+    // client inside the op's transaction.
+    const seqCols = this.seqBoundColumns(meta);
+    if (seqCols.length > 0 && actor === undefined) {
+      throw new ValidationError(
+        `addMany: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+      );
+    }
+
     const first = rows[0] as Record<string, unknown>;
     let keys = Object.keys(first).filter((k) => first[k] !== undefined);
+    // A seq-bound column always resolves to a literal on create — force
+    // it into the key set even when every row omitted it.
+    for (const c of seqCols) {
+      if (!keys.includes(c.propertyKey)) keys.push(c.propertyKey);
+    }
 
     if (pk && meta.columns[pk.sqlName]?.usePostgresIdentity) {
       keys = keys.filter((k) => k !== pk!.propertyKey);
@@ -2833,15 +4014,19 @@ SELECT * FROM w`;
     const allKeys = [...keys, ...auditCols];
     const colsSql = allKeys.map((k) => quoteIdent(getColumnName(entity, k))).join(", ");
 
-    const now = new Date();
     const batchSz = options.batchSize ?? autoBatchSize(allKeys.length);
 
     // TEMP TABLE strategy: stream payload into a temp table, detect unique
     // conflicts in one set-based query (single raised ERR04/ERR05 with up to
     // 10 offending rows), then one INSERT ... SELECT. Always transactional —
     // the whole operation is atomic and bounded by the bulk time budget.
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
+      // Seq-bound columns resolve INSIDE this transaction: every row gets a
+      // rendered literal before the temp-table payload is staged.
+      if (seqCols.length > 0) {
+        await this.resolveSeqRows(client, meta, rows as Array<Record<string, unknown>>, actor!, "create");
+      }
       // 1. Temp table mirroring the insert columns. Column types are derived
       //    FROM THE REAL TABLE (`AS SELECT … WHERE false`) — the runtime meta
       //    does not resolve annotation types, and re-deriving pg types here
@@ -2866,6 +4051,13 @@ SELECT * FROM w`;
             const sqlName = getColumnName(entity, k);
             const colMeta = meta.columns[sqlName];
             const rawVal = rec[k] ?? null;
+            if (rawVal === (DAL_NOW as unknown)) {
+              if (!acceptsDalNow(colMeta)) {
+                throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+              }
+              params.push(DAL_NOW_SQL);
+              continue;
+            }
             const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
             values.push(pgVal);
             params.push(`$${values.length}`);
@@ -2875,8 +4067,10 @@ SELECT * FROM w`;
             const col = Object.values(meta.columns).find((c) => c.propertyKey === ak);
             if (!col) continue;
             if (col.auditableType === AuditableFieldType.CREATED_AT || col.auditableType === AuditableFieldType.UPDATED_AT) {
-              values.push(now);
-            } else if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
+              params.push(DAL_NOW_SQL);
+              continue;
+            }
+            if (col.auditableType === AuditableFieldType.CREATED_BY || col.auditableType === AuditableFieldType.UPDATED_BY) {
               values.push(actor);
             } else if (col.auditableType === AuditableFieldType.VERSION) {
               values.push(1);
@@ -2958,14 +4152,14 @@ WHERE agg.n > 0`;
       );
       const affected = insertRes.rowCount ?? 0;
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_create", rows as Array<Record<string, unknown>>, affected);
       return { received: rows.length, affected };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3184,7 +4378,6 @@ WHERE agg.n > 0`;
     const isDeletable = Object.values(meta.columns).some((c) => c.isDeletable);
     if (!isDeletable) throw new Error(`Entity ${meta.entityClassName} has no @DeletableField — cannot soft delete`);
 
-    const now = new Date();
 
     const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
@@ -3205,7 +4398,7 @@ WHERE agg.n > 0`;
     // TEMP TABLE strategy (same as updateMany): stream match keys into a temp
     // table, then a single UPDATE ... FROM — a JOIN beats ANY($n::[]) and has
     // no parameter-count ceiling (~65535 limit of ANY/IN does not apply).
-    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
+    const { client, deadline, owned } = await this.bulkBegin(options as BulkOptions);
     try {
       // 1. Temp table: row_ix + all identity columns (+ expected_version)
       const tmpName = `tmp_delete_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -3254,16 +4447,14 @@ WHERE agg.n > 0`;
       const setClauses: string[] = [];
       const setValues: unknown[] = [];
       if (deletedAtCol) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (deletedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
         setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = $${setValues.length}`);
       }
       if (updatedAtCol && auditable && actor !== undefined) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
@@ -3337,23 +4528,23 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'SOFT_DELETE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'SOFT_DELETE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_delete", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3403,7 +4594,7 @@ WHERE agg.n > 0`;
         )
       : { guard: false, versions: [] as number[], versionColSqlName: "" };
 
-    const { client, deadline } = await this.bulkBegin(options as BulkOptions);
+    const { client, deadline, owned } = await this.bulkBegin(options as BulkOptions);
     try {
       const tmpName = `tmp_hdel_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       // Temp table types derive FROM THE REAL TABLE — runtime meta has no
@@ -3492,21 +4683,21 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         await client.query(
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `o.${quoteIdent("id")}, ` : ""}o.uuid, 'HARD_DELETE', $1, $2, o.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `o.${quoteIdent("id")}, ` : ""}o.uuid, 'HARD_DELETE', clock_timestamp(), $1, o.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_build_object(\n              ${deltaExpr}\n            )\n` +
           `          FROM ${quoteIdent(tmpOldName)} o`,
-          [new Date(), actor],
+          [actor],
         );
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_purge", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3549,14 +4740,13 @@ WHERE agg.n > 0`;
       "restoreMany",
     );
 
-    const now = new Date();
     const deletedAtCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_AT);
     const deletedByCol = Object.values(meta.columns).find((c) => c.deletableType === DeletableFieldType.DELETED_BY);
     const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
     const updatedByCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_BY);
     const versionCol = findVersionColumn(meta);
 
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
       const tmpName = `tmp_restore_${meta.tableName}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       // Temp table types derive FROM THE REAL TABLE — runtime meta has no
@@ -3606,8 +4796,7 @@ WHERE agg.n > 0`;
       if (deletedAtCol) setClauses.push(`${quoteIdent(deletedAtCol.sqlName)} = NULL`);
       if (deletedByCol) setClauses.push(`${quoteIdent(deletedByCol.sqlName)} = NULL`);
       if (updatedAtCol && auditable && actor !== undefined) {
-        setValues.push(now);
-        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = $${setValues.length}`);
+        setClauses.push(`${quoteIdent(updatedAtCol.sqlName)} = ${DAL_NOW_SQL}`);
       }
       if (updatedByCol && auditable && actor !== undefined) {
         setValues.push(actor);
@@ -3671,23 +4860,23 @@ WHERE agg.n > 0`;
           .join(",\n          ");
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'RESTORE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'RESTORE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_restore", matches as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: matches.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3729,6 +4918,18 @@ WHERE agg.n > 0`;
     const actor = (options as AuditableWriteOptions).actor;
     assertWriteActor(meta, actor);
 
+    // Seq-bound columns — same bulk contract as addMany: identical
+    // directive on every row or absent on all (absent = column untouched).
+    const seqCols = this.seqBoundColumns(meta);
+    const seqWrite = seqCols.some((c) =>
+      updates.some((u) => (u as Record<string, unknown>)[c.propertyKey] !== undefined),
+    );
+    if (seqWrite && actor === undefined) {
+      throw new ValidationError(
+        `updateMany: seq-bound write on ${meta.entityClassName} requires options.actor — the counter claim is audited`,
+      );
+    }
+
     // Per-row optimistic concurrency: every row must carry the caller-observed
     // `version` on auditable entities (strict — same contract as update()).
     const versionGuard = this.extractExpectedVersions(
@@ -3769,8 +4970,13 @@ WHERE agg.n > 0`;
     }
 
     // TEMP TABLE strategy: CREATE TEMP TABLE → batch INSERT → UPDATE FROM → COMMIT
-    const { client, deadline } = await this.bulkBegin(options);
+    const { client, deadline, owned } = await this.bulkBegin(options);
     try {
+      // Seq-bound update columns resolve inside this transaction — one
+      // contiguous claim, literals staged into the temp-table payload.
+      if (seqWrite) {
+        await this.resolveSeqRows(client, meta, updates as Array<Record<string, unknown>>, actor!, "update");
+      }
 
       // 1. Create temp table — row_ix + all identity columns + update cols.
       //    Column types derive FROM THE REAL TABLE via `AS SELECT … WHERE
@@ -3797,7 +5003,6 @@ WHERE agg.n > 0`;
       );
 
       // 2. Batch INSERT into temp table
-      const now = new Date();
       const allTmpKeys = [...matchCols.map((c) => c.propertyKey), ...updateKeys];
       if (auditable && actor !== undefined) {
         const updatedAtCol = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
@@ -3822,23 +5027,40 @@ WHERE agg.n > 0`;
             const colMeta = meta.columns[sqlName];
             if (matchProps.has(k)) {
               values.push(jsValueToPgParam(rec[k], matchCols.find((c) => c.propertyKey === k)!.hints));
+              params.push(`$${values.length}`);
             } else if (auditable && actor !== undefined) {
               const col = Object.values(meta.columns).find((c) => c.propertyKey === k);
               if (col?.auditableType === AuditableFieldType.UPDATED_AT) {
-                values.push(now);
+                params.push(DAL_NOW_SQL);
               } else if (col?.auditableType === AuditableFieldType.UPDATED_BY) {
                 values.push(actor);
+                params.push(`$${values.length}`);
               } else {
                 const rawVal = rec[k] ?? null;
-                const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-                values.push(pgVal);
+                if (rawVal === (DAL_NOW as unknown)) {
+                  if (!acceptsDalNow(col)) {
+                    throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+                  }
+                  params.push(DAL_NOW_SQL);
+                } else {
+                  const pgVal = col ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(col)) : rawVal;
+                  values.push(pgVal);
+                  params.push(`$${values.length}`);
+                }
               }
             } else {
               const rawVal = rec[k] ?? null;
-              const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
-              values.push(pgVal);
+              if (rawVal === (DAL_NOW as unknown)) {
+                if (!acceptsDalNow(colMeta)) {
+                  throw new ValidationError(`${meta.entityClassName}.${k}: DAL_NOW requires a timestamp column`);
+                }
+                params.push(DAL_NOW_SQL);
+              } else {
+                const pgVal = colMeta ? jsValueToPgParam(rawVal, columnHintsFromMetaColumn(colMeta)) : rawVal;
+                values.push(pgVal);
+                params.push(`$${values.length}`);
+              }
             }
-            params.push(`$${values.length}`);
           }
           if (versionGuard.guard) {
             values.push(versionGuard.versions[i + bi]);
@@ -3935,24 +5157,24 @@ WHERE agg.n > 0`;
 
         const auditSql =
           `INSERT INTO ${auditTable} (${hasId ? "entity_id, " : ""}entity_uuid, action, changed_at, changed_by, version, delta)\n` +
-          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'UPDATE', $1, $2, u.${quoteIdent(versionCol!.sqlName)},\n` +
+          `          SELECT ${hasId ? `u.${quoteIdent("id")}, ` : ""}u.uuid, 'UPDATE', clock_timestamp(), $1, u.${quoteIdent(versionCol!.sqlName)},\n` +
           `            jsonb_strip_nulls(jsonb_build_object(\n` +
           `              ${deltaExpr}\n` +
           `            ))\n` +
           `          FROM ${table} u\n` +
           `          INNER JOIN ${quoteIdent(tmpOldName)} o ON ${this.bulkJoinPredicate("u", "o", matchCols)}`;
 
-        await client.query(auditSql, [now, actor]);
+        await client.query(auditSql, [actor]);
       }
 
-      await client.query("COMMIT");
+      if (owned) await client.query("COMMIT");
       this.emitBulkEntityEvents(entity, meta, options, "bulk_update", updates as Array<Record<string, unknown>>, result.rowCount ?? 0);
       return { received: updates.length, affected: result.rowCount ?? 0 };
     } catch (err) {
-      await this.bulkAbort(client);
+      if (owned) await this.bulkAbort(client);
       throw err;
     } finally {
-      (client as any).release?.();
+      if (owned) (client as any).release?.();
     }
   }
 
@@ -3960,7 +5182,7 @@ WHERE agg.n > 0`;
 
   /** Get a PoolClient for transactional operations. */
   private async getClient(): Promise<PoolClient> {
-    if ("connect" in this.db && typeof (this.db as any).connect === "function") {
+    if (this.poolBound()) {
       return (this.db as Pool).connect();
     }
     // Already a PoolClient — return a no-op release wrapper

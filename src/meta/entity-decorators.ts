@@ -1,6 +1,9 @@
 import "reflect-metadata";
 
-import type { DictFacet, RelationFacet } from "@primebrick/core";
+import { createHash } from "node:crypto";
+
+import type { DictFacet, RelationFacet, SequenceDecl } from "@primebrick/core";
+import { parseSequencePattern } from "@primebrick/core";
 
 import { inferPgTypeFromEntityColumn, type JsType } from "./entity-ts-to-pg.js";
 import type { PgColumnType } from "../types/pg-column-type.js";
@@ -70,6 +73,59 @@ export type IndexOptions = {
   opclass?: string;
   /** Partial-index predicate (raw SQL, e.g. `deleted_at IS NULL`). */
   where?: string;
+  /**
+   * Sort direction of THIS column inside the index (default `"asc"`).
+   * Per-column option — each member carries its own, unlike `using`/`where`.
+   * A bare `ASC` index already serves `ORDER BY col DESC` scans backward;
+   * `desc` matters for composite mixed-order and NULL placement defaults.
+   */
+  sort?: "asc" | "desc";
+  /**
+   * NULL placement of THIS column (`"last"` is the asc default,
+   * `"first"` the desc default). Only declare when diverging —
+   * e.g. `desc`+`nulls:"last"` cannot be served by a plain asc index.
+   */
+  nulls?: "first" | "last";
+  /**
+   * Index storage parameters (`pg_class.reloptions`) — index-level, same
+   * merge rule as `using`/`where` (must be identical on every member).
+   * e.g. `{ m: "16", ef_construction: "64" }` for hnsw.
+   */
+  with?: Record<string, string | number>;
+};
+
+/** One member of a class-level {@link IndexSpec} — position in `columns` IS
+ *  the index order; `sort`/`nulls` are per-column options. */
+export type IndexSpecColumn = {
+  /** Column property key (e.g. `created_at`) — may be a mixin-owned column. */
+  name: string;
+  /** Sort direction (default `"asc"`). */
+  sort?: "asc" | "desc";
+  /** NULL placement (default: last for asc, first for desc). */
+  nulls?: "first" | "last";
+};
+
+/**
+ * Class-level index spec — the form for indexes that cannot be declared
+ * property-side: mixin-owned columns (`created_at`, `deleted_at`, …) or
+ * spec-owned composites. A `columns` array makes it a spec; a spec name
+ * must not collide with a property-level `@Index` group.
+ */
+export type IndexSpec = {
+  /** Index name — deterministic, matches `pg_indexes.indexname`. */
+  name: string;
+  /** Member columns in index order — property keys; a string member is a
+   *  plain asc column, an object member carries `sort`/`nulls`. */
+  columns: (string | IndexSpecColumn)[];
+  /** PG access method. Default `btree`. */
+  using?: IndexMethod;
+  /** Operator class (e.g. `vector_cosine_ops` for hnsw). */
+  opclass?: string;
+  /** Partial-index predicate (raw SQL — `deleted_at` predicates are allowed
+   *  here: this is a filter index, not a tombstone-unique). */
+  where?: string;
+  /** Index storage parameters (`pg_class.reloptions`). */
+  with?: Record<string, string | number>;
 };
 
 export type ForeignKeyAction = "restrict" | "cascade" | "set_null" | "set_default" | "no_action";
@@ -100,12 +156,11 @@ type ColumnRegistration = {
   /** `@Retention(duration)` — this column is the expiry axis */
   isRetention?: boolean;
   retentionOpts?: { duration: string };
-  /** Composite unique index name — columns sharing the same name form a composite unique index. */
-  uniqueIndexName?: string;
-  /** Order priority within a composite unique index (0-based). Lower = first in index. */
-  uniqueIndexOrder?: number;
-  /** `@Unique(…, {nullsNotDistinct})` — composite unique treats NULLs as equal (PG15+). */
-  uniqueNullsNotDistinct?: boolean;
+  /** Named unique-index memberships — `@Unique(name, order)` accumulates:
+   *  one column may join N indexes (e.g. a solo-unique AND a composite).
+   *  The index's options live ONLY on the matching class-level
+   *  `@UniqueIndex({name, …})` declaration. */
+  uniques?: { name: string; order: number }[];
   nullable?: boolean;
   /** `nullable` was explicitly declared via `@Column({ nullable })`.
    *  Decorator-imposed values (@Key/@Unique/@Partition/@DeletableField/
@@ -159,6 +214,10 @@ type ColumnRegistration = {
   refEntity?: string;
   /** Cast type to apply when this field is used in JOIN ON clause */
   castInJoin?: string;
+  /** `@SequenceField(decl)` — sequence binding declaration (data, not
+   *  logic). The binding's default sequence code is NEVER authored here —
+   *  it derives as `<table>.<field>` at persistence-meta resolution. */
+  seqBound?: SequenceDecl;
 };
 
 /**
@@ -256,6 +315,15 @@ type ClassEntityMeta = {
    *  `false` silences the entity entirely; `{except:[...]}` silences the
    *  listed write actions. Absent = emitting (the default by design). */
   events?: import("../entity/events.js").EntityEventsConfig;
+  /** `@UniqueIndex({name, …})` class-level unique-index declarations —
+   *  the single source for index options; `@Unique(name, order)` column
+   *  memberships reference these names. Merged parent-first via
+   *  collectMetaChain (subclass re-declares a name to override). */
+  uniqueIndexes?: Map<string, UniqueIndexSpec>;
+  /** Class-level `@Index` specs — indexed by name; resolved against the
+   *  merged column map at `getEntityPersistenceMeta` (mixin columns reach
+   *  declaration here because they carry no property to decorate). */
+  indexSpecs?: Map<string, IndexSpec>;
 };
 
 /** Options for `@Partition()` — the RANGE partition key declaration.
@@ -283,6 +351,17 @@ export type PartitionChildOfOptions = {
   /** The parent's referenced column — default "uuid". */
   parentRef?: string;
 };
+
+/** SQL keywords/functions that may appear in a partial-index `where`
+ *  predicate without being column references — used by the construction
+ *  check that every remaining identifier is a declared entity column. */
+const WHERE_KEYWORDS = new Set([
+  "and", "or", "not", "is", "null", "true", "false", "in", "exists",
+  "between", "like", "ilike", "similar", "to", "case", "when", "then",
+  "else", "end", "distinct", "all", "any", "some", "array", "now",
+  "current_setting", "current_date", "current_timestamp", "coalesce",
+  "nullif", "cast", "count", "lower", "upper", "length",
+]);
 
 const META = new WeakMap<Function, ClassEntityMeta>();
 
@@ -375,6 +454,27 @@ function collectCalculatedRegistrations(
   return merged;
 }
 
+/** Unique-index member groups — named `@Unique(name)` memberships grouped by
+ *  index name, plus a `__single__:<col>` group per bare `@Unique()` column.
+ *  Shared by the partition-key rule and the @UniqueIndex validation. */
+function collectUniqueMemberGroups(
+  columns: EntityPersistenceMeta["columns"],
+): Map<string, Set<string>> {
+  const groups = new Map<string, Set<string>>();
+  for (const c of Object.values(columns)) {
+    if (!c.isUnique) continue;
+    if (c.uniques?.length) {
+      for (const u of c.uniques) {
+        (groups.get(u.name) ?? groups.set(u.name, new Set()).get(u.name)!).add(c.sqlName);
+      }
+    } else {
+      const g = `__single__:${c.sqlName}`;
+      (groups.get(g) ?? groups.set(g, new Set()).get(g)!).add(c.sqlName);
+    }
+  }
+  return groups;
+}
+
 /** Registers every implicit column + `design:type` / nullability when not already set by decorators. */
 export function syncImplicitEntityColumns(ctor: Function): void {
   const m = META.get(ctor);
@@ -439,6 +539,23 @@ export function Entity(tableName?: string, schemaOrOptions?: string | EntityOpti
     Reflect.defineMetadata("primebrick:tableName", m.tableName, ctor);
     return ctor;
   };
+}
+
+/**
+ * `@PublicEntity("user_profiles")` — declares an entity on the cross-service
+ * `public` schema: the shared platform surface (shared-table contracts and
+ * BE-owned business entities). This is the ONLY alternative to
+ * primary-schema resolution available to module code — free-form schema
+ * pins are reserved for dal-internal machinery (translation entities).
+ *
+ * Self-limiting by construction: a service whose declared schema domain
+ * does not include `public` fails `resolveEntitySchema` at boot
+ * (SchemaDomainViolationError) — microservices cannot opt into `public`.
+ */
+export function PublicEntity(tableName?: string): (ctor: Function) => void;
+export function PublicEntity(tableName?: string, options?: Omit<EntityOptions, "schema">): (ctor: Function) => void;
+export function PublicEntity(tableName?: string, options?: Omit<EntityOptions, "schema">) {
+  return Entity(tableName, { ...options, schema: "public" });
 }
 
 function assertNonEmptyColumnOptions(o: ColumnOptions): void {
@@ -547,29 +664,41 @@ export function IsNotColumn(): PropertyDecorator {
   };
 }
 
-/** Unique constraint options for composite unique indexes. */
-export type UniqueOptions = {
-  /**
-   * Composite unique index name. Columns sharing the same `indexName` form a
-   * composite unique index, ordered by `orderPriority` (ascending).
-   * If omitted, the column gets a single-column unique index (legacy behavior).
-   */
-  indexName?: string;
-  /**
-   * Order priority within a composite unique index (0-based).
-   * Lower values come first in the index. Only meaningful when `indexName` is set.
-   */
-  orderPriority?: number;
+/** Class-level unique-index declaration — the ONLY place index options
+ *  live. Referenced by `@Unique(name, order)` column memberships.
+ *
+ *  Enforcement (construction-time, in `getEntityPersistenceMeta`):
+ *  - a `@Unique(name, …)` membership with no matching `@UniqueIndex({name})`
+ *    throws — index options cannot be smuggled per-column;
+ *  - a `@UniqueIndex` with zero member columns throws;
+ *  - `where` may only reference the entity's own columns, and must NOT
+ *    contain a `deleted_at` predicate (declare `aliveOnly` instead);
+ *  - `aliveOnly` is only meaningful on Deletable entities. */
+export type UniqueIndexSpec = {
+  /** Index name — deterministic, matches `pg_indexes.indexname`. */
+  name: string;
+  /** Partial-index predicate (raw SQL, entity columns only, no `deleted_at`
+   *  terms — those come from `aliveOnly`). Emitted as `(where) AND (deleted_at
+   *  IS NULL)` when aliveOnly also resolves. */
+  where?: string;
+  /** Append `AND deleted_at IS NULL` — DEFAULT true on Deletable entities
+   *  (a full unique would let a tombstone block re-creation of the value
+   *  forever). Explicit `false` opts out; explicit `true` on a non-Deletable
+   *  entity is a construction error (no `deleted_at` column to predicate). */
+  aliveOnly?: boolean;
   /** PG15+ `NULLS NOT DISTINCT` — NULL members of the unique group are
-   *  treated as equal (they conflict instead of stacking). Declare on any
-   *  member of the group; convention is the order-0 member. */
+   *  treated as equal (they conflict instead of stacking). */
   nullsNotDistinct?: boolean;
 };
 
-/** Unique constraint (PostgreSQL: unique index in generated patches). */
+/** Unique constraint (PostgreSQL: unique index in generated patches).
+ *
+ *  Bare `@Unique()` → auto-named single-column index `<table>_<column>_uq`.
+ *  `@Unique(name, order)` → membership in the class-level `@UniqueIndex({name})`
+ *  declaration (accumulates — one column may join N indexes). */
 export function Unique(): PropertyDecorator;
-export function Unique(indexName: string, orderPriority: number, opts?: UniqueOptions): PropertyDecorator;
-export function Unique(indexName?: string, orderPriority?: number, opts?: UniqueOptions): PropertyDecorator {
+export function Unique(indexName: string, orderPriority: number): PropertyDecorator;
+export function Unique(indexName?: string, orderPriority?: number): PropertyDecorator {
   return function (target: object, propertyKey: string | symbol) {
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
@@ -578,14 +707,23 @@ export function Unique(indexName?: string, orderPriority?: number, opts?: Unique
     // @Column({ nullable: true }) wins (e.g. composite uniques where a
     // member is genuinely nullable, like ai_models.dtype).
     if (col.nullable === undefined) col.nullable = false;
-    const effName = indexName ?? opts?.indexName;
-    const effOrder = orderPriority ?? opts?.orderPriority;
-    if (effName !== undefined) {
-      col.uniqueIndexName = effName;
-      col.uniqueIndexOrder = effOrder ?? 0;
+    if (indexName !== undefined) {
+      col.uniques ??= [];
+      const existing = col.uniques.find((u) => u.name === indexName);
+      if (existing) existing.order = orderPriority ?? 0;
+      else col.uniques.push({ name: indexName, order: orderPriority ?? 0 });
     }
-    if (opts?.nullsNotDistinct !== undefined) col.uniqueNullsNotDistinct = opts.nullsNotDistinct;
+  };
+}
 
+/** Class-level unique-index declaration — see {@link UniqueIndexSpec}.
+ *  Repeatable: one decorator per index. */
+export function UniqueIndex(spec: UniqueIndexSpec): (ctor: Function) => void {
+  return function <T extends Function>(ctor: T): T {
+    if (!spec?.name) throw new TypeError("@UniqueIndex requires a name");
+    const m = ensureMeta(ctor);
+    (m.uniqueIndexes ??= new Map()).set(spec.name, { ...spec });
+    return ctor;
   };
 }
 
@@ -683,6 +821,82 @@ export function Ref(entity: string): PropertyDecorator {
   };
 }
 
+/** Sequence binding declaration — DATA, not logic. The write payload of a
+ *  seq-bound column is never a literal string: it carries a sequence
+ *  directive resolved to a literal inside the write transaction (the row
+ *  and the counter commit or roll back together — atomic by construction).
+ *
+ *  The binding's DEFAULT sequence is never authored: it derives at
+ *  persistence-meta resolution as `<table>.<field>` (the bound NAME —
+ *  display data) plus its DETERMINISTIC uuid (`sequenceBoundUuid`), so
+ *  the bound row's identity is known before the row exists and
+ *  materialization is idempotent on `ON CONFLICT (uuid)`. A different
+ *  sequence is still reachable per-write via the `{seq:{uuid}}`
+ *  directive — sequences are data, not declarations. */
+/** The authored sequence definition — the canonical type lives in core
+ *  (`sequence.ts`) so the `@SequenceField` decl and the wire directive's
+ *  expr form are ONE shape: `{pattern, step, start, tz?}` — pattern
+ *  validated by `parseSequencePattern`, bigint-only `step`/`start`,
+ *  `tz` an IANA zone or null. */
+export type { SequenceDecl };
+
+/** Deterministic uuid for a self-materialized sequence row — the bound
+ *  name is sha256'd under a fixed namespace and the digest is formatted
+ *  as a uuid (v5-style version/variant bits; NOT RFC 4122 — a private
+ *  deterministic scheme). Any replica derives the same uuid from the
+ *  same seed, so `INSERT … ON CONFLICT ("uuid") DO NOTHING` is
+ *  idempotent without a second functional key. The sequence `name`
+ *  stays display-only. */
+export function sequenceBoundUuid(seed: string): string {
+  const h = createHash("sha256").update(`primebrick.sequence|${seed}`, "utf8").digest("hex");
+  return (
+    `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-` +
+    `${((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`
+  );
+}
+
+/** The resolution-time shape: the authored decl plus the derived bound
+ *  identity — `name` = `<table>.<field>` (display data, never an
+ *  address), `uuid` = `sequenceBoundUuid(name)` (the deterministic row
+ *  identity). Carried on persistence column meta and served-meta
+ *  `seq.uuid`/`seq.name`. */
+export type SequenceBound = SequenceDecl & { uuid: string; name: string };
+
+/** Marks a plain text column as sequence-bound — see {@link SequenceDecl}.
+ *  Accepted shape (positive form): a physical, business-owned text/varchar
+ *  column — not a key, not a ref, not a partition/retention/audit/deletable/
+ *  synchronizable/clone facet, not a foreign key — carrying a valid
+ *  sequence definition. Anything outside that shape is a boot error at
+ *  declaration or resolution time, never a runtime surprise. */
+export function SequenceField(decl: SequenceDecl): PropertyDecorator {
+  return function (target: object, propertyKey: string | symbol) {
+    const ctor = (target as { constructor: Function }).constructor;
+    const where = `${ctor.name}.${String(propertyKey)}`;
+    if (typeof decl !== "object" || decl === null) {
+      throw new TypeError(`${where}: @SequenceField requires a decl {pattern, step, start, tz?}`);
+    }
+    try {
+      parseSequencePattern(decl.pattern);
+    } catch (e) {
+      throw new TypeError(`${where}: @SequenceField pattern is invalid — ${(e as Error).message}`);
+    }
+    if (typeof decl.step !== "bigint" || decl.step === 0n) {
+      throw new TypeError(`${where}: @SequenceField step must be a non-zero bigint`);
+    }
+    if (typeof decl.start !== "bigint") {
+      throw new TypeError(`${where}: @SequenceField start must be a bigint`);
+    }
+    if (decl.tz !== undefined && decl.tz !== null) {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: decl.tz });
+      } catch {
+        throw new TypeError(`${where}: @SequenceField tz must be an IANA zone or null`);
+      }
+    }
+    touchColumn(ctor, propertyKey).seqBound = { ...decl };
+  };
+}
+
 /** Marks an entity as having an audit trail table.
  *  `options.retention` overrides the audit-table retention window —
  *  default `"12 months"` (audit is a bounded operational cost, not an
@@ -759,21 +973,54 @@ export function Retention(duration: string): PropertyDecorator {
 }
 
 /**
- * Declares a secondary (non-unique) index. Bare `@Index()` → single-column
- * btree auto-named `<table>_<col>_idx`. Same `name` on multiple columns →
- * composite index ordered by `order`. Supports every PG access method:
- * `@Index({ using: 'hnsw', opclass: 'vector_cosine_ops' })`,
- * `@Index({ where: 'deleted_at IS NULL' })` for partial indexes.
- * Unique indexes stay on `@Unique()`.
+ * Declares a secondary (non-unique) index — two forms:
+ *
+ * **Property**: bare `@Index()` → single-column btree auto-named
+ * `<table>_<col>_idx`; same `name` on multiple columns → composite ordered
+ * by `order`; index-level options (`using`/`opclass`/`where`/`with`) must be
+ * identical on every member; `sort`/`nulls` are per-member.
+ *
+ * **Class**: `@Index({ name, columns: [...], ... })` — the spec form for
+ * indexes on mixin-owned columns (`created_at`, `deleted_at`, …) or
+ * spec-owned composites; `columns` order IS the index order and each member
+ * may carry `sort`/`nulls`. A spec name must not collide with a
+ * property-level group.
+ *
+ * Unique indexes stay on `@Unique()`/`@UniqueIndex()`.
  */
+export function Index(spec: IndexSpec): ClassDecorator;
 export function Index(): PropertyDecorator;
 export function Index(opts: IndexOptions): PropertyDecorator;
-export function Index(opts?: IndexOptions): PropertyDecorator {
-  return function (target: object, propertyKey: string | symbol) {
+export function Index(opts?: IndexOptions | IndexSpec): ClassDecorator | PropertyDecorator {
+  const isSpec = opts !== undefined && Array.isArray((opts as IndexSpec).columns);
+  return function (target: object | Function, propertyKey?: string | symbol): unknown {
+    if (propertyKey === undefined) {
+      // class target — spec form
+      if (!isSpec) {
+        throw new TypeError(
+          "class-level @Index requires a spec with `columns` — property options belong on columns",
+        );
+      }
+      const spec = opts as IndexSpec;
+      if (!spec.name) throw new TypeError("@Index spec requires a name");
+      if (spec.columns.length === 0) throw new TypeError(`@Index("${spec.name}") declares no columns`);
+      const m = ensureMeta(target as Function);
+      if ((m.indexSpecs ??= new Map()).has(spec.name)) {
+        throw new TypeError(`@Index spec "${spec.name}" is declared twice`);
+      }
+      m.indexSpecs.set(spec.name, { ...spec });
+      return target;
+    }
+    // property target — membership form
+    if (isSpec) {
+      throw new TypeError(
+        "property-level @Index does not take `columns` — a spec with columns belongs on the class",
+      );
+    }
     const ctor = (target as { constructor: Function }).constructor;
     const col = touchColumn(ctor, propertyKey);
-    col.indexOpts = opts ?? {};
-
+    col.indexOpts = (opts ?? {}) as IndexOptions;
+    return undefined;
   };
 }
 
@@ -1023,12 +1270,10 @@ export type EntityPersistenceMeta = {
       sqlName: string;
       isKey: boolean;
       isUnique: boolean;
-      /** Composite unique index name (if part of a composite unique). */
-      uniqueIndexName?: string;
-      /** Order priority within a composite unique index (0-based). */
-      uniqueIndexOrder?: number;
-      /** Composite unique treats NULLs as equal (PG15+ `NULLS NOT DISTINCT`). */
-      uniqueNullsNotDistinct?: boolean;
+      /** Named unique-index memberships (`@Unique(name, order)` accumulated
+       *  — the column may join N indexes; options resolve via the class-level
+       *  `@UniqueIndex({name})` decl in `uniqueIndexes`). */
+      uniques?: { name: string; order: number }[];
       nullable?: boolean;
       /** `nullable` was explicitly declared via `@Column({ nullable })` —
        *  decorator-imposed values and the implicit `?? false` fallback are
@@ -1052,6 +1297,9 @@ export type EntityPersistenceMeta = {
       cloneType?: CloneFieldType;
       /** `@Ref("entity")` — served-meta ref target (meta-only, no DDL FK). */
       refEntity?: string;
+      /** `@SequenceField` — resolved binding: authored decl + derived
+       *  default code `<table>.<field>`. */
+      seqBound?: SequenceBound;
       castInJoin?: string;
       /** `@Partition()` — RANGE partition key marker + options. */
       isPartition?: boolean;
@@ -1090,6 +1338,10 @@ export type EntityPersistenceMeta = {
     refColumn: string;
     parentRefColumn: string;
   };
+  /** Resolved `@UniqueIndex` class-level declarations — keyed by name; the
+   *  single source for unique-index options (`where`/`aliveOnly`/
+   *  `nullsNotDistinct`). Column `uniques[]` memberships reference these. */
+  uniqueIndexes?: UniqueIndexSpec[];
   /** Resolved index declarations — from `@Index()` columns, grouped + ordered. */
   indexes?: {
     name: string;
@@ -1097,6 +1349,15 @@ export type EntityPersistenceMeta = {
     using: IndexMethod;
     opclass?: string;
     where?: string;
+    /** Per-column sort directions parallel to `columns` — present when any
+     *  member declares `sort` (absent members resolve `"asc"`). */
+    sort?: ("asc" | "desc")[];
+    /** Per-column NULL placement parallel to `columns` — present when any
+     *  member declares `nulls`; absent members resolve the direction
+     *  default (asc→last, desc→first). */
+    nulls?: ("first" | "last")[];
+    /** Index storage parameters — from `@Index({ with })`. */
+    with?: Record<string, string | number>;
     /** Raw SQL expression keys emitted verbatim (parenthesized) BEFORE the
      *  plain columns — produced by the `@Relation` pair-unique derivation
      *  (`LEAST/GREATEST` unordered-pair keys); never authored by hand. */
@@ -1150,7 +1411,10 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
   for (const [propKey, reg] of colMap) {
     const propertyKey = String(propKey);
     // Semantic defaults — decorator/type driven, never name driven:
-    //   @AuditableField(CREATED_AT|UPDATED_AT) → now()
+    //   @AuditableField(CREATED_AT|UPDATED_AT) → clock_timestamp()
+    //   @AuditableField(CREATED_BY|UPDATED_BY) → 'system'  (a write that
+    //     somehow lacks actor attribution blames 'system' — the safety net
+    //     the physical schema has carried since 0001, now entity-declared)
     //   @AuditableField(VERSION)               → 1
     //   resolved type `uuid` on a key/unique col → gen_random_uuid() (below,
     //   after type resolution — it needs the effective pgType).
@@ -1159,7 +1423,12 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
         reg.auditableType === AuditableFieldType.CREATED_AT ||
         reg.auditableType === AuditableFieldType.UPDATED_AT
       ) {
-        reg.defaultSql = "now()";
+        reg.defaultSql = "clock_timestamp()";
+      } else if (
+        reg.auditableType === AuditableFieldType.CREATED_BY ||
+        reg.auditableType === AuditableFieldType.UPDATED_BY
+      ) {
+        reg.defaultSql = "'system'";
       } else if (reg.auditableType === AuditableFieldType.VERSION) {
         reg.defaultSql = "1";
       }
@@ -1181,7 +1450,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (
       reg.defaultSql === undefined &&
       inferredPgType === "uuid" &&
-      (reg.isKey || reg.isUnique)
+      (reg.isKey || (reg.isUnique && reg.uniques === undefined))
     ) {
       // uuid key/unique columns always default to uuidv7() — the
       // canonical generated identity (PG18 native, time-ordered).
@@ -1205,9 +1474,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
       inferredPgType,
       usePostgresIdentity,
     };
-    if (reg.uniqueIndexName !== undefined) entry.uniqueIndexName = reg.uniqueIndexName;
-    if (reg.uniqueIndexOrder !== undefined) entry.uniqueIndexOrder = reg.uniqueIndexOrder;
-    if (reg.uniqueNullsNotDistinct !== undefined) entry.uniqueNullsNotDistinct = reg.uniqueNullsNotDistinct;
+    if (reg.uniques !== undefined) entry.uniques = [...reg.uniques];
     if (reg.pgType !== undefined) entry.pgType = reg.pgType;
     // NOT NULL by default: `design:type` inference was removed because it is
     // transpiler-dependent (esbuild/tsx never emits it; bun collapses unions).
@@ -1230,6 +1497,33 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     if (reg.isClone !== undefined) entry.isClone = reg.isClone;
     if (reg.cloneType !== undefined) entry.cloneType = reg.cloneType;
     if (reg.refEntity !== undefined) entry.refEntity = reg.refEntity;
+    if (reg.seqBound !== undefined) {
+      // Positive-form enforcement at resolution: a seq-bound column is a
+      // plain business-owned text/varchar column — nothing else.
+      const facet = reg.refEntity !== undefined ? "ref"
+        : reg.foreignKey !== undefined ? "foreignKey"
+        : reg.isKey ? "key"
+        : reg.isPartition ? "partition"
+        : reg.isRetention ? "retention"
+        : reg.isAuditable ? "auditable"
+        : reg.isDeletable ? "deletable"
+        : reg.isSynchronizable ? "synchronizable"
+        : reg.isClone ? "clone"
+        : undefined;
+      if (facet !== undefined) {
+        throw new TypeError(
+          `${entityClassName}.${propertyKey}: @SequenceField on a ${facet} column — ` +
+            `seq-bound columns are plain business text columns`,
+        );
+      }
+      if (inferredPgType !== "text" && !inferredPgType.startsWith("varchar")) {
+        throw new TypeError(
+          `${entityClassName}.${propertyKey}: @SequenceField requires text/varchar storage, got "${inferredPgType}"`,
+        );
+      }
+      const boundName = `${tableName}.${reg.sqlName}`;
+      entry.seqBound = { ...reg.seqBound, name: boundName, uuid: sequenceBoundUuid(boundName) };
+    }
     if (reg.castInJoin !== undefined) entry.castInJoin = reg.castInJoin;
     if (reg.isPartition !== undefined) entry.isPartition = reg.isPartition;
     if (reg.partitionOpts !== undefined) entry.partitionOpts = reg.partitionOpts;
@@ -1283,12 +1577,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     }
     // PostgreSQL: every unique constraint on a partitioned table must
     // contain the partition key. Single-column uniques are a group of one.
-    const groups = new Map<string, Set<string>>();
-    for (const c of Object.values(columns)) {
-      if (!c.isUnique) continue;
-      const g = c.uniqueIndexName ?? `__single__:${c.sqlName}`;
-      (groups.get(g) ?? groups.set(g, new Set()).get(g)!).add(c.sqlName);
-    }
+    const groups = collectUniqueMemberGroups(columns);
     for (const [group, cols] of groups) {
       if (!cols.has(pc.sqlName)) {
         throw new TypeError(
@@ -1364,37 +1653,126 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
   // ── @Index resolution: group by name (auto: <table>_<col>_idx), order by `order` ──
   const indexGroups = new Map<
     string,
-    { cols: { sqlName: string; order: number }[]; using: IndexMethod; opclass?: string; where?: string }
+    {
+      cols: { sqlName: string; order: number; sort?: "asc" | "desc"; nulls?: "first" | "last" }[];
+      using: IndexMethod;
+      opclass?: string;
+      where?: string;
+      with?: Record<string, string | number>;
+    }
   >();
   for (const reg of colMap.values()) {
     if (!reg.indexOpts) continue;
     const o = reg.indexOpts;
     const name = o.name ?? `${tableName}_${reg.sqlName}_idx`;
-    const g = indexGroups.get(name) ?? { cols: [], using: o.using ?? "btree", opclass: o.opclass, where: o.where };
+    const g =
+      indexGroups.get(name) ??
+      { cols: [], using: o.using ?? "btree", opclass: o.opclass, where: o.where, with: o.with };
     if (
       (o.using !== undefined && o.using !== g.using) ||
       (o.where !== undefined && o.where !== g.where) ||
-      (o.opclass !== undefined && o.opclass !== g.opclass)
+      (o.opclass !== undefined && o.opclass !== g.opclass) ||
+      (o.with !== undefined &&
+        (g.with === undefined ||
+          !Object.entries(o.with).every(([k, v]) => String(v) === String(g.with![k])) ||
+          Object.keys(o.with).length !== Object.keys(g.with).length))
     ) {
       throw new TypeError(
-        `${entityClassName}.${reg.sqlName}: @Index group "${name}" has inconsistent using/opclass/where across its columns — declare them identically on every member`,
+        `${entityClassName}.${reg.sqlName}: @Index group "${name}" has inconsistent using/opclass/where/with across its columns — declare them identically on every member`,
       );
     }
     if (o.using !== undefined) g.using = o.using;
     if (o.opclass !== undefined) g.opclass = o.opclass;
     if (o.where !== undefined) g.where = o.where;
-    g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0 });
+    if (o.with !== undefined) g.with = o.with;
+    g.cols.push({ sqlName: reg.sqlName, order: o.order ?? 0, sort: o.sort, nulls: o.nulls });
     indexGroups.set(name, g);
   }
   let indexes = indexGroups.size
-    ? [...indexGroups.entries()].map(([name, g]) => ({
-        name,
-        columns: g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName)).map((c) => c.sqlName),
-        using: g.using,
-        ...(g.opclass !== undefined ? { opclass: g.opclass } : {}),
-        ...(g.where !== undefined ? { where: g.where } : {}),
-      }))
+    ? [...indexGroups.entries()].map(([name, g]) => {
+        const cols = g.cols.sort((a, b) => a.order - b.order || a.sqlName.localeCompare(b.sqlName));
+        return {
+          name,
+          columns: cols.map((c) => c.sqlName),
+          using: g.using,
+          ...(g.opclass !== undefined ? { opclass: g.opclass } : {}),
+          ...(g.where !== undefined ? { where: g.where } : {}),
+          ...(cols.some((c) => c.sort !== undefined)
+            ? { sort: cols.map((c) => c.sort ?? ("asc" as const)) }
+            : {}),
+          // NULL placement resolved against each column's direction
+          // (PG defaults: asc→last, desc→first) — the array is always
+          // complete once any member declares `nulls`.
+          ...(cols.some((c) => c.nulls !== undefined)
+            ? {
+                nulls: cols.map(
+                  (c) => c.nulls ?? ((c.sort ?? "asc") === "desc" ? ("first" as const) : ("last" as const)),
+                ),
+              }
+            : {}),
+          ...(g.with !== undefined ? { with: g.with } : {}),
+        };
+      })
     : undefined;
+
+  // ── class-level @Index specs — columns resolve from the merged column
+  //    map so mixin-owned columns (created_at, deleted_at, …) can carry
+  //    index membership without a re-declared property. ────────────────
+  const indexSpecDecls = new Map<string, IndexSpec>();
+  for (const m of collectMetaChain(ctor)) {
+    if (m.indexSpecs) for (const [n, s] of m.indexSpecs) indexSpecDecls.set(n, s);
+  }
+  if (indexSpecDecls.size) {
+    const columnNames = new Set(Object.keys(columns));
+    const specIndexes = [...indexSpecDecls.values()].map((spec) => {
+      if (indexGroups.has(spec.name)) {
+        throw new TypeError(
+          `${entityClassName}: @Index spec "${spec.name}" collides with a property-level @Index group — ` +
+            `one index is owned by either a class spec or column members, not both`,
+        );
+      }
+      const cols = spec.columns.map((entry) => {
+        const member = typeof entry === "string" ? { name: entry } : entry;
+        const reg = colMap.get(member.name);
+        if (!reg) {
+          throw new TypeError(
+            `${entityClassName}: @Index spec "${spec.name}" column "${member.name}" is not a column of the entity`,
+          );
+        }
+        return { sqlName: reg.sqlName, sort: member.sort, nulls: member.nulls };
+      });
+      if (spec.where !== undefined) {
+        const unknownCols = [...spec.where.matchAll(/\b[a-z_][a-z0-9_]*\b/gi)]
+          .map((m2) => m2[0].toLowerCase())
+          .filter((id) => !WHERE_KEYWORDS.has(id) && !columnNames.has(id));
+        if (unknownCols.length) {
+          throw new TypeError(
+            `${entityClassName}: @Index spec "${spec.name}".where references column(s) not on the entity: ` +
+              `${[...new Set(unknownCols)].join(", ")}`,
+          );
+        }
+      }
+      return {
+        name: spec.name,
+        columns: cols.map((c) => c.sqlName),
+        using: spec.using ?? ("btree" as IndexMethod),
+        ...(spec.opclass !== undefined ? { opclass: spec.opclass } : {}),
+        ...(spec.where !== undefined ? { where: spec.where } : {}),
+        ...(cols.some((c) => c.sort !== undefined)
+          ? { sort: cols.map((c) => c.sort ?? ("asc" as const)) }
+          : {}),
+        ...(cols.some((c) => c.nulls !== undefined)
+          ? {
+              nulls: cols.map(
+                (c) => c.nulls ?? ((c.sort ?? "asc") === "desc" ? ("first" as const) : ("last" as const)),
+              ),
+            }
+          : {}),
+        ...(spec.with !== undefined ? { with: spec.with } : {}),
+      };
+    });
+    indexes = [...(indexes ?? []), ...specIndexes];
+  }
 
   // ── @Relation derived pair-unique index ─────────────────────────────
   // The unordered-pair constraint is DERIVED from the facet — never
@@ -1469,6 +1847,63 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     });
   }
 
+  // ── @UniqueIndex merge + construction enforcement ──────────────────────
+  // Options live ONLY on the class decl; column `@Unique(name)` entries are
+  // pure membership+order. Both directions are validated here so an
+  // undeclared/memberless index can never reach DDL emission.
+  const uniqueIndexDecls = new Map<string, UniqueIndexSpec>();
+  for (const m of collectMetaChain(ctor)) {
+    if (m.uniqueIndexes) for (const [n, s] of m.uniqueIndexes) uniqueIndexDecls.set(n, s);
+  }
+  const memberGroups = collectUniqueMemberGroups(columns);
+  const deletable = Object.values(columns).some(
+    (c) => c.deletableType === DeletableFieldType.DELETED_AT,
+  );
+  const columnNames = new Set(Object.keys(columns));
+  for (const [name, spec] of uniqueIndexDecls) {
+    const members = memberGroups.get(name);
+    if (!members || members.size === 0) {
+      throw new TypeError(
+        `${entityClassName}: @UniqueIndex("${name}") declares no member columns — ` +
+          `add @Unique("${name}", <order>) on the participating column(s)`,
+      );
+    }
+    if (spec.where !== undefined) {
+      if (/\bdeleted_at\b/i.test(spec.where)) {
+        throw new TypeError(
+          `${entityClassName}: @UniqueIndex("${name}").where must not reference "deleted_at" — ` +
+            `declare aliveOnly instead (tombstone semantics live in the option, not the predicate)`,
+        );
+      }
+      const unknownCols = [...spec.where.matchAll(/\b[a-z_][a-z0-9_]*\b/gi)]
+        .map((m2) => m2[0].toLowerCase())
+        .filter((id) => !WHERE_KEYWORDS.has(id) && !columnNames.has(id));
+      if (unknownCols.length) {
+        throw new TypeError(
+          `${entityClassName}: @UniqueIndex("${name}").where references column(s) not on the entity: ` +
+            `${[...new Set(unknownCols)].join(", ")} — partial-index predicates may only use the table's own columns`,
+        );
+      }
+    }
+    if (spec.aliveOnly === true && !deletable) {
+      throw new TypeError(
+        `${entityClassName}: @UniqueIndex("${name}").aliveOnly is only meaningful on Deletable entities ` +
+          `(no "deleted_at" column to predicate on)`,
+      );
+    }
+  }
+  for (const c of Object.values(columns)) {
+    for (const u of c.uniques ?? []) {
+      if (!uniqueIndexDecls.has(u.name)) {
+        throw new TypeError(
+          `${entityClassName}.${c.propertyKey}: @Unique("${u.name}") has no matching class-level ` +
+            `@UniqueIndex({name:"${u.name}", …}) declaration — index options (where/aliveOnly/nullsNotDistinct) ` +
+            `are declared once at class level, never per-column`,
+        );
+      }
+    }
+  }
+
   return {
     entityClassName,
     tableSchema: effectiveSchema,
@@ -1481,6 +1916,7 @@ export function getEntityPersistenceMeta(ctor: EntityClass, tableSchema?: string
     auditRetention: inherited((m) => m.auditRetention),
     events: inherited((m) => m.events),
     partitionChildOf,
+    uniqueIndexes: uniqueIndexDecls.size ? [...uniqueIndexDecls.values()] : undefined,
     indexes,
     foreignKeys: foreignKeys.length ? foreignKeys : undefined,
     columns,

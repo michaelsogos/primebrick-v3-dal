@@ -37,6 +37,7 @@
  */
 
 import pg, { type Pool, type PoolClient } from "pg";
+import { logger } from "@primebrick/core";
 
 import { Repository, REPO_INTERNAL } from "../repository/repository.js";
 import {
@@ -84,7 +85,8 @@ export interface DalConfig {
 
   /**
    * Declared schema domain — the ONLY PostgreSQL schemas this service may
-   * touch (from `DATABASE_SCHEMA`). `schemas[0]` is the owned/primary schema
+   * touch (the service's `OWNED_SCHEMAS` const in code — never env).
+   * `schemas[0]` is the owned/primary schema
    * (patch registry, config_entries live here). Entity operations resolving
    * outside this set throw SchemaDomainViolationError. Required.
    */
@@ -267,7 +269,7 @@ export class Dal {
         new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
       ]);
     } catch (err) {
-      console.error("[dal-pg] pool.end() failed during close:", err);
+      logger.error("[dal-pg] pool.end() failed during close", { error: err instanceof Error ? err.message : String(err) });
     } finally {
       this.closed = true;
       this._isClosing = false;
@@ -677,7 +679,7 @@ export class Dal {
         for (const draft of buffered) {
           void this.eventPort
             ?.emit(draft)
-            .catch((err) => console.error("[DAL Entity Event Error]", err));
+            .catch((err) => logger.error("[DAL Entity Event Error]", { error: err instanceof Error ? err.message : String(err) }));
         }
         return result;
       } catch (err) {
@@ -768,6 +770,53 @@ export class Dal {
   ): Promise<PartitionMaintenanceReport> {
     return this.withClient((client) => runPartitionMaintenance(client, entities), options);
   }
+
+  // ─── Sequence revive ─────────────────────────────────────────────────
+
+  /**
+   * Sequence reviver — one transaction: phase A creates the successor of
+   * every expired reviving row (chained until the current generation
+   * owns now), phase B soft-deletes rows whose `switch_at` passed.
+   * Called by the service's `jobs.due.system.<svc>.sequence-revive`
+   * consumer — identical for every service because the builtin
+   * `sequences` table lives in the module's own schema.
+   */
+  async sequenceRevive(spec: {
+    actor: string;
+    now?: Date;
+    only_uuid?: string;
+  }, options?: TimeoutOverrideOptions): Promise<{
+    revived: Array<{ from_uuid: string; to_uuid: string; name: string }>;
+    switched: string[];
+  }> {
+    return this.transaction((tx) => tx.sequenceRevive(spec), options);
+  }
+}
+
+/**
+ * Sequence-revive job factory — the ONE wiring a service passes to
+ * `createMicroservice({ sequenceRevive })`. The builtin `sequences`
+ * table mounts unconditionally with dal-pg, so `needed` is always true
+ * for a dal-backed service (the run short-circuits on an empty due
+ * set); `run` resolves the DAL singleton lazily at fire time, so the
+ * option can be built before `initDal()` runs.
+ */
+export function makeSequenceReviveJob(): {
+  needed: boolean;
+  run: () => Promise<unknown>;
+  i18nNs: () => string;
+} {
+  return {
+    needed: true,
+    run: () => getDal().sequenceRevive({ actor: "system" }),
+    // Same namespace rule as the maintenance twin — the callable's
+    // label keys ride the OWNING schema's translations table (`public`
+    // translates as `app`, every other schema owns itself).
+    i18nNs: () => {
+      const schema = getDal().config.schemas[0];
+      return schema === "public" ? "app" : schema;
+    },
+  };
 }
 
 /**

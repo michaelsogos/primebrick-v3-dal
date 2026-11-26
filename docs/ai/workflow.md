@@ -120,3 +120,69 @@ throwaway probe deleted after it passes.
   exists.
 - Exploratory checks run inside the final spec while it is developed,
   never in scratch files; assertions sharpen as evidence arrives.
+
+## Gitflow gate — every turn that touches a repo
+
+The governed lifecycle in `docs/gitflow.md` is operational, not advisory:
+
+- **Session start / before any branch or merge op** — run
+  `bun ../primebrick-v3-sdk/tools/gitflow.ts audit` in the repo you are
+  about to touch. An orphan (merged-but-unclosed work branch) or an
+  unexpected open work branch is a **STOP**: report and ask the user.
+- **Every commit is pushed immediately** — origin is always aligned.
+- **Closing is only via `gitflow finish`** — raw merge/delete commands
+  on feature/release/hotfix branches are forbidden.
+
+## Plan-first — MANDATORY for every governed task
+
+Any request in this workflow's scope (feature, refactor, debt, bugfix)
+runs under an open plan file in `primebrick-workspace/ai-plans/` — the
+plan is the ledger of record and the memory that survives the session.
+
+- **No plan exists → create it in TIC, before any TOC work.** Starting
+  execution without a plan file is a protocol violation.
+- **The turn names its governing plan** — which file and which task rows
+  it executes. Work outside the plan's rows is added to the table first
+  or deferred — never shipped unrecorded.
+- **A deviation from the plan is a STOP** — update the plan to the new
+  shared direction first; silent drift is the violation.
+- **The ledger is updated before the turn ends** — ✅ with commit
+  hashes, ⏳ with what remains (see "Plan status" below).
+
+## Per-turn operating discipline — pinned, every turn
+
+These obligations apply to EVERY turn — analysis, plan, or code — not
+once per session. A turn that skips any of them is a protocol violation.
+
+- **Doc re-read + doc-gap evaluation** — re-read this file and the
+  governing docs of the touched domain each turn. When a doc-vs-code
+  divergence or a doc gap surfaces, evaluate closing it in the same
+  turn — a known gap carried silently is drift by construction.
+- **Definitive tests only** — every verification lands as a final,
+  persistent spec in its canonical location. E2E involving the FE
+  always runs against the real dev stack and is committed as the
+  regression spec — never a throwaway probe.
+- **Empirical or nothing** — zero assumptions. If a claim is checkable
+  (run it, query it, read it), it is checked before it is stated.
+  "Should be" is not evidence.
+- **No workarounds** — never ship a workaround for a governed
+  contract. If the governed path is blocked, surface the block; the
+  contingency is unblocking the block, never a parallel mechanism.
+- **Anomalies are a STOP** — any unexpected behavior, result, or
+  evidence contradicting the model halts the turn and is explained to
+  the user before continuing. An anomaly absorbed silently is a bug
+  shipped silently.
+
+## Plan status — update obligation, every turn
+
+A turn that completes work governed by a plan file MUST update that
+plan's status table before the turn ends — the plan is the ledger of
+record; a stale ⏳ on a shipped task is a doc-vs-code divergence.
+
+- Mark each completed task ✅ with the commit hash(es) that shipped it.
+- Propagate to parent/linked plans: when a task satisfies a
+  prerequisite declared in another plan (e.g. "migrated everywhere"),
+  record the fulfillment there too — gates are re-evaluated, not
+  re-discovered.
+- A plan whose table disagrees with repo state blocks new TOC work on
+  that plan until reconciled.

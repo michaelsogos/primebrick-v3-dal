@@ -42,7 +42,7 @@ describe("Dal.beginTransaction — deferred single-statement CTE tx", () => {
     await tx.commit();
     expect(a.value.name).toBe("alpha");
     expect(a.value.uuid).toBeTruthy();
-    expect(a.value.version).toBe(1);
+    expect(a.value.version).toBe(1n);
     expect(a.value.created_at).toBeInstanceOf(Date);
     expect(a.value.created_by).toBe(ACTOR);
     expect(await dal.count(SimpleTestEntity)).toBe(1n);
@@ -106,7 +106,7 @@ describe("Dal.beginTransaction — deferred single-statement CTE tx", () => {
     await expect(tx.commit()).rejects.toMatchObject({ code: "ERR01" });
     const reread = await dal.findByUUID(SimpleTestEntity, row.uuid);
     expect(reread!.name).toBe("v1");
-    expect(reread!.version).toBe(1);
+    expect(reread!.version).toBe(1n);
   });
 
   it("add + onConflict: 'ignore' resolves Deferred to undefined on conflict", async () => {

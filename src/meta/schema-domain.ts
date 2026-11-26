@@ -1,7 +1,7 @@
 /**
  * Schema sovereignty domain — the set of PostgreSQL schemas a service is
- * allowed to touch, declared via `DATABASE_SCHEMA` and pushed here by the
- * `Dal` constructor (`getDal({ schemas })`).
+ * allowed to touch, declared in code (the service's `OWNED_SCHEMAS` const)
+ * and pushed here by the `Dal` constructor (`getDal({ schemas })`).
  *
  * Enforcement points:
  * - boot: `assertEntitySchemaDomain` (schema-domain-assert.ts) — every

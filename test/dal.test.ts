@@ -192,7 +192,7 @@ describe("Dal gateway — pool ownership, type parsers, onConnect", () => {
     expect(inserted.uuid).toBeDefined();
     expect(inserted.name).toBe("Via Dal");
     expect(inserted.created_by).toBe("dal-user");
-    expect(inserted.version).toBe(1);
+    expect(inserted.version).toBe(1n);
   });
 
   it("Dal.find: finds by filter", async () => {

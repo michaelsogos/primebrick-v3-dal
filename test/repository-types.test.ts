@@ -293,8 +293,8 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
 
       const found = await repo.findByUUID(TypeTestEntity, added.uuid);
       expect(found).not.toBeNull();
-      expect(found!.numeric_col).toBe(123.45);
-      expect(typeof found!.numeric_col).toBe("number");
+      expect(String(found!.numeric_col)).toBe("123.45");
+      expect(found!.numeric_col.constructor.name).toBe("Decimal");
     });
 
     it("numeric_col(15,2): large value within safe integer range", async () => {
@@ -317,7 +317,7 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
 
       const found = await repo.findByUUID(TypeTestEntity, added.uuid);
       expect(found).not.toBeNull();
-      expect(found!.numeric_col).toBeCloseTo(99999999999.99, 2);
+      expect(String(found!.numeric_col)).toBe("99999999999.99");
     });
 
     it("big_numeric_col(38,0): returns as string (overflows Number)", async () => {
@@ -341,8 +341,8 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
 
       const found = await repo.findByUUID(TypeTestEntity, added.uuid);
       expect(found).not.toBeNull();
-      expect(typeof found!.big_numeric_col).toBe("string");
-      expect(found!.big_numeric_col).toBe(bigValue);
+      expect(found!.big_numeric_col.constructor.name).toBe("Decimal");
+      expect(String(found!.big_numeric_col)).toBe(bigValue);
     });
 
     it("decimal_col(10,4): returns as number", async () => {
@@ -365,8 +365,8 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
 
       const found = await repo.findByUUID(TypeTestEntity, added.uuid);
       expect(found).not.toBeNull();
-      expect(found!.decimal_col).toBe(123.4567);
-      expect(typeof found!.decimal_col).toBe("number");
+      expect(String(found!.decimal_col)).toBe("123.4567");
+      expect(found!.decimal_col.constructor.name).toBe("Decimal");
     });
   });
 
@@ -564,12 +564,12 @@ describe("Repository — type mapping matrix (TypeTestEntity)", () => {
       expect(row.bool_col).toBe(true);
       expect(row.varchar_col).toBe("full row");
       expect(row.text_col).toBe("text value");
-      expect(row.numeric_col).toBe(987.65);
-      expect(typeof row.numeric_col).toBe("number");
-      expect(typeof row.big_numeric_col).toBe("string");
-      expect(row.big_numeric_col).toBe("99999999999999999999999999999999999999");
-      expect(row.decimal_col).toBe(12.3456);
-      expect(typeof row.decimal_col).toBe("number");
+      expect(String(row.numeric_col)).toBe("987.65");
+      expect(row.numeric_col.constructor.name).toBe("Decimal");
+      expect(row.big_numeric_col.constructor.name).toBe("Decimal");
+      expect(String(row.big_numeric_col)).toBe("99999999999999999999999999999999999999");
+      expect(String(row.decimal_col)).toBe("12.3456");
+      expect(row.decimal_col.constructor.name).toBe("Decimal");
       expect(row.timestamp_col).toBeInstanceOf(Date);
       expect(row.timestamp_col!.toISOString()).toBe("2024-03-20T08:15:30.000Z");
       expect(row.date_col).toBeInstanceOf(Date);

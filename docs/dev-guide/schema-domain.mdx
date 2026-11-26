@@ -1,0 +1,71 @@
+---
+title: Schema domain
+description: OWNED_SCHEMAS is the single source of schema identity — declared in code, enforced at construction, never injectable from env.
+---
+
+# Schema domain
+
+Every service owns a **closed set of PostgreSQL schemas** — its *schema
+domain*. The domain is declared **once, in code**, and every consumer
+(pool `search_path`, entity pins, the service-registry ownership claim,
+the drift-gate CLI) reads it from that same const. There is no second
+source and no env override — schema identity is part of the service
+binary, not of its deployment.
+
+## `OWNED_SCHEMAS` — the single source
+
+Each service declares its domain in `src/db/dal.ts` (the backend uses the
+leaf module `src/db/owned-schemas.ts`, so scripts can import it without
+pulling the gateway):
+
+```ts
+export const OWNED_SCHEMAS = ["crm"] as const;
+```
+
+That one const feeds **every** schema-sensitive surface:
+
+| Consumer | How it reads `OWNED_SCHEMAS` |
+|---|---|
+| `getDal({ schemas })` | `schemas: [...OWNED_SCHEMAS]` — pool `search_path` + `configureSchemaDomain` guard |
+| `createMicroservice({ schemas })` | `schemas: OWNED_SCHEMAS` — feeds `own_schemas` (service-registry ownership claim), the `dbPatches` migration domain, the config log |
+| `makeServiceRoutes({ schemas })` | `schemas` ctx → builtin entity decls (sequences, audit partitions) resolve onto the primary schema |
+| `db:check` / `db:meta:compare` | wrapper scripts pass `--schema "$(OWNED_SCHEMAS join ',')"` to `primebrick-db` — the CLI has **no env fallback** |
+| `database-patch-apply.ts` | `runMigrations({ schemas: OWNED_SCHEMAS })` |
+
+`OWNED_SCHEMAS[0]` is the **primary** schema — the default mount point
+for un-pinned entities and builtins. Reordering the array changes the
+primary schema: that is a deliberate entity-relocation decision
+(a Phase-3-style migration), never a config tweak.
+
+## Closed domain — what is legal
+
+- `@Entity()` (no pin) → mounts on `OWNED_SCHEMAS[0]`.
+- `@Entity({ schema: "x" })` → legal only if `"x" ∈ OWNED_SCHEMAS`;
+  anything else throws `SchemaDomainViolationError` at `getDal()` (boot
+  guard) and again on every entity operation (runtime guard), before any
+  SQL is built.
+- `@PublicEntity` → pin `public`, self-limiting: legal only when
+  `public ∈ OWNED_SCHEMAS`.
+- `@TranslationEntity` → purpose-bound pin `translations` + compile-gate
+  (`TranslationEntityBase`) — the capability pin is not reusable.
+
+## `DATABASE_SCHEMA` is a reserved violation
+
+`assertDbEnv` returns `{ url }` only. If `DATABASE_SCHEMA` is present in
+the process env (`.env`, docker env, compose `environment:`) it is a
+**boot violation** — the process refuses to start. Docker can configure
+where the database *is* (`DATABASE_URL`), never which schemas the service
+*owns*.
+
+## First-boot guard
+
+The migration engine refuses to run against a schema whose
+`<schema>.primebrick_database_patches` registry is absent or empty,
+unless `firstBoot: true` is passed (`primebrick-db apply --first-boot`,
+or the `dbPatches`/`MigrationEngine` option). A wrong schema name
+otherwise migrates a pristine schema into a second phantom installation
+while the real data sits orphaned. A genuine first install opts in
+explicitly; everything else fails closed.
+
+See [Migrations](./migrations) for the engine/CLI contract and
+[Entities](./entities) for pin semantics.

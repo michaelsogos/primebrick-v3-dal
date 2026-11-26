@@ -81,6 +81,12 @@ export class TypeMatrixEntity {
   @Column({ nullable: false })
   flag!: boolean;
 
+  /** Optional boolean — internally union(true,false,undefined): the
+   *  extractor must still resolve it to `boolean` (a real bug bit here:
+   *  the union-rest check left length 2 and the prop fell to unmappable). */
+  @Column({ nullable: true })
+  flag_opt?: boolean;
+
   // ── date & time ──────────────────────────────────────────────────
   @Column({ nullable: false })
   ts!: Date;
@@ -151,7 +157,7 @@ export class TypeMatrixEntity {
   created_at!: Date;
 
   @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
+  version!: bigint;
 
   @DeletableField(DeletableFieldType.DELETED_AT)
   deleted_at?: Date;

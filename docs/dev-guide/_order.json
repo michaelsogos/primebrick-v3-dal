@@ -10,10 +10,12 @@
     "repository-pattern",
     "entity-service",
     "connections",
+    "schema-domain",
     "audit-trail",
     "partitioning",
     "optimistic-lock",
     "clone",
+    "sequences",
     "migrations",
     "changelog",
     "api-reference"

@@ -104,7 +104,7 @@ export class BenchPrimitivesEntity {
   updated_by!: string;
 
   @AuditableField(AuditableFieldType.VERSION)
-  version!: number;
+  version!: bigint;
 
   @DeletableField(DeletableFieldType.DELETED_AT)
   deleted_at?: Date;

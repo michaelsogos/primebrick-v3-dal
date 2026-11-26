@@ -144,6 +144,6 @@ describe("Entity capability mixins (Auditable / Deletable)", () => {
     const deletedBy = lookupEntityAnnotation(map, "MixinEntity", "deleted_by");
     expect(deletedBy?.typeName).toBe("string"); // union already stripped; optionality lives on .optional
     const version = lookupEntityAnnotation(map, "MixinEntity", "version");
-    expect(version?.typeName).toBe("number");
+    expect(version?.typeName).toBe("bigint");
   });
 });

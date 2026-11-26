@@ -52,6 +52,14 @@ export type MigrationEngineOptions = {
   allowedTrust?: readonly ("release" | "dev")[];
   /** Patches the admin approved via db-migration-apply-review (names, no .sql). */
   approvedReviews?: readonly string[];
+  /**
+   * Explicit first-boot opt-in. Without it the engine refuses to run against
+   * a schema that has no populated patch registry: an empty schema +
+   * migrations = a parallel empty installation silently materialized next
+   * to the real data (schema bifurcation). Pass `true` only when
+   * provisioning a genuinely new installation.
+   */
+  firstBoot?: boolean;
   /** applied_by stamp — service instance id or admin user uuid. */
   actor?: string;
   /** Max ms to wait for the advisory lock. Default 30_000. */
@@ -337,6 +345,39 @@ export async function runMigrations(opts: MigrationEngineOptions): Promise<Migra
   try {
     locked = await acquireAdvisoryLock(client, schema, opts.lockWaitMs ?? 30_000, logger);
     if (!locked) throw new Error("db-migration: advisory lock not acquired within wait budget — another migrator running?");
+
+    // ── first-boot guard — anti-bifurcation ─────────────────────────────
+    // A POPULATED registry proves this schema was materialized before; an
+    // absent/empty one means either a genuine first install or a wrong
+    // schema — indistinguishable to the engine, and the wrong case
+    // materializes a parallel empty installation next to the real data.
+    // Fail closed: materializing requires the explicit firstBoot opt-in.
+    // Must run BEFORE the registry bootstrap (that DDL is the first
+    // materialization step — it creates the very object being checked).
+    if (!opts.firstBoot) {
+      const reg = await client.query<{ oid: string | null }>(
+        `SELECT to_regclass($1)::text AS oid`,
+        [registryFq],
+      );
+      if (reg.rows[0]?.oid) {
+        const c = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${registryFq}`,
+        );
+        if ((c.rows[0]?.n ?? 0) > 0) {
+          // populated registry — schema was materialized before
+        } else {
+          throw new Error(
+            `db-migration: ${registryFq} exists but is empty — incomplete materialization; pass firstBoot: true to proceed`,
+          );
+        }
+      } else {
+        throw new Error(
+          `db-migration: ${registryFq} does not exist — schema "${schema}" was never materialized. ` +
+            `Running migrations here would create a parallel empty installation (schema bifurcation). ` +
+            `If this is a genuine first boot, pass firstBoot: true`,
+        );
+      }
+    }
 
     // ── registry self-bootstrap ──────────────────────────────────────────
     await client.query(patchRegistryDdl(schema));
