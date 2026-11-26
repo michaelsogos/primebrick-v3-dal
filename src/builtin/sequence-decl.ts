@@ -119,9 +119,9 @@ function sequenceColumns(ns: string): MetaColumn[] {
     // write keys; `revived_*` stamp the last revive event.
     { key: "expire_at", label_key: F("expire_at"), type: "datetime", order: 18, audited: true, default_visible: false },
     { key: "switch_at", label_key: F("switch_at"), type: "datetime", order: 19, audited: true, default_visible: false },
-    { key: "revived_from", label_key: F("revived_from"), type: "text", order: 20, audited: true, default_visible: false },
+    { key: "revived_from", label_key: F("revived_from"), type: "ref", ref: { entity: "sequence" }, order: 20, audited: true, default_visible: false },
     { key: "revived_at", label_key: F("revived_at"), type: "datetime", order: 21, audited: true, default_visible: false },
-    { key: "revived_by", label_key: F("revived_by"), type: "text", order: 22, audited: true, default_visible: false },
+    { key: "revived_by", label_key: F("revived_by"), type: "text", order: 22, audited: true, default_visible: false, options_source: "audit.actors" },
     // i18n keys are operator-managed pointers — hidden by default,
     // toggleable via the column picker.
     { key: "description_key", label_key: F("description_key"), type: "text", format: "i18n_key", order: 13, default_visible: false },
