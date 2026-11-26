@@ -87,13 +87,13 @@ function sequenceColumns(ns: string): MetaColumn[] {
     { key: "pattern", label_key: F("pattern"), type: "text", format: "sequence_pattern", order: 8 },
     { key: "emitted_actual", label_key: F("emitted_actual"), type: "text", order: 9, kind: "virtual" },
     { key: "emitted_next", label_key: F("emitted_next"), type: "text", order: 10, kind: "virtual" },
-    { key: "tz", label_key: F("tz"), type: "text", order: 11, options_source: "iana.tzones" },
+    { key: "tz", label_key: F("tz"), type: "text", order: 11, options_source: "iana.tzones", default_visible: false },
     // `immutable` — editable on the create sheet, disabled on update
     // and excluded from update payloads (the cadence is the row's
     // identity; the wire validator rejects them regardless).
     // `format:"revive_interval"` — the numeric+unit composite control
     // emitting the closed `'N unit'` varchar canonical.
-    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 12, tooltip: `${F("revive_every")}.tooltip` },
+    { key: "revive_every", label_key: F("revive_every"), type: "text", format: "revive_interval", order: 12, default_visible: false, tooltip: `${F("revive_every")}.tooltip` },
     // Everything past the cadence is secondary list data: present in the
     // column picker, absent from the default view.
     // When the row starts serving as the binding default — a create-only
