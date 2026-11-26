@@ -1715,8 +1715,6 @@ Declarative aggregate rollup projected into list rows.
 
 Audit port — consumers inject their own audit writer.
 The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
-Returns the inserted audit row key (used as `audit_log_id` in collaboration
-markers); ports that do not persist a row may return `0n`.
 
 ### `AuditRow`
 
@@ -1731,6 +1729,23 @@ markers); ports that do not persist a row may return `0n`.
 | changed_by_idp_code | `string \| null` |  |
 | version | `bigint` |  |
 | delta | `Record<string, unknown>` |  |
+
+### `AuditWriteResult`
+
+Result of an audit write — the inserted row's key plus its authoritative
+`changed_at` read back from the RETURNING projection. The timestamp is
+DB-clock truth (the write stamps it via the DAL_NOW sentinel, never the
+application clock): collaboration markers MUST take it from here when the
+entity's own freshly stamped `updated_at` is unavailable (HARD_DELETE),
+because the application never knows the real time.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| key | `string \| bigint` | Inserted audit row key (used as `audit_log_id` in collaboration
+ markers); ports that do not persist a row may return `0n`. |
+| changed_at | `Date` | The audit row's changed_at as stamped by the database, read back from
+ the insert's RETURNING — ports that do not persist a row may use any
+ authoritative DB-clock timestamp they themselves observe. |
 
 ### `BuiltinDeclCtx`
 

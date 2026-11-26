@@ -155,6 +155,24 @@ function auditEntityId(
 }
 
 /**
+ * The entity row's freshly stamped `updated_at` from the post-write
+ * RETURNING record — the authoritative DB-clock modification time, carried
+ * into AuditParams for wire markers. Null when the entity carries no
+ * updated_at column. NEVER the pre-write stale value: callers pass the
+ * remapped RETURNING row by construction.
+ */
+function entityUpdatedAt(
+  meta: { columns: Record<string, { auditableType?: unknown; sqlName: string }> },
+  returningRecord: Record<string, unknown> | undefined,
+): Date | null {
+  if (!returningRecord) return null;
+  const col = Object.values(meta.columns).find((c) => c.auditableType === AuditableFieldType.UPDATED_AT);
+  if (!col) return null;
+  const v = returningRecord[col.sqlName];
+  return v instanceof Date ? v : null;
+}
+
+/**
  * Resolve which column to use as the WHERE left operand for BULK write ops
  * (single-column selector — the multi-identity design is single-row only).
  * matchBy may arrive as a string or 1-element array (shared option type);
@@ -2097,6 +2115,7 @@ SELECT ins.* FROM ins WHERE NOT EXISTS (SELECT 1 FROM raised)`;
         entityUuid,
         action: AuditAction.INSERT,
         changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, insertedRecord),
         version: 1n,
         changedBy: actor,
         delta,
@@ -3248,6 +3267,7 @@ SELECT * FROM upd`;
         entityUuid,
         action: AuditAction.UPDATE,
         changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, updated),
         version: newVersion,
         changedBy: actor,
         delta,
@@ -3403,6 +3423,7 @@ SELECT * FROM w`;
         entityUuid,
         action: AuditAction.SOFT_DELETE,
         changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, deleted),
         version: newVersion,
         changedBy: actor,
         delta,
@@ -3558,6 +3579,7 @@ SELECT * FROM w`;
         entityUuid,
         action: AuditAction.RESTORE,
         changedAt: DAL_NOW,
+        entity_updated_at: entityUpdatedAt(meta, restored),
         version: newVersion,
         changedBy: actor,
         delta,

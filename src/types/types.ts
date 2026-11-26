@@ -256,13 +256,29 @@ export type UpsertOptions = {
 };
 
 /**
+ * Result of an audit write — the inserted row's key plus its authoritative
+ * `changed_at` read back from the RETURNING projection. The timestamp is
+ * DB-clock truth (the write stamps it via the DAL_NOW sentinel, never the
+ * application clock): collaboration markers MUST take it from here when the
+ * entity's own freshly stamped `updated_at` is unavailable (HARD_DELETE),
+ * because the application never knows the real time.
+ */
+export interface AuditWriteResult {
+  /** Inserted audit row key (used as `audit_log_id` in collaboration
+   *  markers); ports that do not persist a row may return `0n`. */
+  key: bigint | string;
+  /** The audit row's changed_at as stamped by the database, read back from
+   *  the insert's RETURNING — ports that do not persist a row may use any
+   *  authoritative DB-clock timestamp they themselves observe. */
+  changed_at: Date;
+}
+
+/**
  * Audit port — consumers inject their own audit writer.
  * The DAL calls `writeAudit` fire-and-forget (`.catch(logger?.error ?? noop)`).
- * Returns the inserted audit row key (used as `audit_log_id` in collaboration
- * markers); ports that do not persist a row may return `0n`.
  */
 export interface AuditPort {
-  writeAudit(params: AuditParams): Promise<bigint | string>;
+  writeAudit(params: AuditParams): Promise<AuditWriteResult>;
 }
 
 /** Parameters passed to `AuditPort.writeAudit`. */
@@ -278,6 +294,18 @@ export type AuditParams = {
   version: bigint;
   changedBy: string;
   delta: Record<string, { old: unknown; new: unknown }>;
+  /**
+   * The entity row's freshly stamped `updated_at`, read back from the write's
+   * own RETURNING record — the authoritative DB-clock modification time.
+   * Present ONLY when the write actually re-stamped it (INSERT / UPDATE /
+   * SOFT_DELETE / RESTORE on entities carrying an updated_at column); absent
+   * or null for HARD_DELETE and for entities without the column. Never the
+   * pre-write stale value — the populating sites read it from the post-write
+   * RETURNING row by construction. Marker publishers prefer this over the
+   * audit row's changed_at: the two correspond, but this is the entity's own
+   * canonical modification time.
+   */
+  entity_updated_at?: Date | null;
 };
 
 /** Audit action enum (mirrors BE's AuditAction). */

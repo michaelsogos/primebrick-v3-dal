@@ -219,6 +219,7 @@ export {
   type VectorSearchOptions,
   type VectorDistanceOp,
   type AuditPort,
+  type AuditWriteResult,
   type AuditParams,
   type LoggerPort,
   AuditAction,
