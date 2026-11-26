@@ -107,7 +107,7 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "varchar", length: 130, nullable: true })
   binding_key?: string | null;
 
-  /** Revive spec `'N (day|week|month|quarter|year)[s]' | 'at <RFC3339>'`
+  /** Revive spec `'N (day|week|month|quarter|year)[s]' | '@at <RFC3339>'` (bare `'at'` parses read-compatible)
    *  — cadence-derived expiry, or an explicit pin on the `expire_at`
    *  axis (the literal never propagates: the clone sanitizes it to NULL
    *  and the successor lives as the permanent final generation). Stored
@@ -116,7 +116,7 @@ export class SequenceEntity extends Deletable(Auditable(EntityBase)) {
   @Column({ pgType: "varchar", length: 40, nullable: true })
   revive_every?: string | null;
 
-  /** Overlap spec `'N unit' | 'until <RFC3339>'` — how long the retired
+  /** Overlap spec `'N unit' | '@until <RFC3339>'` (bare `'until'` read-compatible) — how long the retired
    *  row survives `expire_at` so backdated `at` still resolves it, or a
    *  direct `switch_at` pin (literal sanitized to NULL on successors).
    *  Editable — moves only `switch_at`. */

@@ -567,8 +567,8 @@ function vReviveSpec(v: unknown, field: "revive_every" | "revive_grace"): string
     bad(
       field,
       field === "revive_every"
-        ? `must be 'N (day|week|month|quarter|year)[s]' or 'at <RFC3339>' — got "${s}"`
-        : `must be 'N (day|week|month|quarter|year)[s]' or 'until <RFC3339>' — got "${s}"`,
+        ? `must be 'N (day|week|month|quarter|year)[s]' or '@at <RFC3339>' — got "${s}"`
+        : `must be 'N (day|week|month|quarter|year)[s]' or '@until <RFC3339>' — got "${s}"`,
     );
   }
   return s;
