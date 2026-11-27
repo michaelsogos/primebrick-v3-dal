@@ -109,6 +109,13 @@ export abstract class DomainService<TEntity extends Record<string, unknown>>
     return getRelationFacet(this.cfg.entity);
   }
 
+  /** The entity's persistence table name — the plural snake_case PG
+   *  identifier the `@Entity` decorator declares. The sdk nav derivation
+   *  builds leaf paths/ids from it; derived, never restated in a decl. */
+  get tableName() {
+    return getEntityPersistenceMeta(this.cfg.entity).tableName;
+  }
+
   /** `@AuditTrail()` on the entity class — the entity HAS an audit-trail
    *  table. The router derives `collaboration.enabled` from this; never
    *  restated in the decl. */

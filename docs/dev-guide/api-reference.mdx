@@ -1194,13 +1194,13 @@ a subclass is useless the moment anything instantiates it).
 | binding_key | `string \| null` | Series identity for declared bindings — `<table>.<field>` (or
  `…@expr_<hash>`); written ONLY by the system at binding
  materialize, never a write key. Operator rows keep NULL. |
-| revive_every | `string \| null` | Revive spec `'N (day|week|month|quarter|year)[s]' | 'at <RFC3339>'`
+| revive_every | `string \| null` | Revive spec `'N (day|week|month|quarter|year)[s]' | '@at <RFC3339>'` (bare `'at'` parses read-compatible)
  — cadence-derived expiry, or an explicit pin on the `expire_at`
  axis (the literal never propagates: the clone sanitizes it to NULL
  and the successor lives as the permanent final generation). Stored
  as varchar to keep the closed wire format verbatim (PG `interval`
  output normalizes '3 months'→'3 mons', breaking round-trip). |
-| revive_grace | `string \| null` | Overlap spec `'N unit' | 'until <RFC3339>'` — how long the retired
+| revive_grace | `string \| null` | Overlap spec `'N unit' | '@until <RFC3339>'` (bare `'until'` read-compatible) — how long the retired
  row survives `expire_at` so backdated `at` still resolves it, or a
  direct `switch_at` pin (literal sanitized to NULL on successors).
  Editable — moves only `switch_at`. |
@@ -2523,16 +2523,26 @@ Per-operation timeout override for dedicated-client work
 
 ### `VisibleKeyPrefs`
 
-Persisted column-visibility intent (storage schema v2): the user's
+Persisted column-visibility intent (storage schema v3): the user's
 deltas from `default_visible` — never the resolved set. Storing intent
 instead of the resolved array is what lets meta evolution (a column
 added later, a flipped `default_visible`) reach profiles that already
 persisted preferences: a key in neither list simply follows its own
 `default_visible`.
 
+v2 → v3: the v2 derivation wrote EVERY non-visible column into `hidden`
+— including default-hidden columns the user never chose to hide — and
+the persist effect fires at bootstrap, so merely visiting a list stored
+fake intent. When a decl later flipped `default_visible` false→true the
+polluted entries actively defeated the new default. v2 `hidden` arrays
+are irretrievably indistinguishable from genuine intent → the migration
+(`migrateVisibleKeyPrefs`) drops them wholesale; `shown` is genuine in
+every version (a default-hidden column can only enter the visible set
+through an explicit user toggle).
+
 | Field | Type | Description |
 |-------|------|-------------|
-| v | `2` |  |
+| v | `3` |  |
 | shown | `string[]` | Served keys the user shows despite `default_visible:false`. |
 | hidden | `string[]` | Served keys the user hides despite `default_visible:true`. |
 
@@ -2704,16 +2714,27 @@ bare lines in service output. Every library MUST route diagnostics through
 Design:
 - **Environment-neutral** — no Node APIs, no DOM, no OTel. `console` exists
   in every runtime; the default transport writes formatted lines there.
-- **Never bare** — even with zero wiring, output carries timestamp + level,
-  so an unconfigured library can never print a naked message again.
 - **Transport hook** — the runtime owner (the SDK in `createMicroservice`,
   or the BE at its own boot) installs ONE transport via
   setCoreLogTransport; entries then flow into the host pipeline
   (trace correlation, batching, OTel) and become indistinguishable from
   host logs. Libraries never know nor care.
-- **Zero state beyond the transport** — no level filtering here: when a
-  transport is wired the host pipeline already gates levels; the default
-  path emits everything (libraries log sparingly by contract).
+- **Buffer-and-replay** — library diagnostics often fire at import time
+  (module-level composition, e.g. entity meta), BEFORE the host has booted
+  far enough to wire the transport. Colors, service identity and tags are
+  runtime-context properties that cannot exist yet — so pre-wiring
+  emissions are NOT written bare: they are held in a bounded buffer and
+  replayed through the host pipeline at the first wiring, in order. The
+  lines then carry the correct `[service#version]` formatting because the
+  context they were missing at emission time finally exists.
+- **Buffer semantics** — cap 100, oldest dropped. Wiring `null` drops the
+  backlog without replay (test isolation). Environments that never wire
+  (vitest by design, thin CLI consumers) never surface the backlog —
+  library diagnostics are noise there by contract. If a host was wired
+  once and is later removed, emissions fall back to the default console
+  writer: buffering is a boot-time courtesy, not a permanent black hole.
+- **No level filtering here** — when a transport is wired the host
+  pipeline already gates levels; libraries log sparingly by contract.
 
 **Type:** `"debug" \| "info" \| "warn" \| "error"`
 
@@ -4073,6 +4094,17 @@ treated from the merged record the caller passes.
 | warn | "" |
 | error | "" |
 
+### `MACHINE_SYNTAX_TEXT_FORMATS`
+
+Machine-syntax varchar formats — columns whose wire strings are canonical
+ encodings parsed by a dedicated codec/widget, NOT prose (`every 1 year`
+ is a reviver payload, not searchable text). Excluded from the `search_in`
+ scope even though their declared type is `text` — user-ratified 2026-11-26:
+ `sequence`/`actor_token` STAY searchable (ref display names/ref_keys are
+ human-meaningful text).
+
+**Type:** `ReadonlySet<string>`
+
 ### `MANIFEST_FILENAME`
 
 **Type:** `"MANIFEST.json"`
@@ -5089,9 +5121,12 @@ built with an un-incrementable slot.
 
 Derive the persistable intent from the resolved set + served columns:
  `shown` = visible keys that are not default-visible;
- `hidden` = served columns absent from the visible set. A legacy v1
- array migrates losslessly through the same derivation — identical
- render, unlocked evolution.
+ `hidden` = DEFAULT-VISIBLE columns absent from the visible set — the
+ user's explicit hides, never the default-hidden columns (recording
+ those as intent would pin them against any future `default_visible`
+ flip — the v2 pollution bug). A legacy v1 array migrates through the
+ same derivation: columns hidden because the old decl default-hid them
+ are correctly NOT captured as intent.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -5392,6 +5427,21 @@ Snapshot fragment for one
 |-----------|------|-------------|
 | ctor | `EntityClass` |  |
 | tableSchema | `string` |  |
+
+### `getOperatorsForColumn(col): FilterOperator[]`
+
+Column-aware operator set — the SEMANTIC derivation every filter surface
+must use. A governed-vocabulary column (`options_source` — timezones,
+currencies, census subjects…) or an entity `ref` renders a combobox
+value picker: the user picks whole values, never free text, so textual
+operators (contains/startsWith/endsWith) are unfillable nonsense and
+ordering comparisons on uuid refs are meaningless — equality only. The
+bare-type `getOperatorsForColumnType` remains for callers that only
+have a type string; surfaces with the column contract use THIS.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| col | `Pick<MetaColumn, "type"> & Partial<Pick<MetaColumn, "options_source">>` |  |
 
 ### `getOperatorsForColumnType(columnType): FilterOperator[]`
 
@@ -5856,6 +5906,16 @@ Resolve manifest + keyring paths for a service's db-meta dir.
 |-----------|------|-------------|
 | a | `DecimalInput` |  |
 | b | `DecimalInput` |  |
+
+### `migrateVisibleKeyPrefs(stored): VisibleKeyPrefs`
+
+Migrate a stored prefs blob of any version to the current schema.
+ v3 passes through; v2 (or unversioned) keeps `shown` and drops
+ `hidden` — see the schema note for the pollution contract.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| stored | `{ v: number; shown: string[]; hidden: string[] }` |  |
 
 ### `min(a, b): Decimal`
 
@@ -6617,8 +6677,9 @@ Text-searchable columns — the scope selector + default "all fields"
  projections whose served `pg_type` is ILIKE-safe. The UI type is
  presentation, never a statement about the rendered expression's
  searchability — a calc `type:"ref"` identity column displays the
- very name the search matches. Mirrors the wire `search_in`
- allowlist derivation in dal-pg (`deriveListWireSets`).
+ very name the search matches. Machine-syntax formats are not prose —
+ they are excluded regardless of the declared text type. Mirrors the
+ wire `search_in` allowlist derivation in dal-pg (`deriveListWireSets`).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -6736,9 +6797,12 @@ meta (e.g. sparkline `endpoint: "/actions/job-run-stats"`) resolve to
 
 ### `setCoreLogTransport(t): void`
 
-Install the host transport. Idempotent-by-replacement: the last install
-wins (test harnesses may re-wire; production installs exactly once at
-boot). Pass `null` to restore the default console transport.
+Install the host transport. The first non-null install replays the
+pre-wiring backlog through the host pipeline (in emission order) and then
+switches to passthrough. Idempotent-by-replacement: the last install wins
+(test harnesses may re-wire; production installs exactly once at boot).
+Pass `null` to detach — the backlog is dropped without replay, and later
+emissions fall back to the default console writer once a host was seen.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
