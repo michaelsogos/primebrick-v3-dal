@@ -755,6 +755,9 @@ export function builtinSequenceNav(ctx: BuiltinDeclCtx) {
     label_key: `${ns}.settings.nav.sequences`,
     icon: "sequence-numeric-right",
     entity: "sequence",
+    // Last BY DESIGN (user-ratified 2026-11-27): the pin clamps beyond the
+    // sibling's leaf count — the registry never floats mid-sibling again.
+    order: 1_000_000,
   };
 }
 

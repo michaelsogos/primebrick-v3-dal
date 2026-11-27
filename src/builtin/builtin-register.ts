@@ -27,8 +27,8 @@ export interface BuiltinDeclFactory {
    *  merges these into makeServiceRoutes' `rpc` input verbatim. */
   rpc?: (ctx: BuiltinDeclCtx) => Record<string, unknown>[];
   /** Nav contribution — appended LAST inside the named sibling's nav/routes
-   *  by createMicroservice (array position IS the order at every level;
-   *  builtins always sort after every module-authored leaf). The sibling
+   *  by createMicroservice (pinned `order` wins at render, unpinned sort alphabetically —
+   *  array position no longer carries ordering semantics). The sibling
    *  is auto-created when the module declares none. */
   nav?: (ctx: BuiltinDeclCtx) => BuiltinNavContribution;
 }
