@@ -3748,6 +3748,10 @@ Host `vendor-manifest.json` — specifier → published vendor asset.
 
 **Type:** `typeof VENDOR_SPECIFIERS[number]`
 
+### `VersionDrift`
+
+**Type:** `"none" \| "patch" \| "minor" \| "major"`
+
 ### `ViewName`
 
 Table view names supported by entity list pages.
@@ -5146,11 +5150,11 @@ facet; redeclaring on a concrete class replaces it wholesale.
 
 ### `diffVendorRequirements(requires, manifest): VendorMismatch[]`
 
-Vendor compatibility check — exact-match policy. A remote chunk compiled
-against a different version of a vendored package is incompatible:
-`svelte/internal/*` is not a stable API and each union bundle's export set
-may change between versions. The remedy is rebuilding the remote chunk —
-a semver-tolerant handshake would only defer an opaque import failure.
+Vendor compatibility diff — exact-match detection. The diff itself stays
+exact (every difference is reported); what a mismatch MEANS is the
+caller's policy, informed by versionDrift severity — see the
+proportional drift policy (2026-11-27): enforcement lives at lint time,
+runtime blocks are reserved for genuinely incompatible shapes.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -5680,6 +5684,16 @@ Excludes the property from meta schema / migration and from future DAL queries.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | d | `DecimalInput` |  |
+
+### `isPrimebrickVendorSpecifier(specifier): boolean`
+
+`@primebrick/*` specifiers are OUR libs (core/ui/sdk/dal surface) — the
+runtime leniency policy applies to them unconditionally: first-party
+drift is enforced at lint time, never in the user's face.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| specifier | `string` |  |
 
 ### `isSnakeCaseSingular(value): value is SnakeCaseSingular`
 
@@ -7084,6 +7098,20 @@ Verify manifest signature against the keyring (filtered by allowed trust levels)
 | manifest | `PatchManifest` |  |
 | keyring | `TrustedKey[]` |  |
 | allowedTrust | `readonly "release" \| "dev"[]` |  |
+
+### `versionDrift(a, b): VersionDrift`
+
+Semver severity of the distance between two `x.y.z` versions — direction-
+agnostic (a chunk ahead of the host drifts exactly like a host ahead of
+the chunk). The proportional drift policy keys on this: `patch` is noise
+a runtime must tolerate, `minor`/`major` is where internal API shapes
+genuinely change. An unparseable version is conservatively `major` —
+unknown shape, never assumed safe.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| a | `string` |  |
+| b | `string` |  |
 
 ### `walkSchemaProps(schema, prefix): Generator<{ field: string; path: string; prop: Record<string, unknown>; required: boolean }>`
 
