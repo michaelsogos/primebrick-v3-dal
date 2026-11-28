@@ -166,7 +166,11 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
       // authored surface half (modes/default_mode/allow_create) merges
       // under the derived bound identity.
       ...(phys.seqBound !== undefined
-        ? { format: "sequence" as const, seq: { ...(col.seq ?? {}), uuid: phys.seqBound.uuid, name: phys.seqBound.name } }
+        ? {
+            format: "sequence" as const,
+            system_generated: true,
+            seq: { ...(col.seq ?? {}), uuid: phys.seqBound.uuid, name: phys.seqBound.name },
+          }
         : {}),
     };
   };
@@ -223,6 +227,12 @@ export function withColumnConstraints<T extends { columns: MetaColumn[]; entity?
         throw new Error(
           `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors managed — ` +
             `the flag is derived from the entity class (@Key generation strategy); never declared by hand`,
+        );
+      }
+      if (col.system_generated !== undefined) {
+        throw new Error(
+          `withColumnConstraints[${persistence.entityClassName}]: column "${col.key}" authors system_generated — ` +
+            `the flag is derived from the entity class (@SequenceField binding); never declared by hand`,
         );
       }
       // `@Ref` on the class owns the ref contract — authored `ref` is
